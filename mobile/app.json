@@ -8,8 +8,7 @@
     "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
     "web": {
-      "bundler": "metro",
-      "output": "server"
+      "bundler": "metro"
     },
     "splash": {
       "backgroundColor": "#F5F5F5",
@@ -32,6 +31,7 @@
       "expo-router",
       "expo-font",
       "expo-secure-store",
+      "expo-sqlite",
       [
         "expo-camera",
         {

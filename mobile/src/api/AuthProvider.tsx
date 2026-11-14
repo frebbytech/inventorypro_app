@@ -10,6 +10,10 @@ import React, {
 import { Platform } from "react-native";
 import { HttpApiClient } from "./httpAdapter";
 import {
+  ExpoSqliteDrizzleClient,
+  type AuthenticatedApiClient,
+} from "./sqliteAdapter";
+import {
   clearStoredAuthToken,
   getStoredAuthToken,
   setStoredAuthToken,
@@ -22,7 +26,7 @@ interface AuthContextValue {
   token: string | null;
   isRestoring: boolean;
   isAuthenticated: boolean;
-  apiClient: HttpApiClient;
+  apiClient: AuthenticatedApiClient;
   signIn: (identifier: string, password: string) => Promise<void>;
   signOut: () => Promise<void>;
 }
@@ -45,14 +49,21 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     void clearStoredAuthToken();
   }, []);
 
-  const apiClient = useMemo(
-    () =>
-      new HttpApiClient({
+  const apiClient = useMemo<AuthenticatedApiClient>(() => {
+    const remoteBaseUrl = process.env.EXPO_PUBLIC_API_BASE_URL?.trim();
+    if (remoteBaseUrl) {
+      return new HttpApiClient({
+        baseUrl: remoteBaseUrl,
         getAccessToken: () => tokenRef.current,
         onUnauthorized: handleUnauthorized,
-      }),
-    [handleUnauthorized],
-  );
+      });
+    }
+
+    return new ExpoSqliteDrizzleClient({
+      getAccessToken: () => tokenRef.current,
+      onUnauthorized: handleUnauthorized,
+    });
+  }, [handleUnauthorized]);
 
   useEffect(() => {
     let active = true;

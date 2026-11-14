@@ -1,0 +1,633 @@
+import { count } from "drizzle-orm";
+import { drizzle, type ExpoSQLiteDatabase } from "drizzle-orm/expo-sqlite";
+import * as SQLite from "expo-sqlite";
+import { hashPassword } from "./crypto";
+import * as schema from "./schema";
+
+export type ExpoSqliteDrizzleDb = ExpoSQLiteDatabase<typeof schema>;
+
+const DATABASE_NAME = "inventory_pro.db";
+
+let rawSqlite: SQLite.SQLiteDatabase | null = null;
+let drizzleDb: ExpoSqliteDrizzleDb | null = null;
+let readyPromise: Promise<ExpoSqliteDrizzleDb> | null = null;
+
+function getRawSqlite(): SQLite.SQLiteDatabase {
+  if (!rawSqlite) {
+    rawSqlite = SQLite.openDatabaseSync(DATABASE_NAME);
+  }
+  return rawSqlite;
+}
+
+export function getDrizzleDb(): ExpoSqliteDrizzleDb {
+  if (!drizzleDb) {
+    drizzleDb = drizzle(getRawSqlite(), { schema });
+  }
+  return drizzleDb;
+}
+
+function ensureTablesSync(sqlite: SQLite.SQLiteDatabase): void {
+  try {
+    sqlite.execSync("PRAGMA journal_mode = WAL;");
+  } catch {
+    // Ignore on platforms where WAL mode is not applicable (e.g., web wa-sqlite)
+  }
+
+  sqlite.execSync(`
+    PRAGMA foreign_keys = ON;
+
+    CREATE TABLE IF NOT EXISTS users (
+      id TEXT PRIMARY KEY,
+      username TEXT NOT NULL UNIQUE,
+      email TEXT NOT NULL UNIQUE,
+      password_hash TEXT NOT NULL,
+      firstname TEXT NOT NULL DEFAULT '',
+      lastname TEXT NOT NULL DEFAULT '',
+      phonenumber TEXT DEFAULT NULL,
+      role TEXT NOT NULL DEFAULT 'member' CHECK (role IN ('admin', 'member')),
+      failed_login_attempts INTEGER NOT NULL DEFAULT 0,
+      locked_until TEXT DEFAULT NULL,
+      last_login_at TEXT DEFAULT NULL,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
+    CREATE TABLE IF NOT EXISTS user_sessions (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      token TEXT DEFAULT NULL,
+      device_name TEXT DEFAULT NULL,
+      device_type TEXT DEFAULT NULL,
+      operating_system TEXT DEFAULT NULL,
+      is_active INTEGER NOT NULL DEFAULT 1,
+      last_activity_at TEXT DEFAULT NULL,
+      expires_at TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS user_sessions_idx_user ON user_sessions(user_id);
+    CREATE INDEX IF NOT EXISTS user_sessions_idx_active ON user_sessions(is_active);
+    CREATE INDEX IF NOT EXISTS user_sessions_idx_token ON user_sessions(token);
+
+    CREATE TABLE IF NOT EXISTS settings (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL UNIQUE,
+      business_name TEXT NOT NULL DEFAULT 'Inventory Pro',
+      business_address TEXT NOT NULL DEFAULT 'AK-459-6364, Kumasi',
+      business_phone TEXT NOT NULL DEFAULT '+233543772591',
+      business_email TEXT NOT NULL DEFAULT 'inventorypro@frebbytech.com',
+      currency TEXT NOT NULL DEFAULT 'GHS',
+      tax_rate REAL NOT NULL DEFAULT 0.01,
+      stock_alert_threshold INTEGER NOT NULL DEFAULT 5,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    );
+
+    CREATE TABLE IF NOT EXISTS product_categories (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      name TEXT NOT NULL,
+      description TEXT DEFAULT NULL,
+      is_active INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      UNIQUE (user_id, name),
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    );
+
+    CREATE TABLE IF NOT EXISTS products (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      category_id TEXT NOT NULL,
+      name TEXT NOT NULL,
+      photo_url TEXT DEFAULT '',
+      barcode TEXT DEFAULT '',
+      description TEXT DEFAULT '',
+      cost_price REAL NOT NULL CHECK (cost_price >= 0),
+      unit_price REAL NOT NULL CHECK (unit_price >= 0),
+      stock_quantity INTEGER NOT NULL DEFAULT 0 CHECK (stock_quantity >= 0),
+      low_stock_threshold INTEGER NOT NULL DEFAULT 5,
+      is_active INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      FOREIGN KEY (user_id) REFERENCES users(id),
+      FOREIGN KEY (category_id) REFERENCES product_categories(id)
+    );
+
+    CREATE INDEX IF NOT EXISTS products_idx_name ON products(name);
+    CREATE INDEX IF NOT EXISTS products_idx_barcode ON products(barcode);
+    CREATE INDEX IF NOT EXISTS products_idx_category ON products(category_id);
+
+    CREATE TABLE IF NOT EXISTS customers (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      name TEXT NOT NULL,
+      email TEXT DEFAULT NULL,
+      address TEXT DEFAULT NULL,
+      phonenumber TEXT DEFAULT NULL,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      FOREIGN KEY (user_id) REFERENCES users(id)
+    );
+
+    CREATE TABLE IF NOT EXISTS sales (
+      id TEXT PRIMARY KEY,
+      customer_id TEXT NOT NULL,
+      user_id TEXT NOT NULL,
+      receipt_number TEXT NOT NULL UNIQUE,
+      date TEXT NOT NULL DEFAULT (datetime('now')),
+      details TEXT DEFAULT '',
+      total_amount REAL NOT NULL CHECK (total_amount >= 0),
+      discount_amount REAL NOT NULL DEFAULT 0 CHECK (discount_amount >= 0),
+      tax_amount REAL NOT NULL DEFAULT 0 CHECK (tax_amount >= 0),
+      amount_paid REAL NOT NULL DEFAULT 0 CHECK (amount_paid >= 0),
+      payment_mode TEXT NOT NULL DEFAULT 'cash' CHECK (payment_mode IN ('cash', 'momo', 'bank', 'cheque')),
+      status TEXT NOT NULL DEFAULT 'completed' CHECK (status IN ('pending', 'completed', 'failed', 'refunded')),
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      FOREIGN KEY (user_id) REFERENCES users(id),
+      FOREIGN KEY (customer_id) REFERENCES customers(id)
+    );
+
+    CREATE INDEX IF NOT EXISTS sales_idx_date ON sales(date);
+    CREATE INDEX IF NOT EXISTS sales_idx_status ON sales(status);
+    CREATE INDEX IF NOT EXISTS sales_idx_receipt ON sales(receipt_number);
+
+    CREATE TABLE IF NOT EXISTS sale_items (
+      id TEXT PRIMARY KEY,
+      sales_id TEXT NOT NULL,
+      product_id TEXT NOT NULL,
+      quantity INTEGER NOT NULL CHECK (quantity >= 0),
+      unit_price REAL NOT NULL DEFAULT 0 CHECK (unit_price >= 0),
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      FOREIGN KEY (sales_id) REFERENCES sales(id) ON DELETE CASCADE,
+      FOREIGN KEY (product_id) REFERENCES products(id)
+    );
+
+    CREATE INDEX IF NOT EXISTS sale_items_idx_sales ON sale_items(sales_id);
+    CREATE INDEX IF NOT EXISTS sale_items_idx_product ON sale_items(product_id);
+
+    CREATE TABLE IF NOT EXISTS inventory (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      product_id TEXT NOT NULL,
+      product_category_id TEXT NOT NULL,
+      quantity INTEGER NOT NULL,
+      restock_date TEXT NOT NULL,
+      notes TEXT DEFAULT '',
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      FOREIGN KEY (user_id) REFERENCES users(id),
+      FOREIGN KEY (product_id) REFERENCES products(id),
+      FOREIGN KEY (product_category_id) REFERENCES product_categories(id)
+    );
+
+    CREATE TABLE IF NOT EXISTS audit_logs (
+      id TEXT PRIMARY KEY,
+      user_id TEXT DEFAULT NULL,
+      entity_type TEXT NOT NULL,
+      entity_id TEXT NOT NULL,
+      action TEXT NOT NULL CHECK (action IN ('create', 'update', 'delete', 'restore', 'approve', 'cancel', 'login', 'logout')),
+      old_values TEXT DEFAULT NULL,
+      new_values TEXT DEFAULT NULL,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL
+    );
+  `);
+}
+
+function isoDaysAgoAt(daysAgo: number, hour: number, minute: number): string {
+  const date = new Date();
+  date.setUTCDate(date.getUTCDate() - daysAgo);
+  date.setUTCHours(hour, minute, 0, 0);
+  return date.toISOString();
+}
+
+async function seedDatabaseIfEmpty(db: ExpoSqliteDrizzleDb): Promise<void> {
+  const existing = db.select({ cnt: count() }).from(schema.users).get();
+  if ((existing?.cnt ?? 0) > 0) {
+    return;
+  }
+
+  // Hash seeded passwords before entering synchronous Drizzle transaction
+  const [adminPasswordHash, staffPasswordHash] = await Promise.all([
+    hashPassword("Admin123!"),
+    hashPassword("Staff123!"),
+  ]);
+
+  const adminId = "user-admin-001";
+  const staffId = "user-staff-002";
+  const todayStamp = new Date().toISOString().slice(0, 10).replace(/-/g, "");
+  const yestDate = new Date();
+  yestDate.setUTCDate(yestDate.getUTCDate() - 1);
+  const yestStamp = yestDate.toISOString().slice(0, 10).replace(/-/g, "");
+
+  db.transaction((tx) => {
+    tx.insert(schema.users)
+      .values([
+        {
+          id: adminId,
+          username: "frebbytech",
+          email: "inventorypro@frebbytech.com",
+          passwordHash: adminPasswordHash,
+          firstname: "System",
+          lastname: "Admin",
+          phonenumber: "+233543772591",
+          role: "admin",
+        },
+        {
+          id: staffId,
+          username: "kwame",
+          email: "kwame@frebbytech.com",
+          passwordHash: staffPasswordHash,
+          firstname: "Kwame",
+          lastname: "Boateng",
+          phonenumber: "+233244556677",
+          role: "member",
+        },
+      ])
+      .run();
+
+    tx.insert(schema.settings)
+      .values({
+        id: "settings-001",
+        userId: adminId,
+        businessName: "Inventory Pro",
+        businessAddress: "AK-459-6364, Kumasi",
+        businessPhone: "+233543772591",
+        businessEmail: "inventorypro@frebbytech.com",
+        currency: "GHS",
+        taxRate: 0.01,
+        stockAlertThreshold: 5,
+      })
+      .run();
+
+    tx.insert(schema.productCategories)
+      .values([
+        {
+          id: "cat-dairy",
+          userId: adminId,
+          name: "Dairy & Beverages",
+          description: "Milk tins, bottled water, and malt drinks",
+          isActive: 1,
+        },
+        {
+          id: "cat-groceries",
+          userId: adminId,
+          name: "Groceries & Grains",
+          description: "Rice, cooking oil, and pantry staples",
+          isActive: 1,
+        },
+        {
+          id: "cat-personal",
+          userId: adminId,
+          name: "Personal Care",
+          description: "Soaps and oral hygiene essentials",
+          isActive: 1,
+        },
+        {
+          id: "cat-household",
+          userId: adminId,
+          name: "Household",
+          description: "Detergents and dishwashing supplies",
+          isActive: 1,
+        },
+        {
+          id: "cat-snacks",
+          userId: adminId,
+          name: "Snacks & Bakery",
+          description: "Biscuits and packaged snacks",
+          isActive: 1,
+        },
+      ])
+      .run();
+
+    tx.insert(schema.products)
+      .values([
+        {
+          id: "prod-001",
+          userId: adminId,
+          categoryId: "cat-dairy",
+          name: "Peak Evaporated Milk 170g",
+          barcode: "5449000000996",
+          description: "Full cream evaporated milk tin, shelf-stable retail unit.",
+          costPrice: 12.5,
+          unitPrice: 16.0,
+          stockQuantity: 42,
+          lowStockThreshold: 5,
+          isActive: 1,
+          updatedAt: isoDaysAgoAt(0, 9, 15),
+        },
+        {
+          id: "prod-002",
+          userId: adminId,
+          categoryId: "cat-dairy",
+          name: "Nestle Milo Activ-Go 400g",
+          barcode: "6001067041234",
+          description: "Chocolate malt beverage refill tin with vitamins and minerals.",
+          costPrice: 42.0,
+          unitPrice: 52.0,
+          stockQuantity: 18,
+          lowStockThreshold: 5,
+          isActive: 1,
+          updatedAt: isoDaysAgoAt(0, 8, 45),
+        },
+        {
+          id: "prod-003",
+          userId: adminId,
+          categoryId: "cat-dairy",
+          name: "Ideal Milk Original 160g",
+          barcode: "8901058851234",
+          description: "Evaporated unsweetened milk for everyday beverages and cooking.",
+          costPrice: 11.0,
+          unitPrice: 14.5,
+          stockQuantity: 3,
+          lowStockThreshold: 5,
+          isActive: 1,
+          updatedAt: isoDaysAgoAt(0, 10, 20),
+        },
+        {
+          id: "prod-004",
+          userId: adminId,
+          categoryId: "cat-groceries",
+          name: "Royal Aroma Jasmine Rice 5kg",
+          barcode: "6154000112233",
+          description: "Long-grain perfumed jasmine rice family pack.",
+          costPrice: 115.0,
+          unitPrice: 138.0,
+          stockQuantity: 0,
+          lowStockThreshold: 5,
+          isActive: 1,
+          updatedAt: isoDaysAgoAt(0, 11, 5),
+        },
+        {
+          id: "prod-005",
+          userId: adminId,
+          categoryId: "cat-groceries",
+          name: "Frytol Vegetable Cooking Oil 1L",
+          barcode: "6151100049102",
+          description: "Cholesterol-free fortified vegetable cooking oil bottle.",
+          costPrice: 36.0,
+          unitPrice: 44.0,
+          stockQuantity: 2,
+          lowStockThreshold: 5,
+          isActive: 1,
+          updatedAt: isoDaysAgoAt(0, 9, 55),
+        },
+        {
+          id: "prod-006",
+          userId: adminId,
+          categoryId: "cat-dairy",
+          name: "Voltic Natural Mineral Water 1.5L",
+          barcode: "6030000100024",
+          description: "Still natural mineral water bottle (single retail unit).",
+          costPrice: 4.5,
+          unitPrice: 7.0,
+          stockQuantity: 64,
+          lowStockThreshold: 5,
+          isActive: 1,
+          updatedAt: isoDaysAgoAt(0, 7, 30),
+        },
+        {
+          id: "prod-007",
+          userId: adminId,
+          categoryId: "cat-personal",
+          name: "Geisha Black Soap 175g",
+          barcode: "6001087354110",
+          description: "Long-lasting moisturizing bath soap bar.",
+          costPrice: 9.0,
+          unitPrice: 12.5,
+          stockQuantity: 4,
+          lowStockThreshold: 5,
+          isActive: 1,
+          updatedAt: isoDaysAgoAt(0, 8, 10),
+        },
+        {
+          id: "prod-008",
+          userId: adminId,
+          categoryId: "cat-personal",
+          name: "Pepsodent Cavity Fighter 140g",
+          barcode: "8901030701122",
+          description: "Fluoride toothpaste family size tube.",
+          costPrice: 14.0,
+          unitPrice: 18.5,
+          stockQuantity: 25,
+          lowStockThreshold: 5,
+          isActive: 1,
+          updatedAt: isoDaysAgoAt(0, 8, 15),
+        },
+        {
+          id: "prod-009",
+          userId: adminId,
+          categoryId: "cat-household",
+          name: "Omo Multi-Active Detergent 500g",
+          barcode: "6001087368896",
+          description: "Fast-dissolving washing powder sachet for hand & machine wash.",
+          costPrice: 19.0,
+          unitPrice: 24.0,
+          stockQuantity: 1,
+          lowStockThreshold: 5,
+          isActive: 1,
+          updatedAt: isoDaysAgoAt(0, 11, 30),
+        },
+        {
+          id: "prod-010",
+          userId: adminId,
+          categoryId: "cat-groceries",
+          name: "Gino Tomato Paste 400g",
+          barcode: "6033000105519",
+          description: "Rich double-concentrated tomato paste tin.",
+          costPrice: 15.0,
+          unitPrice: 19.5,
+          stockQuantity: 0,
+          lowStockThreshold: 5,
+          isActive: 1,
+          updatedAt: isoDaysAgoAt(0, 10, 40),
+        },
+        {
+          id: "prod-011",
+          userId: adminId,
+          categoryId: "cat-snacks",
+          name: "McVitie's Digestive Biscuits 250g",
+          barcode: "5000168001234",
+          description: "Wholewheat crispy digestive biscuit pack.",
+          costPrice: 18.5,
+          unitPrice: 24.5,
+          stockQuantity: 15,
+          lowStockThreshold: 5,
+          isActive: 1,
+          updatedAt: isoDaysAgoAt(0, 9, 0),
+        },
+        {
+          id: "prod-012",
+          userId: adminId,
+          categoryId: "cat-household",
+          name: "Sunlight Dishwashing Liquid 400ml",
+          barcode: "6001087009126",
+          description: "Lemon-scented grease-cutting dishwashing liquid bottle.",
+          costPrice: 20.0,
+          unitPrice: 26.0,
+          stockQuantity: 11,
+          lowStockThreshold: 5,
+          isActive: 0,
+          updatedAt: isoDaysAgoAt(1, 17, 10),
+        },
+      ])
+      .run();
+
+    tx.insert(schema.customers)
+      .values([
+        { id: "cust-walkin", userId: adminId, name: "Walk-in Customer", phonenumber: null },
+        { id: "cust-ama", userId: adminId, name: "Ama Mensah", phonenumber: "+233244112233" },
+        { id: "cust-kofi", userId: adminId, name: "Kofi Owusu", phonenumber: "+233208991144" },
+        { id: "cust-yaw", userId: adminId, name: "Yaw Darko", phonenumber: null },
+        { id: "cust-efua", userId: adminId, name: "Efua Sarpong", phonenumber: "+233552348811" },
+        { id: "cust-adwoa", userId: adminId, name: "Adwoa Appiah", phonenumber: null },
+      ])
+      .run();
+
+    tx.insert(schema.sales)
+      .values([
+        {
+          id: "sale-1042",
+          customerId: "cust-ama",
+          userId: staffId,
+          receiptNumber: `RCP-${todayStamp}-1042`,
+          date: isoDaysAgoAt(0, 11, 42),
+          details: "Counter POS",
+          totalAmount: 192.5,
+          discountAmount: 0,
+          taxAmount: 0,
+          amountPaid: 192.5,
+          paymentMode: "momo",
+          status: "completed",
+        },
+        {
+          id: "sale-1041",
+          customerId: "cust-walkin",
+          userId: staffId,
+          receiptNumber: `RCP-${todayStamp}-1041`,
+          date: isoDaysAgoAt(0, 11, 8),
+          details: "Counter POS",
+          totalAmount: 364.0,
+          discountAmount: 0,
+          taxAmount: 0,
+          amountPaid: 364.0,
+          paymentMode: "cash",
+          status: "completed",
+        },
+        {
+          id: "sale-1040",
+          customerId: "cust-kofi",
+          userId: adminId,
+          receiptNumber: `RCP-${todayStamp}-1040`,
+          date: isoDaysAgoAt(0, 10, 19),
+          details: "Counter POS",
+          totalAmount: 218.67,
+          discountAmount: 10.0,
+          taxAmount: 2.17,
+          amountPaid: 218.67,
+          paymentMode: "bank",
+          status: "completed",
+        },
+        {
+          id: "sale-1039",
+          customerId: "cust-yaw",
+          userId: adminId,
+          receiptNumber: `RCP-${todayStamp}-1039`,
+          date: isoDaysAgoAt(0, 9, 34),
+          details: "Counter POS",
+          totalAmount: 156.5,
+          discountAmount: 0,
+          taxAmount: 0,
+          amountPaid: 156.5,
+          paymentMode: "momo",
+          status: "completed",
+        },
+        {
+          id: "sale-1038",
+          customerId: "cust-efua",
+          userId: staffId,
+          receiptNumber: `RCP-${todayStamp}-1038`,
+          date: isoDaysAgoAt(0, 8, 52),
+          details: "Refunded damaged tins",
+          totalAmount: 58.5,
+          discountAmount: 0,
+          taxAmount: 0,
+          amountPaid: 0,
+          paymentMode: "cash",
+          status: "refunded",
+        },
+        {
+          id: "sale-1037",
+          customerId: "cust-adwoa",
+          userId: adminId,
+          receiptNumber: `RCP-${todayStamp}-1037`,
+          date: isoDaysAgoAt(0, 8, 12),
+          details: "Counter POS",
+          totalAmount: 358.0,
+          discountAmount: 0,
+          taxAmount: 0,
+          amountPaid: 358.0,
+          paymentMode: "cash",
+          status: "completed",
+        },
+        {
+          id: "sale-1030",
+          customerId: "cust-walkin",
+          userId: adminId,
+          receiptNumber: `RCP-${yestStamp}-1030`,
+          date: isoDaysAgoAt(1, 16, 20),
+          details: "Counter POS",
+          totalAmount: 1185.0,
+          discountAmount: 0,
+          taxAmount: 0,
+          amountPaid: 1185.0,
+          paymentMode: "cash",
+          status: "completed",
+        },
+      ])
+      .run();
+
+    tx.insert(schema.saleItems)
+      .values([
+        { id: "si-1", salesId: "sale-1042", productId: "prod-002", quantity: 2, unitPrice: 52.0 },
+        { id: "si-2", salesId: "sale-1042", productId: "prod-001", quantity: 4, unitPrice: 16.0 },
+        { id: "si-3", salesId: "sale-1042", productId: "prod-011", quantity: 1, unitPrice: 24.5 },
+        { id: "si-4", salesId: "sale-1041", productId: "prod-004", quantity: 2, unitPrice: 138.0 },
+        { id: "si-5", salesId: "sale-1041", productId: "prod-005", quantity: 2, unitPrice: 44.0 },
+        { id: "si-6", salesId: "sale-1040", productId: "prod-008", quantity: 3, unitPrice: 18.5 },
+        { id: "si-7", salesId: "sale-1040", productId: "prod-007", quantity: 6, unitPrice: 12.5 },
+        { id: "si-8", salesId: "sale-1040", productId: "prod-009", quantity: 4, unitPrice: 24.0 },
+        { id: "si-9", salesId: "sale-1039", productId: "prod-006", quantity: 12, unitPrice: 7.0 },
+        { id: "si-10", salesId: "sale-1039", productId: "prod-003", quantity: 5, unitPrice: 14.5 },
+        { id: "si-11", salesId: "sale-1038", productId: "prod-010", quantity: 3, unitPrice: 19.5 },
+        { id: "si-12", salesId: "sale-1037", productId: "prod-001", quantity: 10, unitPrice: 16.0 },
+        { id: "si-13", salesId: "sale-1037", productId: "prod-002", quantity: 3, unitPrice: 52.0 },
+        { id: "si-14", salesId: "sale-1037", productId: "prod-006", quantity: 6, unitPrice: 7.0 },
+        { id: "si-15", salesId: "sale-1030", productId: "prod-004", quantity: 6, unitPrice: 138.0 },
+        { id: "si-16", salesId: "sale-1030", productId: "prod-001", quantity: 15, unitPrice: 16.0 },
+        { id: "si-17", salesId: "sale-1030", productId: "prod-008", quantity: 6, unitPrice: 19.5 },
+      ])
+      .run();
+  });
+}
+
+export async function ensureDbReady(): Promise<ExpoSqliteDrizzleDb> {
+  if (!readyPromise) {
+    readyPromise = (async () => {
+      const sqlite = getRawSqlite();
+      ensureTablesSync(sqlite);
+      const db = getDrizzleDb();
+      await seedDatabaseIfEmpty(db);
+      return db;
+    })().catch((err) => {
+      readyPromise = null;
+      throw err;
+    });
+  }
+  return readyPromise;
+}

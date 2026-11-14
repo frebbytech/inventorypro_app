@@ -11,8 +11,8 @@ import type {
 } from "@/types/domain";
 
 /**
- * Live Expo Router API endpoints backed by SQLite (`node:sqlite`)
- * under `/mobile/app/api/mobile/v1/**+api.ts`.
+ * REST endpoint contract for optional external InventoryPro HTTP API sync
+ * (`EXPO_PUBLIC_API_BASE_URL`). By default, mobile uses on-device `expo-sqlite` + Drizzle ORM.
  */
 export const API_ENDPOINTS = {
   health: "GET /api/mobile/v1/health",

@@ -1,6 +1,6 @@
 import Constants from "expo-constants";
 import { Platform } from "react-native";
-import type { InventoryProApiClient } from "./client";
+import type { AuthenticatedApiClient } from "./sqliteAdapter";
 import type {
   AdjustStockInput,
   AuthLoginPayload,
@@ -58,11 +58,11 @@ export interface HttpApiClientConfig {
 }
 
 /**
- * Phase 2 live HTTP client talking directly to Expo Router API routes (`+api.ts`)
- * backed by SQLite (`node:sqlite`).
+ * Optional external HTTP client for connecting to a remote InventoryPro backend
+ * when `EXPO_PUBLIC_API_BASE_URL` is configured.
  */
-export class HttpApiClient implements InventoryProApiClient {
-  readonly adapterName = "Expo API Routes (SQLite)";
+export class HttpApiClient implements AuthenticatedApiClient {
+  readonly adapterName = "Remote HTTP API";
   readonly isDemo = false;
 
   private readonly baseUrl: string;

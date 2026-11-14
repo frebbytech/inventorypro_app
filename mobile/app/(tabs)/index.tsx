@@ -226,7 +226,7 @@ export default function TodayScreen() {
                 ]}
               >
                 Connected to {api.adapterName}. Stock adjustments and quick POS
-                sales persist directly to SQLite.
+                sales persist directly to on-device SQLite via Drizzle ORM.
               </Text>
             </View>
           </>

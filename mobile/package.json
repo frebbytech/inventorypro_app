@@ -12,15 +12,17 @@
   },
   "dependencies": {
     "@expo-google-fonts/figtree": "^0.4.0",
-    "better-sqlite3": "^13.2.0",
+    "drizzle-orm": "^0.45.4",
     "expo": "^58.0.25",
     "expo-camera": "~58.0.14",
     "expo-constants": "~58.0.16",
+    "expo-crypto": "~58.0.8",
     "expo-font": "~58.0.12",
     "expo-linking": "~58.0.17",
     "expo-router": "~58.0.31",
     "expo-secure-store": "~58.0.3",
     "expo-splash-screen": "~58.0.14",
+    "expo-sqlite": "~58.0.17",
     "expo-status-bar": "~58.0.5",
     "lucide-react-native": "^1.73.0",
     "react": "19.3.0",
@@ -31,10 +33,9 @@
   },
   "devDependencies": {
     "@babel/core": "^7.26.0",
-    "@types/better-sqlite3": "^9.6.0",
-    "@types/node": "^22.20.5",
     "@types/react": "~19.3.0",
     "babel-preset-expo": "~58.0.25",
+    "drizzle-kit": "^0.31.11",
     "typescript": "~6.0.3"
   }
 }

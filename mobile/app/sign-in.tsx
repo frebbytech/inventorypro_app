@@ -53,7 +53,7 @@ export default function SignInScreen() {
       await signIn(trimmed, passValue);
     } catch (err) {
       setError(
-        err instanceof Error ? err.message : "Unable to sign in. Check API server.",
+        err instanceof Error ? err.message : "Unable to sign in. Check your credentials.",
       );
     } finally {
       setSubmitting(false);
@@ -76,7 +76,7 @@ export default function SignInScreen() {
           ]}
         >
           <View style={styles.topActions}>
-            <Badge label="Phase 2 · Expo API + SQLite" variant="outline" />
+            <Badge label="Expo SQLite · Drizzle ORM" variant="outline" />
             <Pressable
               onPress={toggleMode}
               accessibilityLabel="Toggle theme"
