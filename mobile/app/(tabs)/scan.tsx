@@ -594,7 +594,11 @@ const styles = StyleSheet.create({
     position: "relative",
   },
   overlay: {
-    ...StyleSheet.absoluteFillObject,
+    position: "absolute",
+    top: 0,
+    right: 0,
+    bottom: 0,
+    left: 0,
     alignItems: "center",
     justifyContent: "center",
     gap: 12,
