@@ -1,0 +1,46 @@
+{
+  "expo": {
+    "name": "Inventory Pro",
+    "slug": "inventory-pro-mobile",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "scheme": "inventorypro",
+    "userInterfaceStyle": "automatic",
+    "newArchEnabled": true,
+    "web": {
+      "bundler": "metro",
+      "output": "server"
+    },
+    "splash": {
+      "backgroundColor": "#F5F5F5",
+      "resizeMode": "contain"
+    },
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.frebbytech.inventorypro"
+    },
+    "android": {
+      "package": "com.frebbytech.inventorypro",
+      "adaptiveIcon": {
+        "backgroundColor": "#0F172A"
+      },
+      "permissions": [
+        "android.permission.CAMERA"
+      ]
+    },
+    "plugins": [
+      "expo-router",
+      "expo-font",
+      "expo-secure-store",
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "Allow Inventory Pro to access your camera to scan product barcodes."
+        }
+      ]
+    ],
+    "experiments": {
+      "typedRoutes": true
+    }
+  }
+}

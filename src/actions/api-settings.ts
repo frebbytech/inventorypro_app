@@ -1,0 +1,238 @@
+"use server";
+
+import db from "@/db/knex";
+import { revalidatePath } from "next/cache";
+import { Result, ApiSettings, UpdateApiSettingsInput } from "@/types/globals";
+import { encrypt, decrypt, maskSecret } from "@/lib/encryption";
+import { getCurrentUser } from "./_actions";
+
+/**
+ * Get API settings with sensitive fields masked.
+ */
+export async function getApiSettings(): Promise<Result<ApiSettings>> {
+  try {
+    const user = await getCurrentUser();
+    if (!user?.id) return Result.fail("Unauthorized");
+
+    let row = await db("api_settings").where("user_id", user?.id).first();
+
+    // Create default row on first access
+    if (!row) {
+      const [created] = await db("api_settings")
+        .insert({
+          user_id: user?.id,
+          arkessel_base_url: "https://sms.arkesel.com/api/v2/sms/send",
+          smtp_host: "smtp.gmail.com",
+          smtp_port: 587,
+          smtp_secure: false,
+        })
+        .returning("*");
+      row = created;
+    }
+
+    const safe: ApiSettings = {
+      id: row.id,
+      user_id: row.user_id,
+
+      arkessel_api_key: row.arkessel_api_key
+        ? maskSecret(decrypt(row.arkessel_api_key))
+        : "",
+      arkessel_sender_id: row.arkessel_sender_id || "",
+      arkessel_base_url:
+        row.arkessel_base_url || "https://sms.arkesel.com/api/v2/sms/send",
+      has_arkessel_api_key: !!row.arkessel_api_key,
+
+      smtp_host: row.smtp_host || "smtp.gmail.com",
+      smtp_port: row.smtp_port || 587,
+      smtp_secure: row.smtp_secure || false,
+      smtp_user: row.smtp_user || "",
+      smtp_password: row.smtp_password
+        ? maskSecret(decrypt(row.smtp_password))
+        : "",
+      smtp_from_name: row.smtp_from_name || "",
+      smtp_from_email: row.smtp_from_email || "",
+      has_smtp_password: !!row.smtp_password,
+
+      created_at: row.created_at,
+      updated_at: row.updated_at,
+    };
+
+    return Result.ok(safe);
+  } catch (error: any) {
+    console.error("Failed to fetch API settings:", error);
+    return Result.fail(error?.message || "Failed to fetch API settings");
+  }
+}
+
+/**
+ * Update API settings.
+ * Rules for secrets:
+ *  - If the value is empty string → clear the stored secret.
+ *  - If the value starts with "••••" (masked) → ignore (unchanged).
+ *  - Otherwise → encrypt and store.
+ */
+export async function updateApiSettings(
+  input: UpdateApiSettingsInput,
+): Promise<Result<{ success: true }>> {
+  try {
+    const user = await getCurrentUser();
+    if (!user?.id) return Result.fail("Unauthorized");
+
+    const update: any = { updated_at: db.fn.now() };
+
+    // Non-secret fields
+    if (input.arkessel_sender_id !== undefined)
+      update.arkessel_sender_id = input.arkessel_sender_id;
+    if (input.arkessel_base_url !== undefined)
+      update.arkessel_base_url = input.arkessel_base_url;
+
+    if (input.smtp_host !== undefined) update.smtp_host = input.smtp_host;
+    if (input.smtp_port !== undefined) update.smtp_port = input.smtp_port;
+    if (input.smtp_secure !== undefined) update.smtp_secure = input.smtp_secure;
+    if (input.smtp_user !== undefined) update.smtp_user = input.smtp_user;
+    if (input.smtp_from_name !== undefined)
+      update.smtp_from_name = input.smtp_from_name;
+    if (input.smtp_from_email !== undefined)
+      update.smtp_from_email = input.smtp_from_email;
+
+    // Secrets
+    if (input.arkessel_api_key !== undefined) {
+      const val = input.arkessel_api_key;
+      if (val === "") {
+        update.arkessel_api_key = null;
+      } else if (!val.startsWith("••••")) {
+        update.arkessel_api_key = encrypt(val);
+      }
+    }
+
+    if (input.smtp_password !== undefined) {
+      const val = input.smtp_password;
+      if (val === "") {
+        update.smtp_password = null;
+      } else if (!val.startsWith("••••")) {
+        update.smtp_password = encrypt(val);
+      }
+    }
+
+    await db("api_settings").where("user_id", user?.id).update(update);
+
+    revalidatePath("/admin/settings");
+    return Result.ok({ success: true });
+  } catch (error: any) {
+    console.error("Failed to update API settings:", error);
+    return Result.fail(error?.message || "Failed to update API settings");
+  }
+}
+
+/**
+ * Test the Arkessel SMS connection by sending a test SMS.
+ * (Uses the stored key.)
+ */
+export async function testSmsConnection(
+  toPhone: string,
+): Promise<Result<{ success: true }>> {
+  try {
+    const user = await getCurrentUser();
+    if (!user?.id) return Result.fail("Unauthorized");
+
+    const row = await db("api_settings").where("user_id", user?.id).first();
+    if (!row?.arkessel_api_key)
+      return Result.fail("Arkessel API key not configured");
+
+    const apiKey = decrypt(row.arkessel_api_key);
+    const sender = row.arkessel_sender_id || "InvPro";
+    const baseUrl =
+      row.arkessel_base_url || "https://sms.arkesel.com/api/v2/sms/send";
+
+    const response = await fetch(baseUrl, {
+      method: "POST",
+      headers: {
+        "api-key": apiKey,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        sender: sender,
+        message: "This is a test SMS from your inventory app.",
+        recipients: [toPhone],
+      }),
+    });
+
+    
+    if (!response.ok) {
+        const text = await response.text();
+        return Result.fail(`SMS provider error: ${response.status} ${text}`);
+    }
+    
+    const data = await response.json();
+    // console.log(data)
+    // Arkessel returns { status: "success", ... } or similar
+    if (data?.status && data.status !== "success") {
+      return Result.fail(data?.message || "Failed to send test SMS");
+    }
+
+    return Result.ok({ success: true });
+  } catch (error: any) {
+    console.error("SMS test error:", error);
+    return Result.fail(error?.message || "Failed to test SMS connection");
+  }
+}
+
+/**
+ * Test the Gmail SMTP connection using Nodemailer's verify().
+ */
+export async function testEmailConnection(): Promise<
+  Result<{ success: true }>
+> {
+  try {
+    const user = await getCurrentUser();
+    if (!user?.id) return Result.fail("Unauthorized");
+
+    const row = await db("api_settings").where("user_id", user?.id).first();
+    if (!row?.smtp_user || !row?.smtp_password)
+      return Result.fail("SMTP credentials not configured");
+
+    const nodemailer = await import("nodemailer");
+    const transporter = nodemailer.createTransport({
+      host: row.smtp_host || "smtp.gmail.com",
+      port: row.smtp_port || 587,
+      secure: !!row.smtp_secure,
+      auth: {
+        user: row.smtp_user,
+        pass: decrypt(row.smtp_password),
+      },
+    });
+
+    await transporter.verify();
+    return Result.ok({ success: true });
+  } catch (error: any) {
+    console.error("SMTP test error:", error);
+    return Result.fail(error?.message || "Failed to verify SMTP connection");
+  }
+}
+
+/**
+ * Internal helper: get decrypted credentials for other modules.
+ * Only call this from server-side code.
+ */
+export async function getDecryptedApiCredentials() {
+  const user = await getCurrentUser();
+  if (!user?.id) return null;
+  const row = await db("api_settings").where("user_id", user?.id).first();
+  if (!row) return null;
+  return {
+    arkessel: {
+      apiKey: row.arkessel_api_key ? decrypt(row.arkessel_api_key) : "",
+      senderId: row.arkessel_sender_id || "",
+      baseUrl: row.arkessel_base_url,
+    },
+    smtp: {
+      host: row.smtp_host,
+      port: row.smtp_port,
+      secure: row.smtp_secure,
+      user: row.smtp_user,
+      pass: row.smtp_password ? decrypt(row.smtp_password) : "",
+      fromName: row.smtp_from_name,
+      fromEmail: row.smtp_from_email,
+    },
+  };
+}

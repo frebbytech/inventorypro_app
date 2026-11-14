@@ -1,0 +1,49 @@
+name: EOD Sales Report Trigger
+
+on:
+  schedule:
+    # Run every 15 minutes (UTC).
+    # GitHub Actions schedules are not guaranteed to run exactly on time.
+    - cron: "*/15 * * * *"
+
+  workflow_dispatch:
+
+jobs:
+  trigger-eod-report:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+
+    steps:
+      - name: Trigger EOD report check
+        env:
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+          ENDPOINT: https://frebbypos.netlify.app/api/cron/eod-report
+        run: |
+          set -euo pipefail
+
+          response_file="$(mktemp)"
+
+          status="$(
+            curl \
+              --silent \
+              --show-error \
+              --fail-with-body \
+              --max-time 30 \
+              --retry 3 \
+              --retry-delay 5 \
+              --retry-all-errors \
+              -o "$response_file" \
+              -w "%{http_code}" \
+              -H "Authorization: Bearer ${CRON_SECRET}" \
+              -H "Accept: application/json" \
+              "$ENDPOINT"
+          )"
+
+          echo "HTTP status: $status"
+          echo "Response:"
+          cat "$response_file"
+
+          if [[ "$status" -lt 200 || "$status" -ge 300 ]]; then
+            echo "EOD endpoint returned HTTP $status"
+            exit 1
+          fi

@@ -1,0 +1,38 @@
+appId: com.frebbytech.inventorypro
+productName: InventoryPro
+copyright: Copyright © 2026 Frebbytech Solutions
+
+# asar: true
+
+directories:
+  output: dist
+
+files:
+  - dist-electron/**/*
+  - node_modules/**/*
+  - package.json
+
+asarUnpack:
+  - node_modules/next/**/*
+  - node_modules/sqlite3/**
+  - node_modules/sharp/**/*
+
+extraResources:
+  - from: dist-electron/migrations
+    to: migrations
+    filter: ["**/*"]
+    
+  - from: .next/standalone
+    to: standalone
+    filter: ["**/*"]
+
+  - from: certificates
+    to: certificates
+    filter: ["**/*"]
+
+win:
+  target:
+    - target: nsis
+      arch:
+        - x64
+  icon: build/icon.ico
