@@ -6,7 +6,7 @@ import {
   Package,
   Receipt,
   ScanBarcode,
-  Settings,
+  User,
 } from "lucide-react-native";
 import { useTheme } from "@/theme";
 
@@ -69,12 +69,10 @@ export default function TabLayout() {
         }}
       />
       <Tabs.Screen
-        name="settings"
+        name="account"
         options={{
-          title: "Settings",
-          tabBarIcon: ({ color, size }) => (
-            <Settings size={size} color={color} />
-          ),
+          title: "Account",
+          tabBarIcon: ({ color, size }) => <User size={size} color={color} />,
         }}
       />
     </Tabs>

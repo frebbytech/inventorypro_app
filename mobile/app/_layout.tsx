@@ -89,6 +89,20 @@ function ThemedNavigator() {
             headerBackTitle: "Sales",
           }}
         />
+        <Stack.Screen
+          name="settings"
+          options={{
+            title: "Settings",
+            headerBackTitle: "Account",
+          }}
+        />
+        <Stack.Screen
+          name="audit-logs"
+          options={{
+            title: "Audit Logs",
+            headerBackTitle: "Account",
+          }}
+        />
       </Stack>
     </>
   );

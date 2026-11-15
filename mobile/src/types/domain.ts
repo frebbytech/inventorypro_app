@@ -264,3 +264,22 @@ export interface SalesQueryParams {
   status?: "all" | SaleStatus;
   dateRange?: SalesDateRange;
 }
+
+export interface AuditLogItem {
+  id: string;
+  userId?: string | null;
+  username: string;
+  userFullName: string;
+  entityType: string;
+  entityId: string;
+  action: string;
+  oldValues?: string | null;
+  newValues?: string | null;
+  createdAt: string;
+}
+
+export interface AuditLogsQueryParams {
+  query?: string;
+  action?: string;
+  limit?: number;
+}

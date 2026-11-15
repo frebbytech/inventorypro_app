@@ -12,6 +12,7 @@ import {
   getSaleReceipt as dbGetSaleReceipt,
   getSalesReport as dbGetSalesReport,
   getTodayDashboard as dbGetTodayDashboard,
+  listAuditLogs as dbListAuditLogs,
   listCategories as dbListCategories,
   listProducts as dbListProducts,
   listSales as dbListSales,
@@ -23,6 +24,8 @@ import {
 } from "@/db/queries";
 import type {
   AdjustStockInput,
+  AuditLogItem,
+  AuditLogsQueryParams,
   AuthLoginPayload,
   AuthLoginResponse,
   AuthSessionResponse,
@@ -192,6 +195,11 @@ export class ExpoSqliteDrizzleClient implements AuthenticatedApiClient {
   async getSalesReport(dateRange: SalesDateRange = "30d"): Promise<SalesReportData> {
     const { db } = await this.requireSession();
     return dbGetSalesReport(db, dateRange);
+  }
+
+  async getAuditLogs(params?: AuditLogsQueryParams): Promise<AuditLogItem[]> {
+    const { db } = await this.requireSession();
+    return dbListAuditLogs(db, params);
   }
 
   async updateStockAlertThreshold(threshold: number): Promise<StoreProfile> {

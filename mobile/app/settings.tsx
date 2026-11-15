@@ -8,7 +8,6 @@ import {
   Text,
   View,
 } from "react-native";
-import { SafeAreaView } from "react-native-safe-area-context";
 import {
   AlertCircle,
   Building2,
@@ -25,7 +24,6 @@ import {
   Sun,
 } from "lucide-react-native";
 import { useAuth } from "@/api/AuthProvider";
-import { DemoBanner } from "@/components/DemoBanner";
 import {
   Button,
   Card,
@@ -233,7 +231,7 @@ export default function SettingsScreen() {
     setStoreEmail(store.storeEmail);
     setCurrency(store.currency || "GHS");
     setTaxPercentText(formatTaxPercentInput(store.taxRate));
-  }, [store]);
+  }, [store, isBusinessDirty]);
 
   const handleSaveBusinessInfo = async () => {
     setBusinessError(null);
@@ -321,15 +319,7 @@ export default function SettingsScreen() {
     normalizedTypedHex !== null && normalizedTypedHex !== accentColor;
 
   return (
-    <SafeAreaView
-      edges={["top"]}
-      style={[styles.safe, { backgroundColor: colors.background }]}
-    >
-      <DemoBanner
-        title="Settings"
-        subtitle={store?.storeName || "Business info & appearance"}
-      />
-
+    <View style={[styles.safe, { backgroundColor: colors.background }]}>
       <KeyboardAvoidingView
         style={{ flex: 1 }}
         behavior={Platform.OS === "ios" ? "padding" : undefined}
@@ -891,7 +881,7 @@ export default function SettingsScreen() {
           )}
         </ScrollView>
       </KeyboardAvoidingView>
-    </SafeAreaView>
+    </View>
   );
 }
 

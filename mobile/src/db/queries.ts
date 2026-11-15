@@ -16,6 +16,8 @@ import {
 import {
   LOW_STOCK_THRESHOLD,
   type AdjustStockInput,
+  type AuditLogItem,
+  type AuditLogsQueryParams,
   type AuthLoginResponse,
   type AuthSessionResponse,
   type BulkImportProductsResult,
@@ -1598,6 +1600,81 @@ export function bulkCreateProducts(
       createdCount: createdProducts.length,
       newCategoriesCount,
       products: createdProducts,
+    };
+  });
+}
+
+export function listAuditLogs(
+  db: ExpoSqliteDrizzleDb,
+  params?: AuditLogsQueryParams,
+): AuditLogItem[] {
+  const limit =
+    typeof params?.limit === "number" && params.limit > 0
+      ? Math.min(200, Math.trunc(params.limit))
+      : 80;
+
+  const conditions = [];
+  if (params?.query?.trim()) {
+    const pattern = `%${params.query.trim()}%`;
+    conditions.push(
+      or(
+        like(auditLogs.entityType, pattern),
+        like(auditLogs.entityId, pattern),
+        like(auditLogs.newValues, pattern),
+        like(users.username, pattern),
+      ),
+    );
+  }
+
+  if (params?.action && params.action !== "all") {
+    conditions.push(
+      eq(
+        auditLogs.action,
+        params.action as typeof auditLogs.$inferSelect.action,
+      ),
+    );
+  }
+
+  const baseQuery = db
+    .select({
+      id: auditLogs.id,
+      userId: auditLogs.userId,
+      username: users.username,
+      firstname: users.firstname,
+      lastname: users.lastname,
+      entityType: auditLogs.entityType,
+      entityId: auditLogs.entityId,
+      action: auditLogs.action,
+      oldValues: auditLogs.oldValues,
+      newValues: auditLogs.newValues,
+      createdAt: auditLogs.createdAt,
+    })
+    .from(auditLogs)
+    .leftJoin(users, eq(auditLogs.userId, users.id));
+
+  const rows =
+    conditions.length > 0
+      ? baseQuery
+          .where(and(...conditions))
+          .orderBy(desc(auditLogs.createdAt))
+          .limit(limit)
+          .all()
+      : baseQuery.orderBy(desc(auditLogs.createdAt)).limit(limit).all();
+
+  return rows.map((r) => {
+    const fullName = [r.firstname, r.lastname].filter(Boolean).join(" ").trim();
+    const username = r.username ?? "system";
+    return {
+      id: r.id,
+      userId: r.userId,
+      username,
+      userFullName: fullName || username,
+      entityType: r.entityType,
+      entityId: r.entityId,
+      action: r.action,
+      oldValues: r.oldValues,
+      newValues: r.newValues,
+      createdAt: r.createdAt,
     };
   });
 }

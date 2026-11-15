@@ -1,5 +1,7 @@
 import type {
   AdjustStockInput,
+  AuditLogItem,
+  AuditLogsQueryParams,
   BulkImportProductsResult,
   CreateProductInput,
   CreateSaleInput,
@@ -39,6 +41,7 @@ export const API_ENDPOINTS = {
   saleReceipt: "GET /api/mobile/v1/sales/:id/receipt",
   saleRefund: "POST /api/mobile/v1/sales/:id/refund",
   salesReport: "GET /api/mobile/v1/sales/report?range=",
+  auditLogs: "GET /api/mobile/v1/audit-logs?q=&action=&limit=",
   storeThresholdUpdate: "PATCH /api/mobile/v1/settings/stock-threshold",
   storeBusinessUpdate: "PATCH /api/mobile/v1/settings/business",
 } as const;
@@ -70,6 +73,7 @@ export interface InventoryProApiClient {
     input?: RefundSaleInput,
   ): Promise<SaleReceiptDetail>;
   getSalesReport(dateRange?: SalesDateRange): Promise<SalesReportData>;
+  getAuditLogs(params?: AuditLogsQueryParams): Promise<AuditLogItem[]>;
   updateStockAlertThreshold(threshold: number): Promise<StoreProfile>;
   updateBusinessSettings(input: UpdateBusinessSettingsInput): Promise<StoreProfile>;
 }

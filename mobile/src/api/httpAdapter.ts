@@ -3,6 +3,8 @@ import { Platform } from "react-native";
 import type { AuthenticatedApiClient } from "./sqliteAdapter";
 import type {
   AdjustStockInput,
+  AuditLogItem,
+  AuditLogsQueryParams,
   AuthLoginPayload,
   AuthLoginResponse,
   AuthSessionResponse,
@@ -257,6 +259,15 @@ export class HttpApiClient implements AuthenticatedApiClient {
     return this.request<SalesReportData>(
       `/api/mobile/v1/sales/report?range=${encodeURIComponent(dateRange)}`,
     );
+  }
+
+  getAuditLogs(params?: AuditLogsQueryParams): Promise<AuditLogItem[]> {
+    const qs = new URLSearchParams();
+    if (params?.query) qs.set("q", params.query);
+    if (params?.action && params.action !== "all") qs.set("action", params.action);
+    if (typeof params?.limit === "number") qs.set("limit", String(params.limit));
+    const suffix = qs.toString() ? `?${qs.toString()}` : "";
+    return this.request<AuditLogItem[]>(`/api/mobile/v1/audit-logs${suffix}`);
   }
 
   updateStockAlertThreshold(threshold: number): Promise<StoreProfile> {

@@ -8,6 +8,8 @@ import {
 } from "./demoData";
 import {
   LOW_STOCK_THRESHOLD,
+  type AuditLogItem,
+  type AuditLogsQueryParams,
   type BulkImportProductsResult,
   type CreateProductInput,
   type PaymentBreakdownItem,
@@ -365,6 +367,11 @@ export class DemoDataAdapter implements InventoryProApiClient {
         .sort((a, b) => b.revenue - a.revenue)
         .slice(0, 5),
     };
+  }
+
+  async getAuditLogs(_params?: AuditLogsQueryParams): Promise<AuditLogItem[]> {
+    await this.simulateLatency(60);
+    return [];
   }
 
   async updateStockAlertThreshold(threshold: number): Promise<StoreProfile> {

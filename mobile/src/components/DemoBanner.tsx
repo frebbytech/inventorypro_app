@@ -1,35 +1,41 @@
 import React, { useState } from "react";
 import { Modal, Pressable, StyleSheet, Text, View } from "react-native";
-import { Database, FlaskConical, LogOut, Moon, Sun } from "lucide-react-native";
-import { useApiClient } from "@/api/ApiProvider";
+import { useRouter } from "expo-router";
+import { LogOut, Settings, User } from "lucide-react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useAuth } from "@/api/AuthProvider";
-import { Button } from "@/components/ui";
+import { SignOutConfirmDialog } from "@/components/SignOutConfirmDialog";
 import { useTheme } from "@/theme";
 
-export function DemoBanner({ title, subtitle }: { title: string; subtitle?: string }) {
-  const { theme, mode, toggleMode } = useTheme();
-  const api = useApiClient();
-  const { user, signOut } = useAuth();
-  const { colors, radii, spacing, typography, fontFamilies } = theme;
+export function DemoBanner({
+  title,
+  subtitle,
+}: {
+  title: string;
+  subtitle?: string;
+}) {
+  const { theme } = useTheme();
+  const { user } = useAuth();
+  const router = useRouter();
+  const insets = useSafeAreaInsets();
+  const { colors, radii, spacing, typography, fontFamilies, shadows } = theme;
 
-  const [logoutConfirmOpen, setLogoutConfirmOpen] = useState(false);
-  const [signingOut, setSigningOut] = useState(false);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [logoutOpen, setLogoutOpen] = useState(false);
 
-  const handleConfirmSignOut = async () => {
-    if (signingOut) return;
-    setSigningOut(true);
-    try {
-      await signOut();
-      setLogoutConfirmOpen(false);
-    } finally {
-      setSigningOut(false);
-    }
-  };
-
-  const displayName = user
+  const fullName = user
     ? [user.firstname, user.lastname].filter(Boolean).join(" ").trim() ||
       user.username
-    : "";
+    : "Guest";
+
+  const initials = user
+    ? (user.firstname?.[0] || user.username?.[0] || "U").toUpperCase()
+    : "U";
+
+  const navigateAndClose = (path: "/(tabs)/account" | "/settings") => {
+    setMenuOpen(false);
+    router.push(path);
+  };
 
   return (
     <>
@@ -62,173 +68,173 @@ export function DemoBanner({ title, subtitle }: { title: string; subtitle?: stri
             ) : null}
           </View>
 
-          <View style={styles.actions}>
-            {api.isDemo ? (
-              <View
-                style={[
-                  styles.statusChip,
-                  {
-                    backgroundColor: colors.demoBannerBg,
-                    borderColor: colors.demoBannerBorder,
-                    borderRadius: radii.md,
-                    paddingHorizontal: spacing.sm,
-                    paddingVertical: spacing.xs,
-                  },
-                ]}
-              >
-                <FlaskConical size={13} color={colors.demoBannerText} />
-                <Text
-                  style={[
-                    typography.micro,
-                    { color: colors.demoBannerText, fontFamily: fontFamilies.bold },
-                  ]}
-                >
-                  DEMO DATA
-                </Text>
-              </View>
-            ) : (
-              <View
-                style={[
-                  styles.statusChip,
-                  {
-                    backgroundColor: colors.successTint,
-                    borderColor: colors.successBorder,
-                    borderRadius: radii.md,
-                    paddingHorizontal: spacing.sm,
-                    paddingVertical: spacing.xs,
-                  },
-                ]}
-              >
-                <Database size={12} color={colors.successText} />
-                <Text
-                  style={[
-                    typography.micro,
-                    { color: colors.successText, fontFamily: fontFamilies.bold },
-                  ]}
-                >
-                  {user ? user.username.toUpperCase() : "SQLITE"}
-                </Text>
-              </View>
-            )}
-
-            <Pressable
-              onPress={toggleMode}
-              accessibilityLabel={`Switch to ${mode === "dark" ? "light" : "dark"} theme`}
-              style={({ pressed }) => [
-                styles.iconBtn,
-                {
-                  backgroundColor: colors.muted,
-                  borderColor: colors.border,
-                  borderRadius: radii.md,
-                  opacity: pressed ? 0.75 : 1,
-                },
-              ]}
-            >
-              {mode === "dark" ? (
-                <Sun size={16} color={colors.foreground} />
-              ) : (
-                <Moon size={16} color={colors.foreground} />
-              )}
-            </Pressable>
-
-            {user ? (
-              <Pressable
-                onPress={() => setLogoutConfirmOpen(true)}
-                accessibilityLabel="Sign out"
-                style={({ pressed }) => [
-                  styles.iconBtn,
-                  {
-                    backgroundColor: colors.muted,
-                    borderColor: colors.border,
-                    borderRadius: radii.md,
-                    opacity: pressed ? 0.75 : 1,
-                  },
-                ]}
-              >
-                <LogOut size={15} color={colors.foreground} />
-              </Pressable>
-            ) : null}
-          </View>
-        </View>
-      </View>
-
-      <Modal
-        visible={logoutConfirmOpen}
-        transparent
-        animationType="fade"
-        onRequestClose={() => {
-          if (!signingOut) setLogoutConfirmOpen(false);
-        }}
-      >
-        <View style={styles.dialogBackdrop}>
-          <View
-            style={[
-              styles.dialogCard,
+          <Pressable
+            onPress={() => setMenuOpen(true)}
+            accessibilityLabel="Open account menu"
+            accessibilityRole="button"
+            style={({ pressed }) => [
+              styles.avatarBtn,
               {
-                backgroundColor: colors.card,
+                backgroundColor: colors.muted,
                 borderColor: colors.border,
-                borderRadius: radii["2xl"],
-                padding: spacing.lg,
+                opacity: pressed ? 0.78 : 1,
               },
             ]}
           >
-            <View style={styles.dialogHeader}>
-              <View
+            <Text
+              style={[
+                typography.bodySemibold,
+                { color: colors.foreground, fontFamily: fontFamilies.bold },
+              ]}
+            >
+              {initials}
+            </Text>
+          </Pressable>
+        </View>
+      </View>
+
+      {/* Account Avatar Dropdown matching desktop UserNav */}
+      <Modal
+        visible={menuOpen}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setMenuOpen(false)}
+      >
+        <Pressable
+          style={styles.menuBackdrop}
+          onPress={() => setMenuOpen(false)}
+        >
+          <Pressable
+            onPress={() => {}}
+            style={[
+              styles.dropdownCard,
+              shadows.card,
+              {
+                marginTop: Math.max(insets.top, 8) + 54,
+                marginRight: spacing.base,
+                backgroundColor: colors.popover,
+                borderColor: colors.border,
+                borderRadius: radii.xl,
+              },
+            ]}
+          >
+            {/* User Label Header */}
+            <View
+              style={[
+                styles.dropdownHeader,
+                {
+                  paddingHorizontal: spacing.md + 2,
+                  paddingVertical: spacing.md,
+                },
+              ]}
+            >
+              <Text
+                numberOfLines={1}
                 style={[
-                  styles.dialogIconBox,
+                  typography.bodySemibold,
+                  { color: colors.popoverForeground },
+                ]}
+              >
+                {fullName}
+              </Text>
+              {user?.email ? (
+                <Text
+                  numberOfLines={1}
+                  style={[
+                    typography.caption,
+                    { color: colors.mutedForeground, marginTop: 1 },
+                  ]}
+                >
+                  {user.email}
+                </Text>
+              ) : null}
+            </View>
+
+            <View
+              style={[styles.separator, { backgroundColor: colors.border }]}
+            />
+
+            {/* Navigation Items */}
+            <View style={{ padding: 6, gap: 2 }}>
+              <Pressable
+                onPress={() => navigateAndClose("/(tabs)/account")}
+                style={({ pressed }) => [
+                  styles.menuItem,
                   {
-                    backgroundColor: colors.dangerTint,
-                    borderColor: colors.dangerBorder,
-                    borderRadius: radii.xl,
+                    borderRadius: radii.lg,
+                    backgroundColor: pressed ? colors.accent : "transparent",
                   },
                 ]}
               >
-                <LogOut size={20} color={colors.dangerText} />
-              </View>
-              <View style={{ flex: 1 }}>
-                <Text style={[typography.titleXsm, { color: colors.foreground }]}>
-                  Sign out?
-                </Text>
+                <User size={15} color={colors.mutedForeground} />
                 <Text
-                  style={[
-                    typography.caption,
-                    { color: colors.mutedForeground, marginTop: 2 },
-                  ]}
+                  style={[typography.bodyMedium, { color: colors.foreground }]}
                 >
-                  {displayName} (@{user?.username})
+                  Profile
                 </Text>
-              </View>
+              </Pressable>
+
+              <Pressable
+                onPress={() => navigateAndClose("/settings")}
+                style={({ pressed }) => [
+                  styles.menuItem,
+                  {
+                    borderRadius: radii.lg,
+                    backgroundColor: pressed ? colors.accent : "transparent",
+                  },
+                ]}
+              >
+                <Settings size={15} color={colors.mutedForeground} />
+                <Text
+                  style={[typography.bodyMedium, { color: colors.foreground }]}
+                >
+                  Settings
+                </Text>
+              </Pressable>
             </View>
 
-            <Text
-              style={[
-                typography.body,
-                { color: colors.mutedForeground, marginTop: spacing.md },
-              ]}
-            >
-              Are you sure you want to log out? You will be returned to the sign-in
-              screen. Your local SQLite products, sales, and settings remain saved.
-            </Text>
-
-            <View style={[styles.dialogActions, { marginTop: spacing.lg }]}>
-              <Button
-                title="Cancel"
-                variant="outline"
-                style={{ flex: 1 }}
-                disabled={signingOut}
-                onPress={() => setLogoutConfirmOpen(false)}
-              />
-              <Button
-                title={signingOut ? "Signing out..." : "Log out"}
-                variant="destructive"
-                style={{ flex: 1 }}
-                loading={signingOut}
-                onPress={() => void handleConfirmSignOut()}
-              />
-            </View>
-          </View>
-        </View>
+            {user ? (
+              <>
+                <View
+                  style={[styles.separator, { backgroundColor: colors.border }]}
+                />
+                <View style={{ padding: 6 }}>
+                  <Pressable
+                    onPress={() => {
+                      setMenuOpen(false);
+                      setLogoutOpen(true);
+                    }}
+                    style={({ pressed }) => [
+                      styles.menuItem,
+                      {
+                        borderRadius: radii.lg,
+                        backgroundColor: pressed
+                          ? colors.dangerTint
+                          : "transparent",
+                      },
+                    ]}
+                  >
+                    <LogOut size={15} color={colors.dangerText} />
+                    <Text
+                      style={[
+                        typography.bodyMedium,
+                        { color: colors.dangerText },
+                      ]}
+                    >
+                      Log out
+                    </Text>
+                  </Pressable>
+                </View>
+              </>
+            ) : null}
+          </Pressable>
+        </Pressable>
       </Modal>
+
+      <SignOutConfirmDialog
+        visible={logoutOpen}
+        onClose={() => setLogoutOpen(false)}
+      />
     </>
   );
 }
@@ -247,50 +253,36 @@ const styles = StyleSheet.create({
     flex: 1,
     minWidth: 0,
   },
-  actions: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 8,
-  },
-  statusChip: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 5,
+  avatarBtn: {
+    width: 36,
+    height: 36,
+    borderRadius: 9999,
     borderWidth: 1,
-  },
-  iconBtn: {
-    width: 34,
-    height: 34,
     alignItems: "center",
     justifyContent: "center",
-    borderWidth: 1,
   },
-  dialogBackdrop: {
+  menuBackdrop: {
     flex: 1,
-    backgroundColor: "rgba(2, 6, 23, 0.60)",
-    justifyContent: "center",
-    padding: 20,
+    backgroundColor: "rgba(2, 6, 23, 0.18)",
+    alignItems: "flex-end",
   },
-  dialogCard: {
+  dropdownCard: {
+    width: 228,
     borderWidth: 1,
-    maxWidth: 400,
+    overflow: "hidden",
+  },
+  dropdownHeader: {
+    gap: 1,
+  },
+  separator: {
+    height: StyleSheet.hairlineWidth,
     width: "100%",
-    alignSelf: "center",
   },
-  dialogHeader: {
+  menuItem: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 12,
-  },
-  dialogIconBox: {
-    width: 42,
-    height: 42,
-    borderWidth: 1,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  dialogActions: {
-    flexDirection: "row",
     gap: 10,
+    paddingHorizontal: 10,
+    paddingVertical: 9,
   },
 });
