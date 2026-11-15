@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, gt, like, lt, lte, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, gte, like, lt, lte, or, sql } from "drizzle-orm";
 import type { ExpoSqliteDrizzleDb } from "./client";
 import { generateId, generateSessionToken, verifyPassword } from "./crypto";
 import {
@@ -21,19 +21,25 @@ import {
   type BulkImportProductsResult,
   type CreateProductInput,
   type CreateSaleInput,
+  type PaymentBreakdownItem,
   type PaymentMode,
   type ProductDetailResponse,
   type ProductItem,
   type ProductQueryParams,
   type ProductSaleRecord,
+  type RefundSaleInput,
   type SaleReceiptDetail,
+  type SalesDateRange,
   type SalesQueryParams,
+  type SalesReportData,
   type SaleStatus,
   type SaleTransactionSummary,
   type SessionUser,
   type StockAlertItem,
   type StoreProfile,
   type TodayDashboardData,
+  type TopSellingProductItem,
+  type UpdateBusinessSettingsInput,
 } from "@/types/domain";
 
 const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
@@ -122,6 +128,168 @@ export function getStoreProfile(db: ExpoSqliteDrizzleDb): StoreProfile {
     taxRate: Number(row.taxRate) || 0,
     stockAlertThreshold: Number(row.stockAlertThreshold) || LOW_STOCK_THRESHOLD,
   };
+}
+
+export function updateStoreStockThreshold(
+  db: ExpoSqliteDrizzleDb,
+  input: { userId: string; threshold: number },
+): StoreProfile {
+  const cleanThreshold = Math.trunc(Number(input.threshold));
+  if (!Number.isFinite(cleanThreshold) || cleanThreshold < 1 || cleanThreshold > 9999) {
+    throw new Error("Stock alert threshold must be between 1 and 9,999 units.");
+  }
+
+  const nowIso = new Date().toISOString();
+
+  db.transaction((tx) => {
+    const existing = tx
+      .select({ id: settings.id, stockAlertThreshold: settings.stockAlertThreshold })
+      .from(settings)
+      .limit(1)
+      .get();
+
+    if (existing) {
+      tx.update(settings)
+        .set({
+          stockAlertThreshold: cleanThreshold,
+          updatedAt: nowIso,
+        })
+        .where(eq(settings.id, existing.id))
+        .run();
+
+      tx.insert(auditLogs)
+        .values({
+          id: generateId("aud"),
+          userId: input.userId,
+          entityType: "settings",
+          entityId: existing.id,
+          action: "update",
+          oldValues: JSON.stringify({
+            stock_alert_threshold: existing.stockAlertThreshold,
+          }),
+          newValues: JSON.stringify({
+            stock_alert_threshold: cleanThreshold,
+          }),
+        })
+        .run();
+    } else {
+      const settingsId = generateId("settings");
+      tx.insert(settings)
+        .values({
+          id: settingsId,
+          userId: input.userId,
+          stockAlertThreshold: cleanThreshold,
+          createdAt: nowIso,
+          updatedAt: nowIso,
+        })
+        .run();
+    }
+  });
+
+  return getStoreProfile(db);
+}
+
+export function updateStoreBusinessProfile(
+  db: ExpoSqliteDrizzleDb,
+  input: UpdateBusinessSettingsInput & { userId: string },
+): StoreProfile {
+  const storeName = input.storeName.trim();
+  const storeAddress = input.storeAddress.trim();
+  const storePhone = input.storePhone.trim();
+  const storeEmail = input.storeEmail.trim();
+  const currency = (input.currency?.trim() || "GHS").toUpperCase();
+  const taxRate = Number(input.taxRate);
+
+  if (storeName.length < 2) {
+    throw new Error("Business name must be at least 2 characters.");
+  }
+  if (storeAddress.length < 5) {
+    throw new Error("Business address must be at least 5 characters.");
+  }
+  if (storeEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(storeEmail)) {
+    throw new Error("Enter a valid business email address.");
+  }
+  if (!Number.isFinite(taxRate) || taxRate < 0 || taxRate > 1) {
+    throw new Error("Tax rate must be between 0% and 100%.");
+  }
+
+  const normalizedTaxRate = Number(taxRate.toFixed(4));
+  const nowIso = new Date().toISOString();
+
+  db.transaction((tx) => {
+    const existing = tx
+      .select({
+        id: settings.id,
+        businessName: settings.businessName,
+        businessAddress: settings.businessAddress,
+        businessPhone: settings.businessPhone,
+        businessEmail: settings.businessEmail,
+        currency: settings.currency,
+        taxRate: settings.taxRate,
+      })
+      .from(settings)
+      .limit(1)
+      .get();
+
+    if (existing) {
+      tx.update(settings)
+        .set({
+          businessName: storeName,
+          businessAddress: storeAddress,
+          businessPhone: storePhone,
+          businessEmail: storeEmail,
+          currency,
+          taxRate: normalizedTaxRate,
+          updatedAt: nowIso,
+        })
+        .where(eq(settings.id, existing.id))
+        .run();
+
+      tx.insert(auditLogs)
+        .values({
+          id: generateId("aud"),
+          userId: input.userId,
+          entityType: "settings",
+          entityId: existing.id,
+          action: "update",
+          oldValues: JSON.stringify({
+            business_name: existing.businessName,
+            business_address: existing.businessAddress,
+            business_phone: existing.businessPhone,
+            business_email: existing.businessEmail,
+            currency: existing.currency,
+            tax_rate: existing.taxRate,
+          }),
+          newValues: JSON.stringify({
+            business_name: storeName,
+            business_address: storeAddress,
+            business_phone: storePhone,
+            business_email: storeEmail,
+            currency,
+            tax_rate: normalizedTaxRate,
+          }),
+        })
+        .run();
+    } else {
+      const settingsId = generateId("settings");
+      tx.insert(settings)
+        .values({
+          id: settingsId,
+          userId: input.userId,
+          businessName: storeName,
+          businessAddress: storeAddress,
+          businessPhone: storePhone,
+          businessEmail: storeEmail,
+          currency,
+          taxRate: normalizedTaxRate,
+          createdAt: nowIso,
+          updatedAt: nowIso,
+        })
+        .run();
+    }
+  });
+
+  return getStoreProfile(db);
 }
 
 export async function authenticateWithCredentials(
@@ -347,12 +515,11 @@ export function getTodayDashboard(db: ExpoSqliteDrizzleDb): TodayDashboardData {
     0,
   );
 
+  const storeThreshold = getStoreProfile(db).stockAlertThreshold || LOW_STOCK_THRESHOLD;
+
   const lowStockAlerts: StockAlertItem[] = productRows
-    .filter(
-      (p) => Number(p.stockQuantity) < (Number(p.lowStockThreshold) || LOW_STOCK_THRESHOLD),
-    )
+    .filter((p) => Number(p.stockQuantity) < storeThreshold)
     .map((p) => {
-      const threshold = Number(p.lowStockThreshold) || LOW_STOCK_THRESHOLD;
       const stock = Number(p.stockQuantity);
       return {
         id: p.id,
@@ -360,7 +527,7 @@ export function getTodayDashboard(db: ExpoSqliteDrizzleDb): TodayDashboardData {
         categoryName: p.categoryName,
         barcode: p.barcode || "",
         stock,
-        threshold,
+        threshold: storeThreshold,
         costPrice: Number(p.costPrice),
         sellingPrice: Number(p.unitPrice),
         severity: stock <= 0 ? ("critical" as const) : ("warning" as const),
@@ -421,17 +588,24 @@ export function listProducts(
     conditions.push(eq(productCategories.name, params.category));
   }
 
+  const configuredThreshold =
+    typeof params?.threshold === "number" &&
+    Number.isFinite(params.threshold) &&
+    params.threshold >= 1
+      ? Math.trunc(params.threshold)
+      : getStoreProfile(db).stockAlertThreshold || LOW_STOCK_THRESHOLD;
+
   if (params?.stockStatus === "out_of_stock") {
     conditions.push(lte(products.stockQuantity, 0));
   } else if (params?.stockStatus === "low_stock") {
     conditions.push(
       and(
         gt(products.stockQuantity, 0),
-        lt(products.stockQuantity, products.lowStockThreshold),
+        lt(products.stockQuantity, configuredThreshold),
       ),
     );
   } else if (params?.stockStatus === "in_stock") {
-    conditions.push(sql`${products.stockQuantity} >= ${products.lowStockThreshold}`);
+    conditions.push(sql`${products.stockQuantity} >= ${configuredThreshold}`);
   }
 
   const baseQuery = db
@@ -658,6 +832,18 @@ export function adjustProductStock(
   });
 }
 
+function getDateRangeStartDate(dateRange?: SalesDateRange): string | null {
+  if (!dateRange || dateRange === "all") return null;
+  const now = new Date();
+  if (dateRange === "today") {
+    return now.toISOString().slice(0, 10);
+  }
+  const daysBack = dateRange === "7d" ? 6 : 29;
+  const start = new Date(now);
+  start.setUTCDate(start.getUTCDate() - daysBack);
+  return start.toISOString().slice(0, 10);
+}
+
 export function listSales(
   db: ExpoSqliteDrizzleDb,
   params?: SalesQueryParams,
@@ -677,6 +863,15 @@ export function listSales(
 
   if (params?.paymentMode && params.paymentMode !== "all") {
     conditions.push(eq(sales.paymentMode, params.paymentMode));
+  }
+
+  if (params?.status && params.status !== "all") {
+    conditions.push(eq(sales.status, params.status));
+  }
+
+  const startDate = getDateRangeStartDate(params?.dateRange);
+  if (startDate) {
+    conditions.push(gte(sql`substr(${sales.date}, 1, 10)`, startDate));
   }
 
   const baseQuery = db
@@ -737,6 +932,7 @@ export function getSaleReceipt(
       customerName: customers.name,
       customerPhone: customers.phonenumber,
       saleDate: sales.date,
+      details: sales.details,
       totalAmount: sales.totalAmount,
       amountPaid: sales.amountPaid,
       discountAmount: sales.discountAmount,
@@ -806,12 +1002,272 @@ export function getSaleReceipt(
     paymentMode: row.paymentMode as PaymentMode,
     status: row.status as SaleStatus,
     attendantName: fullName || row.username,
+    notes: row.details?.trim() || undefined,
     storeName: store.storeName,
     storeAddress: store.storeAddress,
     storePhone: store.storePhone,
     storeEmail: store.storeEmail,
     currency: store.currency,
     items: mappedItems,
+  };
+}
+
+export function refundSale(
+  db: ExpoSqliteDrizzleDb,
+  input: RefundSaleInput & { saleId: string; userId: string },
+): SaleReceiptDetail {
+  const restockItems = input.restockItems !== false;
+  const cleanReason = input.reason?.trim() || "";
+
+  db.transaction((tx) => {
+    const existing = tx
+      .select({
+        id: sales.id,
+        receiptNumber: sales.receiptNumber,
+        status: sales.status,
+        amountPaid: sales.amountPaid,
+        totalAmount: sales.totalAmount,
+        details: sales.details,
+      })
+      .from(sales)
+      .where(or(eq(sales.id, input.saleId), eq(sales.receiptNumber, input.saleId)))
+      .limit(1)
+      .get();
+
+    if (!existing) {
+      throw new Error("Sale transaction not found.");
+    }
+    if (existing.status === "refunded") {
+      throw new Error("This receipt has already been refunded.");
+    }
+
+    const nowIso = new Date().toISOString();
+    const refundTag = cleanReason
+      ? `Refunded: ${cleanReason}`
+      : "Refunded via mobile POS";
+    const nextDetails = existing.details?.trim()
+      ? `${existing.details.trim()} · ${refundTag}`
+      : refundTag;
+
+    tx.update(sales)
+      .set({
+        status: "refunded",
+        amountPaid: 0,
+        details: nextDetails,
+        updatedAt: nowIso,
+      })
+      .where(eq(sales.id, existing.id))
+      .run();
+
+    let restockedUnits = 0;
+
+    if (restockItems) {
+      const itemsToRestore = tx
+        .select({
+          productId: saleItems.productId,
+          quantity: saleItems.quantity,
+          categoryId: products.categoryId,
+          currentStock: products.stockQuantity,
+        })
+        .from(saleItems)
+        .innerJoin(products, eq(saleItems.productId, products.id))
+        .where(eq(saleItems.salesId, existing.id))
+        .all();
+
+      for (const item of itemsToRestore) {
+        const qty = Math.max(0, Math.trunc(Number(item.quantity)));
+        if (qty <= 0) continue;
+        restockedUnits += qty;
+
+        tx.update(products)
+          .set({
+            stockQuantity: Number(item.currentStock) + qty,
+            updatedAt: nowIso,
+          })
+          .where(eq(products.id, item.productId))
+          .run();
+
+        tx.insert(inventory)
+          .values({
+            id: generateId("inv"),
+            userId: input.userId,
+            productId: item.productId,
+            productCategoryId: item.categoryId,
+            quantity: qty,
+            restockDate: nowIso.slice(0, 10),
+            notes: `Restock from refund (${existing.receiptNumber})`,
+          })
+          .run();
+      }
+    }
+
+    tx.insert(auditLogs)
+      .values({
+        id: generateId("aud"),
+        userId: input.userId,
+        entityType: "sale",
+        entityId: existing.id,
+        action: "update",
+        oldValues: JSON.stringify({
+          status: existing.status,
+          amountPaid: Number(existing.amountPaid),
+        }),
+        newValues: JSON.stringify({
+          status: "refunded",
+          amountPaid: 0,
+          restockItems,
+          restockedUnits,
+          reason: cleanReason || undefined,
+        }),
+      })
+      .run();
+  });
+
+  const updated = getSaleReceipt(db, input.saleId);
+  if (!updated) {
+    throw new Error("Sale refunded, but failed to reload receipt.");
+  }
+  return updated;
+}
+
+export function getSalesReport(
+  db: ExpoSqliteDrizzleDb,
+  dateRange: SalesDateRange = "30d",
+): SalesReportData {
+  const store = getStoreProfile(db);
+  const startDate = getDateRangeStartDate(dateRange);
+
+  const saleRows = startDate
+    ? db
+        .select({
+          id: sales.id,
+          totalAmount: sales.totalAmount,
+          discountAmount: sales.discountAmount,
+          taxAmount: sales.taxAmount,
+          paymentMode: sales.paymentMode,
+          status: sales.status,
+        })
+        .from(sales)
+        .where(gte(sql`substr(${sales.date}, 1, 10)`, startDate))
+        .all()
+    : db
+        .select({
+          id: sales.id,
+          totalAmount: sales.totalAmount,
+          discountAmount: sales.discountAmount,
+          taxAmount: sales.taxAmount,
+          paymentMode: sales.paymentMode,
+          status: sales.status,
+        })
+        .from(sales)
+        .all();
+
+  const completedSales = saleRows.filter((s) => s.status === "completed");
+  const refundedSales = saleRows.filter((s) => s.status === "refunded");
+
+  const grossRevenue = completedSales.reduce(
+    (sum, s) => sum + Number(s.totalAmount),
+    0,
+  );
+  const refundedAmount = refundedSales.reduce(
+    (sum, s) => sum + Number(s.totalAmount),
+    0,
+  );
+  const totalDiscount = completedSales.reduce(
+    (sum, s) => sum + Number(s.discountAmount),
+    0,
+  );
+  const totalTax = completedSales.reduce(
+    (sum, s) => sum + Number(s.taxAmount),
+    0,
+  );
+  const averageOrderValue =
+    completedSales.length > 0 ? grossRevenue / completedSales.length : 0;
+
+  const modes: PaymentMode[] = ["cash", "momo", "bank", "cheque"];
+  const paymentBreakdown: PaymentBreakdownItem[] = modes.map((mode) => {
+    const matching = completedSales.filter((s) => s.paymentMode === mode);
+    const amount = matching.reduce((sum, s) => sum + Number(s.totalAmount), 0);
+    return {
+      paymentMode: mode,
+      count: matching.length,
+      amount: Number(amount.toFixed(2)),
+      sharePercent:
+        grossRevenue > 0 ? Number(((amount / grossRevenue) * 100).toFixed(1)) : 0,
+    };
+  });
+
+  const itemConditions = [eq(sales.status, "completed")];
+  if (startDate) {
+    itemConditions.push(gte(sql`substr(${sales.date}, 1, 10)`, startDate));
+  }
+
+  const lineRows = db
+    .select({
+      productId: saleItems.productId,
+      productName: products.name,
+      quantity: saleItems.quantity,
+      unitPrice: saleItems.unitPrice,
+      costPrice: products.costPrice,
+    })
+    .from(saleItems)
+    .innerJoin(sales, eq(saleItems.salesId, sales.id))
+    .innerJoin(products, eq(saleItems.productId, products.id))
+    .where(and(...itemConditions))
+    .all();
+
+  let estimatedCost = 0;
+  let totalUnitsSold = 0;
+  const productTotals = new Map<string, TopSellingProductItem>();
+
+  for (const line of lineRows) {
+    const qty = Number(line.quantity) || 0;
+    const price = Number(line.unitPrice) || 0;
+    const cost = Number(line.costPrice) || 0;
+    const revenue = qty * price;
+
+    totalUnitsSold += qty;
+    estimatedCost += qty * cost;
+
+    const existing = productTotals.get(line.productId);
+    if (existing) {
+      existing.unitsSold += qty;
+      existing.revenue = Number((existing.revenue + revenue).toFixed(2));
+    } else {
+      productTotals.set(line.productId, {
+        productId: line.productId,
+        productName: line.productName,
+        unitsSold: qty,
+        revenue: Number(revenue.toFixed(2)),
+      });
+    }
+  }
+
+  const netBeforeTax = Math.max(0, grossRevenue - totalTax);
+  const grossProfit = netBeforeTax - estimatedCost;
+  const profitMarginPercent =
+    netBeforeTax > 0 ? (grossProfit / netBeforeTax) * 100 : 0;
+
+  const topProducts = Array.from(productTotals.values())
+    .sort((a, b) => b.revenue - a.revenue || b.unitsSold - a.unitsSold)
+    .slice(0, 5);
+
+  return {
+    dateRange,
+    currency: store.currency,
+    completedCount: completedSales.length,
+    refundedCount: refundedSales.length,
+    grossRevenue: Number(grossRevenue.toFixed(2)),
+    refundedAmount: Number(refundedAmount.toFixed(2)),
+    totalDiscount: Number(totalDiscount.toFixed(2)),
+    totalTax: Number(totalTax.toFixed(2)),
+    estimatedCost: Number(estimatedCost.toFixed(2)),
+    grossProfit: Number(grossProfit.toFixed(2)),
+    profitMarginPercent: Number(profitMarginPercent.toFixed(1)),
+    averageOrderValue: Number(averageOrderValue.toFixed(2)),
+    totalUnitsSold,
+    paymentBreakdown,
+    topProducts,
   };
 }
 

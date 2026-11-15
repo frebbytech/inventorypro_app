@@ -76,6 +76,13 @@ function ThemedNavigator() {
           }}
         />
         <Stack.Screen
+          name="sales/summary"
+          options={{
+            title: "Sales Report",
+            headerBackTitle: "Sales",
+          }}
+        />
+        <Stack.Screen
           name="sales/[id]"
           options={{
             title: "Receipt Details",

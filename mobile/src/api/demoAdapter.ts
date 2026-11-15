@@ -10,15 +10,23 @@ import {
   LOW_STOCK_THRESHOLD,
   type BulkImportProductsResult,
   type CreateProductInput,
+  type PaymentBreakdownItem,
+  type PaymentMode,
   type ProductDetailResponse,
   type ProductItem,
   type ProductQueryParams,
   type ProductSaleRecord,
+  type RefundSaleInput,
   type SaleReceiptDetail,
+  type SalesDateRange,
   type SalesQueryParams,
+  type SalesReportData,
   type SaleTransactionSummary,
   type StockAlertItem,
+  type StoreProfile,
   type TodayDashboardData,
+  type TopSellingProductItem,
+  type UpdateBusinessSettingsInput,
 } from "@/types/domain";
 
 function computeSaleTotals(seed: DemoSaleSeed) {
@@ -130,6 +138,10 @@ export class DemoDataAdapter implements InventoryProApiClient {
     const q = params?.query?.trim().toLowerCase() ?? "";
     const category = params?.category;
     const stockStatus = params?.stockStatus ?? "all";
+    const threshold =
+      typeof params?.threshold === "number" && params.threshold >= 1
+        ? Math.trunc(params.threshold)
+        : LOW_STOCK_THRESHOLD;
 
     return DEMO_PRODUCTS.filter((product) => {
       const matchesQuery =
@@ -147,9 +159,9 @@ export class DemoDataAdapter implements InventoryProApiClient {
         matchesStock = product.stockQuantity <= 0;
       } else if (stockStatus === "low_stock") {
         matchesStock =
-          product.stockQuantity > 0 && product.stockQuantity < LOW_STOCK_THRESHOLD;
+          product.stockQuantity > 0 && product.stockQuantity < threshold;
       } else if (stockStatus === "in_stock") {
-        matchesStock = product.stockQuantity >= LOW_STOCK_THRESHOLD;
+        matchesStock = product.stockQuantity >= threshold;
       }
 
       return matchesQuery && matchesCategory && matchesStock;
@@ -196,6 +208,7 @@ export class DemoDataAdapter implements InventoryProApiClient {
     await this.simulateLatency(80);
     const q = params?.query?.trim().toLowerCase() ?? "";
     const paymentMode = params?.paymentMode ?? "all";
+    const status = params?.status ?? "all";
 
     return DEMO_SALES.map(toTransactionSummary).filter((tx) => {
       const matchesQuery =
@@ -207,7 +220,9 @@ export class DemoDataAdapter implements InventoryProApiClient {
       const matchesPayment =
         paymentMode === "all" || tx.paymentMode === paymentMode;
 
-      return matchesQuery && matchesPayment;
+      const matchesStatus = status === "all" || tx.status === status;
+
+      return matchesQuery && matchesPayment && matchesStatus;
     });
   }
 
@@ -258,6 +273,120 @@ export class DemoDataAdapter implements InventoryProApiClient {
 
   async createSale(): Promise<SaleReceiptDetail> {
     throw new Error("Recording sales requires the live SQLite Expo API backend.");
+  }
+
+  async refundSale(
+    _saleId: string,
+    _input?: RefundSaleInput,
+  ): Promise<SaleReceiptDetail> {
+    throw new Error("Processing refunds requires the on-device SQLite backend.");
+  }
+
+  async getSalesReport(dateRange: SalesDateRange = "30d"): Promise<SalesReportData> {
+    await this.simulateLatency(80);
+    const completed = DEMO_SALES.filter((s) => s.status === "completed");
+    const refunded = DEMO_SALES.filter((s) => s.status === "refunded");
+
+    const grossRevenue = completed.reduce(
+      (sum, s) => sum + computeSaleTotals(s).totalAmount,
+      0,
+    );
+    const refundedAmount = refunded.reduce(
+      (sum, s) => sum + computeSaleTotals(s).totalAmount,
+      0,
+    );
+    const totalDiscount = completed.reduce((sum, s) => sum + s.discountAmount, 0);
+    const totalTax = completed.reduce(
+      (sum, s) => sum + computeSaleTotals(s).taxAmount,
+      0,
+    );
+    const modes: PaymentMode[] = ["cash", "momo", "bank", "cheque"];
+    const paymentBreakdown: PaymentBreakdownItem[] = modes.map((mode) => {
+      const matching = completed.filter((s) => s.paymentMode === mode);
+      const amount = matching.reduce(
+        (sum, s) => sum + computeSaleTotals(s).totalAmount,
+        0,
+      );
+      return {
+        paymentMode: mode,
+        count: matching.length,
+        amount: Number(amount.toFixed(2)),
+        sharePercent:
+          grossRevenue > 0 ? Number(((amount / grossRevenue) * 100).toFixed(1)) : 0,
+      };
+    });
+
+    const productMap = new Map<string, TopSellingProductItem>();
+    let totalUnitsSold = 0;
+    let estimatedCost = 0;
+    for (const s of completed) {
+      for (const item of s.items) {
+        totalUnitsSold += item.quantity;
+        const catalogProduct = DEMO_PRODUCTS.find((p) => p.id === item.productId);
+        estimatedCost += item.quantity * (catalogProduct?.costPrice ?? item.unitPrice * 0.7);
+        const cur = productMap.get(item.productId);
+        if (cur) {
+          cur.unitsSold += item.quantity;
+          cur.revenue = Number((cur.revenue + item.subtotal).toFixed(2));
+        } else {
+          productMap.set(item.productId, {
+            productId: item.productId,
+            productName: item.productName,
+            unitsSold: item.quantity,
+            revenue: Number(item.subtotal.toFixed(2)),
+          });
+        }
+      }
+    }
+
+    const netBeforeTax = Math.max(0, grossRevenue - totalTax);
+    const grossProfit = netBeforeTax - estimatedCost;
+
+    return {
+      dateRange,
+      currency: DEMO_STORE_PROFILE.currency,
+      completedCount: completed.length,
+      refundedCount: refunded.length,
+      grossRevenue: Number(grossRevenue.toFixed(2)),
+      refundedAmount: Number(refundedAmount.toFixed(2)),
+      totalDiscount: Number(totalDiscount.toFixed(2)),
+      totalTax: Number(totalTax.toFixed(2)),
+      estimatedCost: Number(estimatedCost.toFixed(2)),
+      grossProfit: Number(grossProfit.toFixed(2)),
+      profitMarginPercent:
+        netBeforeTax > 0 ? Number(((grossProfit / netBeforeTax) * 100).toFixed(1)) : 0,
+      averageOrderValue:
+        completed.length > 0
+          ? Number((grossRevenue / completed.length).toFixed(2))
+          : 0,
+      totalUnitsSold,
+      paymentBreakdown,
+      topProducts: Array.from(productMap.values())
+        .sort((a, b) => b.revenue - a.revenue)
+        .slice(0, 5),
+    };
+  }
+
+  async updateStockAlertThreshold(threshold: number): Promise<StoreProfile> {
+    return {
+      ...DEMO_STORE_PROFILE,
+      stockAlertThreshold: Math.max(1, Math.trunc(threshold)),
+    };
+  }
+
+  async updateBusinessSettings(
+    input: UpdateBusinessSettingsInput,
+  ): Promise<StoreProfile> {
+    return {
+      ...DEMO_STORE_PROFILE,
+      stockAlertThreshold: 5,
+      storeName: input.storeName.trim() || DEMO_STORE_PROFILE.storeName,
+      storeAddress: input.storeAddress.trim() || DEMO_STORE_PROFILE.storeAddress,
+      storePhone: input.storePhone.trim(),
+      storeEmail: input.storeEmail.trim(),
+      currency: input.currency?.trim() || DEMO_STORE_PROFILE.currency,
+      taxRate: Number(input.taxRate) || 0,
+    };
   }
 }
 

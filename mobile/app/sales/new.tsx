@@ -59,8 +59,10 @@ export default function NewSaleScreen() {
   const [searchQuery, setSearchQuery] = useState("");
   const [cart, setCart] = useState<CartLine[]>([]);
   const [customerName, setCustomerName] = useState("");
+  const [customerPhone, setCustomerPhone] = useState("");
   const [discountText, setDiscountText] = useState("");
   const [paymentMode, setPaymentMode] = useState<PaymentMode>("cash");
+  const [cashTenderedText, setCashTenderedText] = useState("");
   const [applyTax, setApplyTax] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -159,6 +161,7 @@ export default function NewSaleScreen() {
     try {
       const receipt = await api.createSale({
         customerName: customerName.trim() || "Walk-in Customer",
+        customerPhone: customerPhone.trim() || undefined,
         paymentMode,
         discountAmount,
         applyTax,
@@ -318,7 +321,7 @@ export default function NewSaleScreen() {
 
         <CardFooter style={{ gap: spacing.md }}>
           <View style={styles.inputRow}>
-            <View style={{ flex: 1.4 }}>
+            <View style={{ flex: 1.3 }}>
               <Input
                 value={customerName}
                 onChangeText={setCustomerName}
@@ -327,12 +330,33 @@ export default function NewSaleScreen() {
             </View>
             <View style={{ flex: 1 }}>
               <Input
+                value={customerPhone}
+                onChangeText={setCustomerPhone}
+                placeholder="Phone (opt)"
+                keyboardType="phone-pad"
+              />
+            </View>
+          </View>
+
+          <View style={styles.inputRow}>
+            <View style={{ flex: 1 }}>
+              <Input
                 value={discountText}
                 onChangeText={setDiscountText}
                 placeholder="Discount (0)"
                 keyboardType="decimal-pad"
               />
             </View>
+            {paymentMode === "cash" ? (
+              <View style={{ flex: 1 }}>
+                <Input
+                  value={cashTenderedText}
+                  onChangeText={setCashTenderedText}
+                  placeholder={`Cash tendered (${totalAmount.toFixed(0)})`}
+                  keyboardType="decimal-pad"
+                />
+              </View>
+            ) : null}
           </View>
 
           <SegmentedTabs
@@ -340,6 +364,68 @@ export default function NewSaleScreen() {
             value={paymentMode}
             onChange={setPaymentMode}
           />
+
+          {paymentMode === "cash" && totalAmount > 0 ? (
+            <View style={{ gap: spacing.xs }}>
+              <View style={styles.quickCashRow}>
+                {[
+                  { label: "Exact", val: totalAmount },
+                  { label: "50", val: 50 },
+                  { label: "100", val: 100 },
+                  { label: "200", val: 200 },
+                ].map((chip) => (
+                  <Pressable
+                    key={chip.label}
+                    onPress={() => setCashTenderedText(String(chip.val))}
+                    style={[
+                      styles.cashChip,
+                      {
+                        backgroundColor: colors.card,
+                        borderColor: colors.border,
+                        borderRadius: radii.md,
+                      },
+                    ]}
+                  >
+                    <Text
+                      style={[
+                        typography.micro,
+                        typography.tabular,
+                        { color: colors.foreground },
+                      ]}
+                    >
+                      {chip.label}
+                    </Text>
+                  </Pressable>
+                ))}
+                {cashTenderedText.trim().length > 0 ? (
+                  <Text
+                    style={[
+                      typography.caption,
+                      typography.tabular,
+                      {
+                        marginLeft: "auto",
+                        color:
+                          (Number.parseFloat(cashTenderedText) || 0) >= totalAmount
+                            ? colors.successText
+                            : colors.dangerText,
+                        fontFamily: fontFamilies.bold,
+                      },
+                    ]}
+                  >
+                    {(Number.parseFloat(cashTenderedText) || 0) >= totalAmount
+                      ? `Change: ${formatCurrency(
+                          (Number.parseFloat(cashTenderedText) || 0) - totalAmount,
+                          currency,
+                        )}`
+                      : `Short: ${formatCurrency(
+                          totalAmount - (Number.parseFloat(cashTenderedText) || 0),
+                          currency,
+                        )}`}
+                  </Text>
+                ) : null}
+              </View>
+            </View>
+          ) : null}
 
           <Pressable
             onPress={() => setApplyTax((v) => !v)}
@@ -568,5 +654,16 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     gap: 8,
+  },
+  quickCashRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    flexWrap: "wrap",
+    gap: 6,
+  },
+  cashChip: {
+    borderWidth: 1,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
   },
 });

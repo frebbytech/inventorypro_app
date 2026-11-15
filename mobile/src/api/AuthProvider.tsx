@@ -18,7 +18,11 @@ import {
   getStoredAuthToken,
   setStoredAuthToken,
 } from "./tokenStorage";
-import type { SessionUser, StoreProfile } from "@/types/domain";
+import type {
+  SessionUser,
+  StoreProfile,
+  UpdateBusinessSettingsInput,
+} from "@/types/domain";
 
 interface AuthContextValue {
   user: SessionUser | null;
@@ -29,6 +33,8 @@ interface AuthContextValue {
   apiClient: AuthenticatedApiClient;
   signIn: (identifier: string, password: string) => Promise<void>;
   signOut: () => Promise<void>;
+  updateStockThreshold: (threshold: number) => Promise<StoreProfile>;
+  updateBusinessSettings: (input: UpdateBusinessSettingsInput) => Promise<StoreProfile>;
 }
 
 const AuthContext = createContext<AuthContextValue | null>(null);
@@ -132,6 +138,24 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   }, [apiClient]);
 
+  const updateStockThreshold = useCallback(
+    async (threshold: number): Promise<StoreProfile> => {
+      const updated = await apiClient.updateStockAlertThreshold(threshold);
+      setStore(updated);
+      return updated;
+    },
+    [apiClient],
+  );
+
+  const updateBusinessSettings = useCallback(
+    async (input: UpdateBusinessSettingsInput): Promise<StoreProfile> => {
+      const updated = await apiClient.updateBusinessSettings(input);
+      setStore(updated);
+      return updated;
+    },
+    [apiClient],
+  );
+
   const value = useMemo<AuthContextValue>(
     () => ({
       user,
@@ -142,8 +166,20 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       apiClient,
       signIn,
       signOut,
+      updateStockThreshold,
+      updateBusinessSettings,
     }),
-    [user, store, token, isRestoring, apiClient, signIn, signOut],
+    [
+      user,
+      store,
+      token,
+      isRestoring,
+      apiClient,
+      signIn,
+      signOut,
+      updateStockThreshold,
+      updateBusinessSettings,
+    ],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

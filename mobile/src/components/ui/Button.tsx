@@ -58,7 +58,7 @@ export function Button({
     default: {
       bg: colors.primary,
       border: colors.primary,
-      text: "#FFFFFF",
+      text: colors.primaryForeground,
     },
     destructive: {
       bg: colors.destructive,

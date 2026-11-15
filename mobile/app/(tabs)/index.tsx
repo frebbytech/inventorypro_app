@@ -10,6 +10,7 @@ import { useFocusEffect, useRouter } from "expo-router";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { CheckCircle2, Info } from "lucide-react-native";
 import { useApiClient } from "@/api/ApiProvider";
+import { useAuth } from "@/api/AuthProvider";
 import { DemoBanner } from "@/components/DemoBanner";
 import { EmptyState } from "@/components/EmptyState";
 import { KpiGrid } from "@/components/KpiGrid";
@@ -17,13 +18,15 @@ import { LoadingState } from "@/components/LoadingState";
 import { LowStockRow } from "@/components/LowStockRow";
 import { Button, Card, CardHeader, CardTitle } from "@/components/ui";
 import { useTheme } from "@/theme";
-import type { TodayDashboardData } from "@/types/domain";
+import { LOW_STOCK_THRESHOLD, type TodayDashboardData } from "@/types/domain";
 
 export default function TodayScreen() {
   const { theme } = useTheme();
   const api = useApiClient();
+  const { store } = useAuth();
   const router = useRouter();
   const { colors, spacing, typography, radii } = theme;
+  const threshold = store?.stockAlertThreshold || LOW_STOCK_THRESHOLD;
 
   const [data, setData] = useState<TodayDashboardData | null>(null);
   const [loading, setLoading] = useState(true);
@@ -74,7 +77,14 @@ export default function TodayScreen() {
       edges={["top"]}
       style={[styles.safe, { backgroundColor: colors.background }]}
     >
-      <DemoBanner title="Today" subtitle="Inventory Pro · Kumasi" />
+      <DemoBanner
+        title="Today"
+        subtitle={
+          store
+            ? `${store.storeName}${store.storeAddress ? ` · ${store.storeAddress}` : ""}`
+            : "Inventory Pro · Kumasi"
+        }
+      />
 
       <ScrollView
         contentContainerStyle={{
@@ -174,7 +184,15 @@ export default function TodayScreen() {
                     title="View all"
                     variant="outline"
                     size="sm"
-                    onPress={() => router.push("/(tabs)/inventory")}
+                    onPress={() =>
+                      router.push({
+                        pathname: "/(tabs)/inventory",
+                        params:
+                          data.lowStockAlerts.length > 0
+                            ? { stock: "low_stock" }
+                            : undefined,
+                      })
+                    }
                   />
                 </View>
               </CardHeader>
@@ -184,7 +202,7 @@ export default function TodayScreen() {
                   <Text
                     style={[typography.body, { color: colors.mutedForeground }]}
                   >
-                    Every active product currently has at least 5 units in stock.
+                    Every active product currently has at least {threshold} units in stock.
                   </Text>
                 </View>
               ) : (

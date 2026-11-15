@@ -6,10 +6,15 @@ import type {
   ProductDetailResponse,
   ProductItem,
   ProductQueryParams,
+  RefundSaleInput,
   SaleReceiptDetail,
+  SalesDateRange,
   SalesQueryParams,
+  SalesReportData,
   SaleTransactionSummary,
+  StoreProfile,
   TodayDashboardData,
+  UpdateBusinessSettingsInput,
 } from "@/types/domain";
 
 /**
@@ -23,15 +28,19 @@ export const API_ENDPOINTS = {
   authLogout: "POST /api/mobile/v1/auth/logout",
   todayDashboard: "GET /api/mobile/v1/dashboard/today",
   categories: "GET /api/mobile/v1/categories",
-  productsList: "GET /api/mobile/v1/products?q=&category=&stock=",
+  productsList: "GET /api/mobile/v1/products?q=&category=&stock=&threshold=",
   productsCreate: "POST /api/mobile/v1/products",
   productsBulkCreate: "POST /api/mobile/v1/products/bulk",
   productDetail: "GET /api/mobile/v1/products/:id",
   productStockAdjust: "PATCH /api/mobile/v1/products/:id/stock",
   productByBarcode: "GET /api/mobile/v1/products/barcode/:code",
-  salesList: "GET /api/mobile/v1/sales?q=&paymentMode=",
+  salesList: "GET /api/mobile/v1/sales?q=&paymentMode=&status=&dateRange=",
   salesCreate: "POST /api/mobile/v1/sales",
   saleReceipt: "GET /api/mobile/v1/sales/:id/receipt",
+  saleRefund: "POST /api/mobile/v1/sales/:id/refund",
+  salesReport: "GET /api/mobile/v1/sales/report?range=",
+  storeThresholdUpdate: "PATCH /api/mobile/v1/settings/stock-threshold",
+  storeBusinessUpdate: "PATCH /api/mobile/v1/settings/business",
 } as const;
 
 export const PROPOSED_ENDPOINTS = API_ENDPOINTS;
@@ -56,4 +65,11 @@ export interface InventoryProApiClient {
   getRecentSales(params?: SalesQueryParams): Promise<SaleTransactionSummary[]>;
   getSaleReceiptById(saleId: string): Promise<SaleReceiptDetail | null>;
   createSale(input: CreateSaleInput): Promise<SaleReceiptDetail>;
+  refundSale(
+    saleId: string,
+    input?: RefundSaleInput,
+  ): Promise<SaleReceiptDetail>;
+  getSalesReport(dateRange?: SalesDateRange): Promise<SalesReportData>;
+  updateStockAlertThreshold(threshold: number): Promise<StoreProfile>;
+  updateBusinessSettings(input: UpdateBusinessSettingsInput): Promise<StoreProfile>;
 }

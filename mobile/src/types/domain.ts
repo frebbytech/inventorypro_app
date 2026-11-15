@@ -33,6 +33,15 @@ export interface StoreProfile {
   stockAlertThreshold: number;
 }
 
+export interface UpdateBusinessSettingsInput {
+  storeName: string;
+  storeAddress: string;
+  storePhone: string;
+  storeEmail: string;
+  currency?: string;
+  taxRate: number;
+}
+
 export interface AuthLoginPayload {
   identifier: string;
   password: string;
@@ -194,6 +203,7 @@ export interface SaleReceiptDetail {
   paymentMode: PaymentMode;
   status: SaleStatus;
   attendantName: string;
+  notes?: string;
   storeName: string;
   storeAddress: string;
   storePhone: string;
@@ -202,13 +212,55 @@ export interface SaleReceiptDetail {
   items: ReceiptLineItem[];
 }
 
+export interface RefundSaleInput {
+  reason?: string;
+  restockItems?: boolean;
+}
+
+export type SalesDateRange = "today" | "7d" | "30d" | "all";
+
+export interface PaymentBreakdownItem {
+  paymentMode: PaymentMode;
+  count: number;
+  amount: number;
+  sharePercent: number;
+}
+
+export interface TopSellingProductItem {
+  productId: string;
+  productName: string;
+  unitsSold: number;
+  revenue: number;
+}
+
+export interface SalesReportData {
+  dateRange: SalesDateRange;
+  currency: string;
+  completedCount: number;
+  refundedCount: number;
+  grossRevenue: number;
+  refundedAmount: number;
+  totalDiscount: number;
+  totalTax: number;
+  estimatedCost: number;
+  grossProfit: number;
+  profitMarginPercent: number;
+  averageOrderValue: number;
+  totalUnitsSold: number;
+  paymentBreakdown: PaymentBreakdownItem[];
+  topProducts: TopSellingProductItem[];
+}
+
 export interface ProductQueryParams {
   query?: string;
   category?: string;
   stockStatus?: StockStatusFilter;
+  threshold?: number;
 }
 
 export interface SalesQueryParams {
   query?: string;
   paymentMode?: "all" | PaymentMode;
+  status?: "all" | SaleStatus;
+  dateRange?: SalesDateRange;
 }

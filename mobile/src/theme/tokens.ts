@@ -289,9 +289,81 @@ export interface AppTheme {
   shadows: typeof shadows;
 }
 
-export function createTheme(mode: ThemeMode): AppTheme {
+export const DEFAULT_ACCENT_COLOR = "#3B82F6";
+
+export function isValidHexColor(hex: string): boolean {
+  return /^#[0-9A-Fa-f]{6}$/.test(hex.trim());
+}
+
+export function normalizeHexColor(hex: string): string | null {
+  const trimmed = hex.trim();
+  const withHash = trimmed.startsWith("#") ? trimmed : `#${trimmed}`;
+  return isValidHexColor(withHash) ? withHash.toUpperCase() : null;
+}
+
+function hexToRgb(hex: string): { r: number; g: number; b: number } | null {
+  const normalized = normalizeHexColor(hex);
+  if (!normalized) return null;
+  const r = parseInt(normalized.slice(1, 3), 16);
+  const g = parseInt(normalized.slice(3, 5), 16);
+  const b = parseInt(normalized.slice(5, 7), 16);
+  return { r, g, b };
+}
+
+export function hexToRgba(hex: string, alpha: number): string {
+  const rgb = hexToRgb(hex);
+  if (!rgb) return `rgba(59, 130, 246, ${alpha})`;
+  return `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, ${alpha})`;
+}
+
+function adjustHexBrightness(hex: string, factor: number): string {
+  const rgb = hexToRgb(hex);
+  if (!rgb) return hex;
+  const clamp = (n: number) => Math.max(0, Math.min(255, Math.round(n)));
+  const r = clamp(factor >= 1 ? rgb.r + (255 - rgb.r) * (factor - 1) : rgb.r * factor);
+  const g = clamp(factor >= 1 ? rgb.g + (255 - rgb.g) * (factor - 1) : rgb.g * factor);
+  const b = clamp(factor >= 1 ? rgb.b + (255 - rgb.b) * (factor - 1) : rgb.b * factor);
+  return `#${[r, g, b].map((c) => c.toString(16).padStart(2, "0")).join("").toUpperCase()}`;
+}
+
+function getContrastingForeground(hex: string): string {
+  const rgb = hexToRgb(hex);
+  if (!rgb) return "#FFFFFF";
+  const luminance = (0.299 * rgb.r + 0.587 * rgb.g + 0.114 * rgb.b) / 255;
+  return luminance > 0.68 ? "#0F172A" : "#FFFFFF";
+}
+
+export function createTheme(
+  mode: ThemeMode,
+  accentColor: string = DEFAULT_ACCENT_COLOR,
+): AppTheme {
+  const base = mode === "dark" ? darkColors : lightColors;
+  const normalizedAccent = normalizeHexColor(accentColor) ?? DEFAULT_ACCENT_COLOR;
+  const isDefault = normalizedAccent === DEFAULT_ACCENT_COLOR;
+
+  const colors: ColorTokens = isDefault
+    ? base
+    : {
+        ...base,
+        primary: normalizedAccent,
+        primaryHover:
+          mode === "dark"
+            ? adjustHexBrightness(normalizedAccent, 1.18)
+            : adjustHexBrightness(normalizedAccent, 0.85),
+        primaryForeground: getContrastingForeground(normalizedAccent),
+        primaryTint: hexToRgba(normalizedAccent, mode === "dark" ? 0.18 : 0.1),
+        ring: normalizedAccent,
+        tabBarActive: normalizedAccent,
+        demoBannerBg: hexToRgba(normalizedAccent, mode === "dark" ? 0.15 : 0.08),
+        demoBannerBorder: hexToRgba(normalizedAccent, mode === "dark" ? 0.35 : 0.28),
+        demoBannerText:
+          mode === "dark"
+            ? adjustHexBrightness(normalizedAccent, 1.35)
+            : adjustHexBrightness(normalizedAccent, 0.78),
+      };
+
   return {
-    colors: mode === "dark" ? darkColors : lightColors,
+    colors,
     typography,
     fontFamilies,
     spacing,

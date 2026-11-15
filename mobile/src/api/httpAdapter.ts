@@ -12,10 +12,15 @@ import type {
   ProductDetailResponse,
   ProductItem,
   ProductQueryParams,
+  RefundSaleInput,
   SaleReceiptDetail,
+  SalesDateRange,
   SalesQueryParams,
+  SalesReportData,
   SaleTransactionSummary,
+  StoreProfile,
   TodayDashboardData,
+  UpdateBusinessSettingsInput,
 } from "@/types/domain";
 
 export function resolveApiBaseUrl(): string {
@@ -155,6 +160,9 @@ export class HttpApiClient implements AuthenticatedApiClient {
     if (params?.stockStatus && params.stockStatus !== "all") {
       qs.set("stock", params.stockStatus);
     }
+    if (typeof params?.threshold === "number" && params.threshold >= 1) {
+      qs.set("threshold", String(Math.trunc(params.threshold)));
+    }
     const suffix = qs.toString() ? `?${qs.toString()}` : "";
     return this.request<ProductItem[]>(`/api/mobile/v1/products${suffix}`);
   }
@@ -208,6 +216,12 @@ export class HttpApiClient implements AuthenticatedApiClient {
     if (params?.paymentMode && params.paymentMode !== "all") {
       qs.set("paymentMode", params.paymentMode);
     }
+    if (params?.status && params.status !== "all") {
+      qs.set("status", params.status);
+    }
+    if (params?.dateRange && params.dateRange !== "all") {
+      qs.set("dateRange", params.dateRange);
+    }
     const suffix = qs.toString() ? `?${qs.toString()}` : "";
     return this.request<SaleTransactionSummary[]>(`/api/mobile/v1/sales${suffix}`);
   }
@@ -222,6 +236,39 @@ export class HttpApiClient implements AuthenticatedApiClient {
   createSale(input: CreateSaleInput): Promise<SaleReceiptDetail> {
     return this.request<SaleReceiptDetail>("/api/mobile/v1/sales", {
       method: "POST",
+      body: JSON.stringify(input),
+    });
+  }
+
+  refundSale(
+    saleId: string,
+    input?: RefundSaleInput,
+  ): Promise<SaleReceiptDetail> {
+    return this.request<SaleReceiptDetail>(
+      `/api/mobile/v1/sales/${encodeURIComponent(saleId)}/refund`,
+      {
+        method: "POST",
+        body: JSON.stringify(input ?? {}),
+      },
+    );
+  }
+
+  getSalesReport(dateRange: SalesDateRange = "30d"): Promise<SalesReportData> {
+    return this.request<SalesReportData>(
+      `/api/mobile/v1/sales/report?range=${encodeURIComponent(dateRange)}`,
+    );
+  }
+
+  updateStockAlertThreshold(threshold: number): Promise<StoreProfile> {
+    return this.request<StoreProfile>("/api/mobile/v1/settings/stock-threshold", {
+      method: "PATCH",
+      body: JSON.stringify({ threshold: Math.trunc(threshold) }),
+    });
+  }
+
+  updateBusinessSettings(input: UpdateBusinessSettingsInput): Promise<StoreProfile> {
+    return this.request<StoreProfile>("/api/mobile/v1/settings/business", {
+      method: "PATCH",
       body: JSON.stringify(input),
     });
   }

@@ -10,12 +10,16 @@ import {
   findProductByBarcode as dbFindProductByBarcode,
   getProductDetail as dbGetProductDetail,
   getSaleReceipt as dbGetSaleReceipt,
+  getSalesReport as dbGetSalesReport,
   getTodayDashboard as dbGetTodayDashboard,
   listCategories as dbListCategories,
   listProducts as dbListProducts,
   listSales as dbListSales,
+  refundSale as dbRefundSale,
   restoreSessionByToken,
   revokeSessionByToken,
+  updateStoreBusinessProfile,
+  updateStoreStockThreshold,
 } from "@/db/queries";
 import type {
   AdjustStockInput,
@@ -28,10 +32,15 @@ import type {
   ProductDetailResponse,
   ProductItem,
   ProductQueryParams,
+  RefundSaleInput,
   SaleReceiptDetail,
+  SalesDateRange,
   SalesQueryParams,
+  SalesReportData,
   SaleTransactionSummary,
+  StoreProfile,
   TodayDashboardData,
+  UpdateBusinessSettingsInput,
 } from "@/types/domain";
 
 export interface AuthenticatedApiClient extends InventoryProApiClient {
@@ -163,6 +172,41 @@ export class ExpoSqliteDrizzleClient implements AuthenticatedApiClient {
   async createSale(input: CreateSaleInput): Promise<SaleReceiptDetail> {
     const { db, session } = await this.requireSession();
     return dbCreateSale(db, {
+      ...input,
+      userId: session.user.id,
+    });
+  }
+
+  async refundSale(
+    saleId: string,
+    input?: RefundSaleInput,
+  ): Promise<SaleReceiptDetail> {
+    const { db, session } = await this.requireSession();
+    return dbRefundSale(db, {
+      ...input,
+      saleId,
+      userId: session.user.id,
+    });
+  }
+
+  async getSalesReport(dateRange: SalesDateRange = "30d"): Promise<SalesReportData> {
+    const { db } = await this.requireSession();
+    return dbGetSalesReport(db, dateRange);
+  }
+
+  async updateStockAlertThreshold(threshold: number): Promise<StoreProfile> {
+    const { db, session } = await this.requireSession();
+    return updateStoreStockThreshold(db, {
+      userId: session.user.id,
+      threshold,
+    });
+  }
+
+  async updateBusinessSettings(
+    input: UpdateBusinessSettingsInput,
+  ): Promise<StoreProfile> {
+    const { db, session } = await this.requireSession();
+    return updateStoreBusinessProfile(db, {
       ...input,
       userId: session.user.id,
     });

@@ -9,6 +9,7 @@ import {
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { Barcode, Minus, Package, Plus, ShoppingCart } from "lucide-react-native";
 import { useApiClient } from "@/api/ApiProvider";
+import { useAuth } from "@/api/AuthProvider";
 import { EmptyState } from "@/components/EmptyState";
 import { LoadingState } from "@/components/LoadingState";
 import { StockMeter } from "@/components/StockMeter";
@@ -34,6 +35,7 @@ export default function ProductDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const { theme } = useTheme();
   const api = useApiClient();
+  const { store } = useAuth();
   const router = useRouter();
   const { colors, spacing, radii, typography, fontFamilies } = theme;
 
@@ -147,7 +149,8 @@ export default function ProductDetailScreen() {
 
   const { product, recentSales } = detail;
   const isOut = product.stockQuantity <= 0;
-  const threshold = product.lowStockThreshold || LOW_STOCK_THRESHOLD;
+  const threshold =
+    store?.stockAlertThreshold || product.lowStockThreshold || LOW_STOCK_THRESHOLD;
   const isLow =
     product.stockQuantity > 0 && product.stockQuantity < threshold;
   const margin = calculateMarginPercent(product.unitPrice, product.costPrice);
@@ -343,18 +346,18 @@ export default function ProductDetailScreen() {
         </CardHeader>
         <CardContent style={{ paddingTop: spacing.md, gap: spacing.md }}>
           <View style={styles.stockRow}>
-            <View>
+            <View style={{ flex: 1 }}>
               <Text style={[typography.bodySemibold, { color: colors.foreground }]}>
                 {product.stockQuantity} units on hand
               </Text>
               <Text style={[typography.caption, { color: colors.mutedForeground }]}>
-                Alert threshold: below {product.lowStockThreshold} units · Updated{" "}
+                Alert threshold: below {threshold} units · Updated{" "}
                 {formatDateTime(product.updatedAt)}
               </Text>
             </View>
             <StockMeter
               stock={product.stockQuantity}
-              threshold={product.lowStockThreshold}
+              threshold={threshold}
             />
           </View>
 
