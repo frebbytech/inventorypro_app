@@ -35,6 +35,7 @@ import {
   CardHeader,
   CardTitle,
   Input,
+  SegmentedTabs,
 } from "@/components/ui";
 import {
   DEFAULT_ACCENT_COLOR,
@@ -42,6 +43,8 @@ import {
   useTheme,
   type ThemePreference,
 } from "@/theme";
+
+type SettingsTabValue = "business" | "appearance";
 
 const CURRENCY_OPTIONS = ["GHS", "USD", "EUR", "GBP", "NGN"] as const;
 
@@ -147,6 +150,33 @@ export default function SettingsScreen() {
   } = useTheme();
   const { store, updateBusinessSettings } = useAuth();
   const { colors, spacing, typography, radii, fontFamilies } = theme;
+  const [activeTab, setActiveTab] = useState<SettingsTabValue>("business");
+
+  const settingsTabs = useMemo(
+    () => [
+      {
+        value: "business" as const,
+        label: "Business Info",
+        icon: (active: boolean) => (
+          <Building2
+            size={15}
+            color={active ? colors.primaryForeground : colors.mutedForeground}
+          />
+        ),
+      },
+      {
+        value: "appearance" as const,
+        label: "Appearance",
+        icon: (active: boolean) => (
+          <Palette
+            size={15}
+            color={active ? colors.primaryForeground : colors.mutedForeground}
+          />
+        ),
+      },
+    ],
+    [colors.primaryForeground, colors.mutedForeground],
+  );
 
   // Business Info state
   const [storeName, setStoreName] = useState(store?.storeName ?? "Inventory Pro");
@@ -312,7 +342,14 @@ export default function SettingsScreen() {
             paddingBottom: spacing["3xl"],
           }}
         >
+          <SegmentedTabs
+            options={settingsTabs}
+            value={activeTab}
+            onChange={setActiveTab}
+          />
+
           {/* Section 1: Business Info */}
+          {activeTab === "business" ? (
           <Card>
             <CardHeader bordered>
               <View style={styles.sectionTitleRow}>
@@ -588,8 +625,8 @@ export default function SettingsScreen() {
               />
             </CardFooter>
           </Card>
-
-          {/* Section 2: Appearance */}
+          ) : (
+          /* Section 2: Appearance */
           <Card>
             <CardHeader bordered>
               <View style={styles.sectionTitleRow}>
@@ -851,6 +888,7 @@ export default function SettingsScreen() {
               />
             </CardFooter>
           </Card>
+          )}
         </ScrollView>
       </KeyboardAvoidingView>
     </SafeAreaView>

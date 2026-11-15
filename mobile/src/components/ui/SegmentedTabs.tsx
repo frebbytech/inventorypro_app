@@ -5,6 +5,7 @@ import { useTheme } from "@/theme";
 export interface TabOption<T extends string> {
   value: T;
   label: string;
+  icon?: (active: boolean) => React.ReactNode;
 }
 
 export function SegmentedTabs<T extends string>({
@@ -19,33 +20,38 @@ export function SegmentedTabs<T extends string>({
   scrollable?: boolean;
 }) {
   const { theme } = useTheme();
-  const { colors, radii, spacing, typography, fontFamilies } = theme;
+  const { colors, radii, spacing, typography, fontFamilies, shadows } = theme;
 
   const content = options.map((opt) => {
     const active = opt.value === value;
     return (
       <Pressable
         key={opt.value}
+        accessibilityRole="tab"
+        accessibilityState={{ selected: active }}
         onPress={() => onChange(opt.value)}
         style={({ pressed }) => [
           styles.trigger,
           !scrollable && styles.flexTrigger,
           {
             borderRadius: radii.lg,
-            paddingHorizontal: spacing.md + 2,
-            paddingVertical: spacing.sm - 1,
+            paddingHorizontal: spacing.base,
+            paddingVertical: spacing.sm + 1,
             backgroundColor: active ? colors.primary : "transparent",
-            opacity: pressed ? 0.85 : 1,
+            opacity: pressed ? 0.85 : active ? 1 : 0.85,
           },
+          active ? shadows.xs : undefined,
         ]}
       >
+        {opt.icon ? opt.icon(active) : null}
         <Text
           numberOfLines={1}
           style={[
             typography.caption,
             {
               fontFamily: fontFamilies.semibold,
-              color: active ? "#FFFFFF" : colors.mutedForeground,
+              color: active ? colors.primaryForeground : colors.mutedForeground,
+              letterSpacing: 0.2,
             },
           ]}
         >
@@ -58,13 +64,14 @@ export function SegmentedTabs<T extends string>({
   if (scrollable) {
     return (
       <View
+        accessibilityRole="tablist"
         style={[
           styles.container,
           {
             backgroundColor: colors.card,
             borderColor: colors.border,
             borderRadius: radii.xl,
-            padding: 5,
+            padding: 6,
           },
         ]}
       >
@@ -81,6 +88,7 @@ export function SegmentedTabs<T extends string>({
 
   return (
     <View
+      accessibilityRole="tablist"
       style={[
         styles.container,
         styles.fullRow,
@@ -88,7 +96,7 @@ export function SegmentedTabs<T extends string>({
           backgroundColor: colors.card,
           borderColor: colors.border,
           borderRadius: radii.xl,
-          padding: 5,
+          padding: 6,
         },
       ]}
     >
@@ -112,8 +120,10 @@ const styles = StyleSheet.create({
     gap: 4,
   },
   trigger: {
+    flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
+    gap: 6,
   },
   flexTrigger: {
     flex: 1,
