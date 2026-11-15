@@ -147,8 +147,9 @@ export default function ProductDetailScreen() {
 
   const { product, recentSales } = detail;
   const isOut = product.stockQuantity <= 0;
+  const threshold = product.lowStockThreshold || LOW_STOCK_THRESHOLD;
   const isLow =
-    product.stockQuantity > 0 && product.stockQuantity < LOW_STOCK_THRESHOLD;
+    product.stockQuantity > 0 && product.stockQuantity < threshold;
   const margin = calculateMarginPercent(product.unitPrice, product.costPrice);
 
   return (
@@ -222,10 +223,14 @@ export default function ProductDetailScreen() {
               style={[
                 typography.bodyMedium,
                 typography.tabular,
-                { color: colors.foreground },
+                {
+                  color: product.barcode
+                    ? colors.foreground
+                    : colors.mutedForeground,
+                },
               ]}
             >
-              {product.barcode}
+              {product.barcode || "No barcode assigned"}
             </Text>
           </View>
         </CardContent>

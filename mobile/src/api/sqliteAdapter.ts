@@ -4,6 +4,8 @@ import { ensureDbReady } from "@/db/client";
 import {
   adjustProductStock as dbAdjustProductStock,
   authenticateWithCredentials,
+  bulkCreateProducts as dbBulkCreateProducts,
+  createProduct as dbCreateProduct,
   createSale as dbCreateSale,
   findProductByBarcode as dbFindProductByBarcode,
   getProductDetail as dbGetProductDetail,
@@ -20,6 +22,8 @@ import type {
   AuthLoginPayload,
   AuthLoginResponse,
   AuthSessionResponse,
+  BulkImportProductsResult,
+  CreateProductInput,
   CreateSaleInput,
   ProductDetailResponse,
   ProductItem,
@@ -109,6 +113,24 @@ export class ExpoSqliteDrizzleClient implements AuthenticatedApiClient {
   async getProductById(productId: string): Promise<ProductDetailResponse | null> {
     const { db } = await this.requireSession();
     return dbGetProductDetail(db, productId);
+  }
+
+  async createProduct(input: CreateProductInput): Promise<ProductItem> {
+    const { db, session } = await this.requireSession();
+    return dbCreateProduct(db, {
+      ...input,
+      userId: session.user.id,
+    });
+  }
+
+  async bulkCreateProducts(
+    items: CreateProductInput[],
+  ): Promise<BulkImportProductsResult> {
+    const { db, session } = await this.requireSession();
+    return dbBulkCreateProducts(db, {
+      items,
+      userId: session.user.id,
+    });
   }
 
   async adjustProductStock(

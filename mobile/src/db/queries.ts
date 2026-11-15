@@ -18,6 +18,8 @@ import {
   type AdjustStockInput,
   type AuthLoginResponse,
   type AuthSessionResponse,
+  type BulkImportProductsResult,
+  type CreateProductInput,
   type CreateSaleInput,
   type PaymentMode,
   type ProductDetailResponse,
@@ -976,4 +978,170 @@ export function createSale(
     throw new Error("Sale completed, but failed to load receipt.");
   }
   return receipt;
+}
+
+export function createProduct(
+  db: ExpoSqliteDrizzleDb,
+  input: CreateProductInput & { userId: string },
+): ProductItem {
+  const result = bulkCreateProducts(db, {
+    items: [input],
+    userId: input.userId,
+  });
+  return result.products[0];
+}
+
+export function bulkCreateProducts(
+  db: ExpoSqliteDrizzleDb,
+  input: { items: CreateProductInput[]; userId: string },
+): BulkImportProductsResult {
+  if (!Array.isArray(input.items) || input.items.length === 0) {
+    throw new Error("Provide at least one product to create.");
+  }
+
+  return db.transaction((tx) => {
+    const existingCategories = tx
+      .select({
+        id: productCategories.id,
+        name: productCategories.name,
+      })
+      .from(productCategories)
+      .all();
+
+    const categoryMap = new Map<string, { id: string; name: string }>();
+    for (const cat of existingCategories) {
+      const key = cat.name.trim().toLowerCase();
+      if (!categoryMap.has(key)) {
+        categoryMap.set(key, { id: cat.id, name: cat.name });
+      }
+    }
+
+    let newCategoriesCount = 0;
+    const nowIso = new Date().toISOString();
+    const createdProducts: ProductItem[] = [];
+
+    for (const raw of input.items) {
+      const name = raw.name?.trim();
+      if (!name) {
+        throw new Error("Every product must have a non-empty name.");
+      }
+
+      const costPrice = Number(raw.costPrice);
+      const unitPrice = Number(raw.unitPrice);
+      const stockQuantity = Math.max(0, Math.trunc(Number(raw.stockQuantity) || 0));
+      const lowStockThreshold = Math.max(
+        1,
+        Math.trunc(Number(raw.lowStockThreshold ?? LOW_STOCK_THRESHOLD) || LOW_STOCK_THRESHOLD),
+      );
+
+      if (!Number.isFinite(costPrice) || costPrice < 0) {
+        throw new Error(`Invalid cost price for "${name}".`);
+      }
+      if (!Number.isFinite(unitPrice) || unitPrice < 0) {
+        throw new Error(`Invalid selling price for "${name}".`);
+      }
+
+      const rawCategoryName = raw.categoryName?.trim() || "General";
+      const catKey = rawCategoryName.toLowerCase();
+      let category = categoryMap.get(catKey);
+
+      if (!category) {
+        const newCatId = generateId("cat");
+        tx.insert(productCategories)
+          .values({
+            id: newCatId,
+            userId: input.userId,
+            name: rawCategoryName,
+            description: "Added from mobile product catalog",
+            isActive: 1,
+            createdAt: nowIso,
+            updatedAt: nowIso,
+          })
+          .run();
+        category = { id: newCatId, name: rawCategoryName };
+        categoryMap.set(catKey, category);
+        newCategoriesCount += 1;
+      }
+
+      const barcode = raw.barcode?.trim() || "";
+      const description = raw.description?.trim() || "";
+      const isActive = raw.active !== false ? 1 : 0;
+      const productId = generateId("prod");
+
+      tx.insert(products)
+        .values({
+          id: productId,
+          userId: input.userId,
+          categoryId: category.id,
+          name,
+          barcode,
+          description,
+          costPrice: Number(costPrice.toFixed(2)),
+          unitPrice: Number(unitPrice.toFixed(2)),
+          stockQuantity,
+          lowStockThreshold,
+          isActive,
+          createdAt: nowIso,
+          updatedAt: nowIso,
+        })
+        .run();
+
+      if (stockQuantity > 0) {
+        tx.insert(inventory)
+          .values({
+            id: generateId("inv"),
+            userId: input.userId,
+            productId,
+            productCategoryId: category.id,
+            quantity: stockQuantity,
+            restockDate: nowIso.slice(0, 10),
+            notes:
+              input.items.length > 1
+                ? "Opening stock (Bulk CSV/Excel import)"
+                : "Opening stock (New product)",
+          })
+          .run();
+      }
+
+      createdProducts.push({
+        id: productId,
+        name,
+        description,
+        categoryId: category.id,
+        categoryName: category.name,
+        barcode,
+        costPrice: Number(costPrice.toFixed(2)),
+        unitPrice: Number(unitPrice.toFixed(2)),
+        stockQuantity,
+        lowStockThreshold,
+        stockValue: Number((stockQuantity * Number(unitPrice.toFixed(2))).toFixed(2)),
+        active: isActive === 1,
+        updatedAt: nowIso,
+      });
+    }
+
+    tx.insert(auditLogs)
+      .values({
+        id: generateId("aud"),
+        userId: input.userId,
+        entityType: createdProducts.length > 1 ? "products" : "product",
+        entityId:
+          createdProducts.length === 1
+            ? createdProducts[0].id
+            : `bulk-${createdProducts.length}`,
+        action: "create",
+        newValues: JSON.stringify({
+          createdCount: createdProducts.length,
+          newCategoriesCount,
+          names: createdProducts.slice(0, 5).map((p) => p.name),
+        }),
+      })
+      .run();
+
+    return {
+      createdCount: createdProducts.length,
+      newCategoriesCount,
+      products: createdProducts,
+    };
+  });
 }

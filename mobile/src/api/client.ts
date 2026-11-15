@@ -1,5 +1,7 @@
 import type {
   AdjustStockInput,
+  BulkImportProductsResult,
+  CreateProductInput,
   CreateSaleInput,
   ProductDetailResponse,
   ProductItem,
@@ -22,6 +24,8 @@ export const API_ENDPOINTS = {
   todayDashboard: "GET /api/mobile/v1/dashboard/today",
   categories: "GET /api/mobile/v1/categories",
   productsList: "GET /api/mobile/v1/products?q=&category=&stock=",
+  productsCreate: "POST /api/mobile/v1/products",
+  productsBulkCreate: "POST /api/mobile/v1/products/bulk",
   productDetail: "GET /api/mobile/v1/products/:id",
   productStockAdjust: "PATCH /api/mobile/v1/products/:id/stock",
   productByBarcode: "GET /api/mobile/v1/products/barcode/:code",
@@ -40,6 +44,10 @@ export interface InventoryProApiClient {
   getCategories(): Promise<string[]>;
   getProducts(params?: ProductQueryParams): Promise<ProductItem[]>;
   getProductById(productId: string): Promise<ProductDetailResponse | null>;
+  createProduct(input: CreateProductInput): Promise<ProductItem>;
+  bulkCreateProducts(
+    items: CreateProductInput[],
+  ): Promise<BulkImportProductsResult>;
   adjustProductStock(
     productId: string,
     input: AdjustStockInput,

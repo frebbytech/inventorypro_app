@@ -23,6 +23,7 @@ import {
   CheckCircle2,
   Flashlight,
   Keyboard,
+  PackagePlus,
   RefreshCw,
   Settings,
   ShoppingCart,
@@ -439,32 +440,46 @@ export default function ScanScreen() {
             <CardContent
               style={{
                 paddingTop: spacing.base,
-                flexDirection: "row",
-                alignItems: "center",
                 gap: spacing.md,
               }}
             >
-              <AlertCircle size={22} color={colors.dangerText} />
-              <View style={{ flex: 1 }}>
-                <Text style={[typography.bodySemibold, { color: colors.foreground }]}>
-                  No product matched barcode
-                </Text>
-                <Text
-                  style={[
-                    typography.caption,
-                    typography.tabular,
-                    { color: colors.mutedForeground, marginTop: 2 },
-                  ]}
-                >
-                  Code &ldquo;{notFoundCode}&rdquo; was not found in the SQLite product catalog.
-                </Text>
+              <View style={{ flexDirection: "row", alignItems: "center", gap: spacing.md }}>
+                <AlertCircle size={22} color={colors.dangerText} />
+                <View style={{ flex: 1 }}>
+                  <Text style={[typography.bodySemibold, { color: colors.foreground }]}>
+                    No product matched barcode
+                  </Text>
+                  <Text
+                    style={[
+                      typography.caption,
+                      typography.tabular,
+                      { color: colors.mutedForeground, marginTop: 2 },
+                    ]}
+                  >
+                    Code &ldquo;{notFoundCode}&rdquo; was not found in the SQLite product catalog.
+                  </Text>
+                </View>
               </View>
-              <Button
-                title="Dismiss"
-                variant="outline"
-                size="sm"
-                onPress={() => setNotFoundCode(null)}
-              />
+              <View style={{ flexDirection: "row", gap: spacing.sm }}>
+                <Button
+                  title="Add Product"
+                  size="sm"
+                  style={{ flex: 1 }}
+                  leftIcon={<PackagePlus size={15} color="#FFFFFF" />}
+                  onPress={() =>
+                    router.push({
+                      pathname: "/product/new",
+                      params: { barcode: notFoundCode },
+                    })
+                  }
+                />
+                <Button
+                  title="Dismiss"
+                  variant="outline"
+                  size="sm"
+                  onPress={() => setNotFoundCode(null)}
+                />
+              </View>
             </CardContent>
           </Card>
         ) : null}

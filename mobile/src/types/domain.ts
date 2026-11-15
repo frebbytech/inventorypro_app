@@ -72,6 +72,24 @@ export interface CreateSaleInput {
   items: CreateSaleItemInput[];
 }
 
+export interface CreateProductInput {
+  name: string;
+  categoryName: string;
+  barcode?: string;
+  description?: string;
+  costPrice: number;
+  unitPrice: number;
+  stockQuantity: number;
+  lowStockThreshold?: number;
+  active?: boolean;
+}
+
+export interface BulkImportProductsResult {
+  createdCount: number;
+  newCategoriesCount: number;
+  products: ProductItem[];
+}
+
 export interface ProductItem {
   id: string;
   name: string;

@@ -6,6 +6,8 @@ import type {
   AuthLoginPayload,
   AuthLoginResponse,
   AuthSessionResponse,
+  BulkImportProductsResult,
+  CreateProductInput,
   CreateSaleInput,
   ProductDetailResponse,
   ProductItem,
@@ -162,6 +164,22 @@ export class HttpApiClient implements AuthenticatedApiClient {
       `/api/mobile/v1/products/${encodeURIComponent(productId)}`,
       { allowNotFound: true },
     );
+  }
+
+  createProduct(input: CreateProductInput): Promise<ProductItem> {
+    return this.request<ProductItem>("/api/mobile/v1/products", {
+      method: "POST",
+      body: JSON.stringify(input),
+    });
+  }
+
+  bulkCreateProducts(
+    items: CreateProductInput[],
+  ): Promise<BulkImportProductsResult> {
+    return this.request<BulkImportProductsResult>("/api/mobile/v1/products/bulk", {
+      method: "POST",
+      body: JSON.stringify({ items }),
+    });
   }
 
   adjustProductStock(

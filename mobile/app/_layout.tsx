@@ -55,6 +55,13 @@ function ThemedNavigator() {
         <Stack.Screen name="sign-in" options={{ headerShown: false }} />
         <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
         <Stack.Screen
+          name="product/new"
+          options={{
+            title: "Add Products",
+            headerBackTitle: "Inventory",
+          }}
+        />
+        <Stack.Screen
           name="product/[id]"
           options={{
             title: "Product Details",

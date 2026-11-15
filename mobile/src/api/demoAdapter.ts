@@ -8,6 +8,8 @@ import {
 } from "./demoData";
 import {
   LOW_STOCK_THRESHOLD,
+  type BulkImportProductsResult,
+  type CreateProductInput,
   type ProductDetailResponse,
   type ProductItem,
   type ProductQueryParams,
@@ -238,6 +240,16 @@ export class DemoDataAdapter implements InventoryProApiClient {
       currency: DEMO_STORE_PROFILE.currency,
       items: seed.items,
     };
+  }
+
+  async createProduct(_input: CreateProductInput): Promise<ProductItem> {
+    throw new Error("Adding products requires the on-device SQLite backend.");
+  }
+
+  async bulkCreateProducts(
+    _items: CreateProductInput[],
+  ): Promise<BulkImportProductsResult> {
+    throw new Error("Importing products requires the on-device SQLite backend.");
   }
 
   async adjustProductStock(): Promise<ProductItem> {

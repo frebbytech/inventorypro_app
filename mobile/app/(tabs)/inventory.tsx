@@ -10,7 +10,7 @@ import {
 } from "react-native";
 import { useFocusEffect, useRouter } from "expo-router";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { Package, Search, X } from "lucide-react-native";
+import { FileSpreadsheet, Package, Plus, Search, X } from "lucide-react-native";
 import { useApiClient } from "@/api/ApiProvider";
 import { DemoBanner } from "@/components/DemoBanner";
 import { EmptyState } from "@/components/EmptyState";
@@ -75,8 +75,9 @@ export default function InventoryScreen() {
 
   useFocusEffect(
     useCallback(() => {
+      void api.getCategories().then(setCategories).catch(() => {});
       void loadProducts(products.length > 0);
-    }, [loadProducts]),
+    }, [api, loadProducts]),
   );
 
   const resetFilters = () => {
@@ -108,26 +109,48 @@ export default function InventoryScreen() {
           },
         ]}
       >
-        <Input
-          value={query}
-          onChangeText={setQuery}
-          placeholder="Search name, category, or barcode..."
-          returnKeyType="search"
-          autoCapitalize="none"
-          autoCorrect={false}
-          leftIcon={<Search size={18} color={colors.mutedForeground} />}
-          rightSlot={
-            query.length > 0 ? (
-              <Pressable
-                onPress={() => setQuery("")}
-                hitSlop={8}
-                accessibilityLabel="Clear search"
-              >
-                <X size={16} color={colors.mutedForeground} />
-              </Pressable>
-            ) : null
-          }
-        />
+        <View style={styles.searchActionRow}>
+          <View style={{ flex: 1 }}>
+            <Input
+              value={query}
+              onChangeText={setQuery}
+              placeholder="Search name, category, or barcode..."
+              returnKeyType="search"
+              autoCapitalize="none"
+              autoCorrect={false}
+              leftIcon={<Search size={18} color={colors.mutedForeground} />}
+              rightSlot={
+                query.length > 0 ? (
+                  <Pressable
+                    onPress={() => setQuery("")}
+                    hitSlop={8}
+                    accessibilityLabel="Clear search"
+                  >
+                    <X size={16} color={colors.mutedForeground} />
+                  </Pressable>
+                ) : null
+              }
+            />
+          </View>
+          <Button
+            title="Add"
+            leftIcon={<Plus size={16} color="#FFFFFF" />}
+            onPress={() => router.push("/product/new")}
+          />
+          <Button
+            variant="outline"
+            size="icon"
+            style={{ height: 44, width: 44 }}
+            accessibilityLabel="Import products from Excel or CSV"
+            leftIcon={<FileSpreadsheet size={18} color={colors.foreground} />}
+            onPress={() =>
+              router.push({
+                pathname: "/product/new",
+                params: { mode: "import" },
+              })
+            }
+          />
+        </View>
 
         <SegmentedTabs
           options={STOCK_FILTER_OPTIONS}
@@ -235,6 +258,11 @@ const styles = StyleSheet.create({
   },
   controls: {
     width: "100%",
+  },
+  searchActionRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
   },
   catChip: {
     borderWidth: 1,
