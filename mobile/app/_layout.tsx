@@ -1,5 +1,5 @@
 import React, { useEffect } from "react";
-import { Stack, useRouter, useSegments } from "expo-router";
+import { Stack } from "expo-router";
 import * as SplashScreen from "expo-splash-screen";
 import { StatusBar } from "expo-status-bar";
 import { SafeAreaProvider } from "react-native-safe-area-context";
@@ -19,19 +19,7 @@ SplashScreen.preventAutoHideAsync().catch(() => {});
 
 function ThemedNavigator() {
   const { theme, mode } = useTheme();
-  const { isAuthenticated, isRestoring } = useAuth();
-  const segments = useSegments();
-  const router = useRouter();
-
-  useEffect(() => {
-    if (isRestoring) return;
-    const onSignInRoute = segments[0] === "sign-in";
-    if (!isAuthenticated && !onSignInRoute) {
-      router.replace("/sign-in");
-    } else if (isAuthenticated && onSignInRoute) {
-      router.replace("/(tabs)");
-    }
-  }, [isAuthenticated, isRestoring, segments, router]);
+  const { isAuthenticated, isRestoring, hasCompletedOnboarding } = useAuth();
 
   if (isRestoring) {
     return <LoadingState message="Restoring POS session..." />;
@@ -52,57 +40,66 @@ function ThemedNavigator() {
           contentStyle: { backgroundColor: theme.colors.background },
         }}
       >
-        <Stack.Screen name="sign-in" options={{ headerShown: false }} />
-        <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
-        <Stack.Screen
-          name="product/new"
-          options={{
-            title: "Add Products",
-            headerBackTitle: "Inventory",
-          }}
-        />
-        <Stack.Screen
-          name="product/[id]"
-          options={{
-            title: "Product Details",
-            headerBackTitle: "Back",
-          }}
-        />
-        <Stack.Screen
-          name="sales/new"
-          options={{
-            title: "New Sale",
-            headerBackTitle: "Back",
-          }}
-        />
-        <Stack.Screen
-          name="sales/summary"
-          options={{
-            title: "Sales Report",
-            headerBackTitle: "Sales",
-          }}
-        />
-        <Stack.Screen
-          name="sales/[id]"
-          options={{
-            title: "Receipt Details",
-            headerBackTitle: "Sales",
-          }}
-        />
-        <Stack.Screen
-          name="settings"
-          options={{
-            title: "Settings",
-            headerBackTitle: "Account",
-          }}
-        />
-        <Stack.Screen
-          name="audit-logs"
-          options={{
-            title: "Audit Logs",
-            headerBackTitle: "Account",
-          }}
-        />
+        <Stack.Protected guard={!hasCompletedOnboarding} redirectTo="/sign-in">
+          <Stack.Screen name="onboarding" options={{ headerShown: false }} />
+        </Stack.Protected>
+
+        <Stack.Protected guard={hasCompletedOnboarding && !isAuthenticated}>
+          <Stack.Screen name="sign-in" options={{ headerShown: false }} />
+        </Stack.Protected>
+
+        <Stack.Protected guard={hasCompletedOnboarding && isAuthenticated}>
+          <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
+          <Stack.Screen
+            name="product/new"
+            options={{
+              title: "Add Products",
+              headerBackTitle: "Inventory",
+            }}
+          />
+          <Stack.Screen
+            name="product/[id]"
+            options={{
+              title: "Product Details",
+              headerBackTitle: "Back",
+            }}
+          />
+          <Stack.Screen
+            name="sales/new"
+            options={{
+              title: "New Sale",
+              headerBackTitle: "Back",
+            }}
+          />
+          <Stack.Screen
+            name="sales/summary"
+            options={{
+              title: "Sales Report",
+              headerBackTitle: "Sales",
+            }}
+          />
+          <Stack.Screen
+            name="sales/[id]"
+            options={{
+              title: "Receipt Details",
+              headerBackTitle: "Sales",
+            }}
+          />
+          <Stack.Screen
+            name="settings"
+            options={{
+              title: "Settings",
+              headerBackTitle: "Account",
+            }}
+          />
+          <Stack.Screen
+            name="audit-logs"
+            options={{
+              title: "Audit Logs",
+              headerBackTitle: "Account",
+            }}
+          />
+        </Stack.Protected>
       </Stack>
     </>
   );

@@ -15,7 +15,9 @@ import {
 } from "./sqliteAdapter";
 import {
   clearStoredAuthToken,
+  getHasCompletedOnboarding,
   getStoredAuthToken,
+  setHasCompletedOnboarding,
   setStoredAuthToken,
 } from "./tokenStorage";
 import type {
@@ -30,6 +32,8 @@ interface AuthContextValue {
   token: string | null;
   isRestoring: boolean;
   isAuthenticated: boolean;
+  hasCompletedOnboarding: boolean;
+  completeOnboarding: () => Promise<void>;
   apiClient: AuthenticatedApiClient;
   signIn: (identifier: string, password: string) => Promise<void>;
   signOut: () => Promise<void>;
@@ -43,6 +47,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<SessionUser | null>(null);
   const [store, setStore] = useState<StoreProfile | null>(null);
   const [token, setToken] = useState<string | null>(null);
+  const [hasCompletedOnboarding, setHasCompletedOnboardingState] =
+    useState(false);
   const [isRestoring, setIsRestoring] = useState(true);
 
   const tokenRef = useRef<string | null>(null);
@@ -75,7 +81,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     let active = true;
     async function restoreSession() {
       try {
-        const stored = await getStoredAuthToken();
+        const [stored, onboarded] = await Promise.all([
+          getStoredAuthToken(),
+          getHasCompletedOnboarding(),
+        ]);
+        if (active) {
+          setHasCompletedOnboardingState(onboarded);
+        }
         if (!stored) {
           return;
         }
@@ -85,6 +97,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           setToken(stored);
           setUser(session.user);
           setStore(session.store);
+          if (!onboarded) {
+            setHasCompletedOnboardingState(true);
+            void setHasCompletedOnboarding(true);
+          }
         }
       } catch {
         tokenRef.current = null;
@@ -105,6 +121,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       active = false;
     };
   }, [apiClient]);
+
+  const completeOnboarding = useCallback(async () => {
+    setHasCompletedOnboardingState(true);
+    await setHasCompletedOnboarding(true);
+  }, []);
 
   const signIn = useCallback(
     async (identifier: string, password: string) => {
@@ -163,6 +184,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       token,
       isRestoring,
       isAuthenticated: Boolean(user && token),
+      hasCompletedOnboarding,
+      completeOnboarding,
       apiClient,
       signIn,
       signOut,
@@ -174,6 +197,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       store,
       token,
       isRestoring,
+      hasCompletedOnboarding,
+      completeOnboarding,
       apiClient,
       signIn,
       signOut,

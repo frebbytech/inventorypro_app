@@ -90,3 +90,43 @@ export async function setStoredAppearance(
     // ignore SecureStore write errors
   }
 }
+
+const ONBOARDING_COMPLETED_KEY = "inventory_pro_mobile_onboarding_completed";
+
+export async function getHasCompletedOnboarding(): Promise<boolean> {
+  try {
+    let raw: string | null = null;
+    if (Platform.OS === "web") {
+      raw =
+        typeof window !== "undefined"
+          ? window.localStorage.getItem(ONBOARDING_COMPLETED_KEY)
+          : null;
+    } else {
+      raw = await SecureStore.getItemAsync(ONBOARDING_COMPLETED_KEY);
+    }
+    return raw === "true";
+  } catch {
+    return false;
+  }
+}
+
+export async function setHasCompletedOnboarding(
+  completed: boolean,
+): Promise<void> {
+  const value = completed ? "true" : "false";
+  if (Platform.OS === "web") {
+    try {
+      if (typeof window !== "undefined") {
+        window.localStorage.setItem(ONBOARDING_COMPLETED_KEY, value);
+      }
+    } catch {
+      // ignore storage quota errors
+    }
+    return;
+  }
+  try {
+    await SecureStore.setItemAsync(ONBOARDING_COMPLETED_KEY, value);
+  } catch {
+    // ignore SecureStore write errors
+  }
+}

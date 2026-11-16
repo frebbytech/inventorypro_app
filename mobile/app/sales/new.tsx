@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   FlatList,
   KeyboardAvoidingView,
@@ -20,6 +20,7 @@ import {
   Minus,
   Package,
   Plus,
+  ScanBarcode,
   Search,
   ShoppingCart,
   Trash2,
@@ -29,6 +30,7 @@ import { useApiClient } from "@/api/ApiProvider";
 import { useAuth } from "@/api/AuthProvider";
 import { EmptyState } from "@/components/EmptyState";
 import { LoadingState } from "@/components/LoadingState";
+import { SalesBarcodeScannerModal } from "@/components/SalesBarcodeScannerModal";
 import {
   Button,
   Card,
@@ -53,7 +55,10 @@ const PAYMENT_OPTIONS: { value: PaymentMode; label: string }[] = [
 ];
 
 export default function NewSaleScreen() {
-  const { productId } = useLocalSearchParams<{ productId?: string }>();
+  const { productId, scan } = useLocalSearchParams<{
+    productId?: string;
+    scan?: string;
+  }>();
   const { theme } = useTheme();
   const api = useApiClient();
   const { store } = useAuth();
@@ -66,7 +71,10 @@ export default function NewSaleScreen() {
   const [refreshing, setRefreshing] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [cart, setCart] = useState<CartLine[]>([]);
+  const cartRef = useRef<CartLine[]>([]);
+  cartRef.current = cart;
   const [cartOpen, setCartOpen] = useState(false);
+  const [scannerOpen, setScannerOpen] = useState(scan === "1");
 
   const [customerName, setCustomerName] = useState("");
   const [customerPhone, setCustomerPhone] = useState("");
@@ -135,7 +143,13 @@ export default function NewSaleScreen() {
     [cart],
   );
 
-  const addToCart = (product: ProductItem) => {
+  useEffect(() => {
+    if (scan === "1") {
+      setScannerOpen(true);
+    }
+  }, [scan]);
+
+  const addToCart = useCallback((product: ProductItem) => {
     setError(null);
     setCart((prev) => {
       const existing = prev.find((c) => c.product.id === product.id);
@@ -149,9 +163,35 @@ export default function NewSaleScreen() {
       }
       return [...prev, { product, quantity: 1 }];
     });
-  };
+  }, []);
 
-  const updateCartQty = (id: string, delta: number) => {
+  const addScannedProductToCart = useCallback(
+    (
+      product: ProductItem,
+    ): { ok: boolean; quantity: number; reason?: string } => {
+      if (product.stockQuantity <= 0) {
+        return {
+          ok: false,
+          quantity: 0,
+          reason: `${product.name} is currently out of stock.`,
+        };
+      }
+      const existing = cartRef.current.find((c) => c.product.id === product.id);
+      const currentQty = existing?.quantity ?? 0;
+      if (currentQty >= product.stockQuantity) {
+        return {
+          ok: false,
+          quantity: currentQty,
+          reason: `Maximum available stock (${product.stockQuantity}) already in cart.`,
+        };
+      }
+      addToCart(product);
+      return { ok: true, quantity: currentQty + 1 };
+    },
+    [addToCart],
+  );
+
+  const updateCartQty = useCallback((id: string, delta: number) => {
     setError(null);
     setCart((prev) =>
       prev
@@ -162,7 +202,7 @@ export default function NewSaleScreen() {
         })
         .filter((line) => line.quantity > 0),
     );
-  };
+  }, []);
 
   const subtotal = useMemo(
     () =>
@@ -261,33 +301,46 @@ export default function NewSaleScreen() {
         }}
       />
 
-      {/* Search bar for filtering the products list */}
+      {/* Search bar + camera barcode scanner trigger for the products list */}
       <View
-        style={{
-          paddingHorizontal: spacing.base,
-          paddingTop: spacing.md,
-          paddingBottom: spacing.sm,
-        }}
+        style={[
+          styles.searchRow,
+          {
+            paddingHorizontal: spacing.base,
+            paddingTop: spacing.md,
+            paddingBottom: spacing.sm,
+          },
+        ]}
       >
-        <Input
-          value={searchQuery}
-          onChangeText={setSearchQuery}
-          placeholder="Search products by name, category, or barcode..."
-          returnKeyType="search"
-          autoCapitalize="none"
-          autoCorrect={false}
-          leftIcon={<Search size={18} color={colors.mutedForeground} />}
-          rightSlot={
-            searchQuery.length > 0 ? (
-              <Pressable
-                onPress={() => setSearchQuery("")}
-                hitSlop={8}
-                accessibilityLabel="Clear search"
-              >
-                <X size={16} color={colors.mutedForeground} />
-              </Pressable>
-            ) : null
-          }
+        <View style={{ flex: 1 }}>
+          <Input
+            value={searchQuery}
+            onChangeText={setSearchQuery}
+            placeholder="Search products by name, category, or barcode..."
+            returnKeyType="search"
+            autoCapitalize="none"
+            autoCorrect={false}
+            leftIcon={<Search size={18} color={colors.mutedForeground} />}
+            rightSlot={
+              searchQuery.length > 0 ? (
+                <Pressable
+                  onPress={() => setSearchQuery("")}
+                  hitSlop={8}
+                  accessibilityLabel="Clear search"
+                >
+                  <X size={16} color={colors.mutedForeground} />
+                </Pressable>
+              ) : null
+            }
+          />
+        </View>
+        <Button
+          variant="outline"
+          size="icon"
+          style={{ height: 48, width: 48 }}
+          accessibilityLabel="Scan product barcode"
+          leftIcon={<ScanBarcode size={20} color={colors.foreground} />}
+          onPress={() => setScannerOpen(true)}
         />
       </View>
 
@@ -968,6 +1021,17 @@ export default function NewSaleScreen() {
           </KeyboardAvoidingView>
         </View>
       </Modal>
+
+      <SalesBarcodeScannerModal
+        visible={scannerOpen}
+        onClose={() => setScannerOpen(false)}
+        onOpenCart={() => setCartOpen(true)}
+        cartCount={totalSelectedCount}
+        cartQtyById={cartQtyById}
+        onAddProduct={addScannedProductToCart}
+        onDecrementProduct={(id) => updateCartQty(id, -1)}
+        currency={currency}
+      />
     </View>
   );
 }
@@ -975,6 +1039,11 @@ export default function NewSaleScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
+  },
+  searchRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
   },
   headerCartBtn: {
     width: 40,

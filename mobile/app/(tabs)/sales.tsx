@@ -15,6 +15,7 @@ import {
   ChevronRight,
   Plus,
   Receipt,
+  ScanBarcode,
   Search,
   X,
 } from "lucide-react-native";
@@ -179,6 +180,18 @@ export default function SalesScreen() {
             accessibilityLabel="Open Sales Report"
             leftIcon={<BarChart3 size={18} color={colors.foreground} />}
             onPress={() => router.push("/sales/summary")}
+          />
+          <Button
+            variant="outline"
+            size="icon"
+            accessibilityLabel="Scan barcode to start sale"
+            leftIcon={<ScanBarcode size={18} color={colors.foreground} />}
+            onPress={() =>
+              router.push({
+                pathname: "/sales/new",
+                params: { scan: "1" },
+              })
+            }
           />
           <Button
             title="New Sale"
