@@ -8,8 +8,12 @@ import type {
   AuthLoginPayload,
   AuthLoginResponse,
   AuthSessionResponse,
+  BroadcastMessageItem,
+  BroadcastRecipient,
+  BroadcastRecipientGroup,
   BulkImportProductsResult,
   CategoryItem,
+  ChangePasswordInput,
   CreateCategoryInput,
   CreateCustomerInput,
   CreateEmployeeInput,
@@ -23,6 +27,8 @@ import type {
   DailyReportData,
   EmployeeDetailResponse,
   EmployeeItem,
+  NotificationItem,
+  NotificationsQueryParams,
   PaySupplierBalanceInput,
   ProductDetailResponse,
   ProductItem,
@@ -35,6 +41,8 @@ import type {
   SalesQueryParams,
   SalesReportData,
   SaleTransactionSummary,
+  SendBroadcastInput,
+  SessionUser,
   StoreProfile,
   SupplierDetailResponse,
   SupplierItem,
@@ -44,8 +52,10 @@ import type {
   UpdateCategoryInput,
   UpdateCustomerInput,
   UpdateEmployeeInput,
+  UpdateMyProfileInput,
   UpdateProductInput,
   UpdateSupplierInput,
+  UserSessionItem,
 } from "@/types/domain";
 
 export function resolveApiBaseUrl(): string {
@@ -472,6 +482,99 @@ export class HttpApiClient implements AuthenticatedApiClient {
     if (typeof params?.limit === "number") qs.set("limit", String(params.limit));
     const suffix = qs.toString() ? `?${qs.toString()}` : "";
     return this.request<AuditLogItem[]>(`/api/mobile/v1/audit-logs${suffix}`);
+  }
+
+  getNotifications(params?: NotificationsQueryParams): Promise<NotificationItem[]> {
+    const qs = new URLSearchParams();
+    if (params?.unreadOnly) qs.set("unreadOnly", "true");
+    if (typeof params?.limit === "number") qs.set("limit", String(params.limit));
+    const suffix = qs.toString() ? `?${qs.toString()}` : "";
+    return this.request<NotificationItem[]>(`/api/mobile/v1/notifications${suffix}`);
+  }
+
+  async getUnreadNotificationCount(): Promise<number> {
+    const res = await this.request<{ count: number }>(
+      "/api/mobile/v1/notifications/unread-count",
+    );
+    return Number(res?.count ?? 0);
+  }
+
+  markNotificationRead(notificationId: string): Promise<NotificationItem> {
+    return this.request<NotificationItem>(
+      `/api/mobile/v1/notifications/${encodeURIComponent(notificationId)}/read`,
+      { method: "PATCH" },
+    );
+  }
+
+  markAllNotificationsRead(): Promise<{ updatedCount: number }> {
+    return this.request<{ updatedCount: number }>(
+      "/api/mobile/v1/notifications/read-all",
+      { method: "POST" },
+    );
+  }
+
+  async deleteNotification(notificationId: string): Promise<void> {
+    await this.request<void>(
+      `/api/mobile/v1/notifications/${encodeURIComponent(notificationId)}`,
+      { method: "DELETE" },
+    );
+  }
+
+  clearAllNotifications(): Promise<{ deletedCount: number }> {
+    return this.request<{ deletedCount: number }>("/api/mobile/v1/notifications", {
+      method: "DELETE",
+    });
+  }
+
+  getBroadcastRecipients(
+    group: BroadcastRecipientGroup,
+  ): Promise<BroadcastRecipient[]> {
+    return this.request<BroadcastRecipient[]>(
+      `/api/mobile/v1/messages/recipients?group=${encodeURIComponent(group)}`,
+    );
+  }
+
+  getBroadcastMessages(): Promise<BroadcastMessageItem[]> {
+    return this.request<BroadcastMessageItem[]>("/api/mobile/v1/messages");
+  }
+
+  sendBroadcastMessage(input: SendBroadcastInput): Promise<BroadcastMessageItem> {
+    return this.request<BroadcastMessageItem>("/api/mobile/v1/messages", {
+      method: "POST",
+      body: JSON.stringify(input),
+    });
+  }
+
+  getUserSessions(): Promise<UserSessionItem[]> {
+    return this.request<UserSessionItem[]>("/api/mobile/v1/security/sessions");
+  }
+
+  async revokeUserSession(sessionId: string): Promise<void> {
+    await this.request<void>(
+      `/api/mobile/v1/security/sessions/${encodeURIComponent(sessionId)}`,
+      { method: "DELETE" },
+    );
+  }
+
+  revokeOtherUserSessions(): Promise<{ revokedCount: number }> {
+    return this.request<{ revokedCount: number }>(
+      "/api/mobile/v1/security/sessions/revoke-others",
+      { method: "POST" },
+    );
+  }
+
+  updateMyProfile(input: UpdateMyProfileInput): Promise<SessionUser> {
+    return this.request<SessionUser>("/api/mobile/v1/security/profile", {
+      method: "PATCH",
+      body: JSON.stringify(input),
+    });
+  }
+
+  async changeMyPassword(input: ChangePasswordInput): Promise<void> {
+    await this.request<void>("/api/mobile/v1/security/password", {
+      method: "POST",
+      body: JSON.stringify(input),
+    });
   }
 
   updateStockAlertThreshold(threshold: number): Promise<StoreProfile> {

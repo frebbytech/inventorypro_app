@@ -10,8 +10,12 @@ import {
   LOW_STOCK_THRESHOLD,
   type AuditLogItem,
   type AuditLogsQueryParams,
+  type BroadcastMessageItem,
+  type BroadcastRecipient,
+  type BroadcastRecipientGroup,
   type BulkImportProductsResult,
   type CategoryItem,
+  type ChangePasswordInput,
   type CreateCategoryInput,
   type CreateCustomerInput,
   type CreateEmployeeInput,
@@ -24,6 +28,8 @@ import {
   type DailyReportData,
   type EmployeeDetailResponse,
   type EmployeeItem,
+  type NotificationItem,
+  type NotificationsQueryParams,
   type PaySupplierBalanceInput,
   type PaymentBreakdownItem,
   type PaymentMode,
@@ -39,6 +45,8 @@ import {
   type SalesQueryParams,
   type SalesReportData,
   type SaleTransactionSummary,
+  type SendBroadcastInput,
+  type SessionUser,
   type StockAlertItem,
   type StoreProfile,
   type SupplierDetailResponse,
@@ -50,8 +58,10 @@ import {
   type UpdateCategoryInput,
   type UpdateCustomerInput,
   type UpdateEmployeeInput,
+  type UpdateMyProfileInput,
   type UpdateProductInput,
   type UpdateSupplierInput,
+  type UserSessionItem,
 } from "@/types/domain";
 
 function computeSaleTotals(seed: DemoSaleSeed) {
@@ -583,6 +593,73 @@ export class DemoDataAdapter implements InventoryProApiClient {
   async getAuditLogs(_params?: AuditLogsQueryParams): Promise<AuditLogItem[]> {
     await this.simulateLatency(60);
     return [];
+  }
+
+  async getNotifications(
+    _params?: NotificationsQueryParams,
+  ): Promise<NotificationItem[]> {
+    await this.simulateLatency(40);
+    return [];
+  }
+
+  async getUnreadNotificationCount(): Promise<number> {
+    await this.simulateLatency(20);
+    return 0;
+  }
+
+  async markNotificationRead(_notificationId: string): Promise<NotificationItem> {
+    throw new Error("Managing notifications requires the on-device SQLite backend.");
+  }
+
+  async markAllNotificationsRead(): Promise<{ updatedCount: number }> {
+    return { updatedCount: 0 };
+  }
+
+  async deleteNotification(_notificationId: string): Promise<void> {
+    throw new Error("Managing notifications requires the on-device SQLite backend.");
+  }
+
+  async clearAllNotifications(): Promise<{ deletedCount: number }> {
+    return { deletedCount: 0 };
+  }
+
+  async getBroadcastRecipients(
+    _group: BroadcastRecipientGroup,
+  ): Promise<BroadcastRecipient[]> {
+    await this.simulateLatency(40);
+    return [];
+  }
+
+  async getBroadcastMessages(): Promise<BroadcastMessageItem[]> {
+    await this.simulateLatency(40);
+    return [];
+  }
+
+  async sendBroadcastMessage(
+    _input: SendBroadcastInput,
+  ): Promise<BroadcastMessageItem> {
+    throw new Error("Sending broadcasts requires the on-device SQLite backend.");
+  }
+
+  async getUserSessions(): Promise<UserSessionItem[]> {
+    await this.simulateLatency(40);
+    return [];
+  }
+
+  async revokeUserSession(_sessionId: string): Promise<void> {
+    throw new Error("Managing sessions requires the on-device SQLite backend.");
+  }
+
+  async revokeOtherUserSessions(): Promise<{ revokedCount: number }> {
+    return { revokedCount: 0 };
+  }
+
+  async updateMyProfile(_input: UpdateMyProfileInput): Promise<SessionUser> {
+    throw new Error("Updating your profile requires the on-device SQLite backend.");
+  }
+
+  async changeMyPassword(_input: ChangePasswordInput): Promise<void> {
+    throw new Error("Changing password requires the on-device SQLite backend.");
   }
 
   async updateStockAlertThreshold(threshold: number): Promise<StoreProfile> {

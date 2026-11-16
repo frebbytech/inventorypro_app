@@ -1,7 +1,7 @@
-import React, { useState } from "react";
+import React, { useCallback, useState } from "react";
 import { Modal, Pressable, StyleSheet, Text, View } from "react-native";
-import { useRouter } from "expo-router";
-import { LogOut, Settings, User } from "lucide-react-native";
+import { useFocusEffect, useRouter } from "expo-router";
+import { Bell, LogOut, Settings, ShieldCheck, User } from "lucide-react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useAuth } from "@/api/AuthProvider";
 import { SignOutConfirmDialog } from "@/components/SignOutConfirmDialog";
@@ -15,13 +15,19 @@ export function DemoBanner({
   subtitle?: string;
 }) {
   const { theme } = useTheme();
-  const { user } = useAuth();
+  const { user, unreadNotificationsCount, refreshUnreadNotifications } = useAuth();
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const { colors, radii, spacing, typography, fontFamilies, shadows } = theme;
 
   const [menuOpen, setMenuOpen] = useState(false);
   const [logoutOpen, setLogoutOpen] = useState(false);
+
+  useFocusEffect(
+    useCallback(() => {
+      void refreshUnreadNotifications();
+    }, [refreshUnreadNotifications]),
+  );
 
   const fullName = user
     ? [user.firstname, user.lastname].filter(Boolean).join(" ").trim() ||
@@ -32,7 +38,9 @@ export function DemoBanner({
     ? (user.firstname?.[0] || user.username?.[0] || "U").toUpperCase()
     : "U";
 
-  const navigateAndClose = (path: "/(tabs)/account" | "/settings") => {
+  const navigateAndClose = (
+    path: "/(tabs)/account" | "/notifications" | "/security" | "/settings",
+  ) => {
     setMenuOpen(false);
     router.push(path);
   };
@@ -68,28 +76,63 @@ export function DemoBanner({
             ) : null}
           </View>
 
-          <Pressable
-            onPress={() => setMenuOpen(true)}
-            accessibilityLabel="Open account menu"
-            accessibilityRole="button"
-            style={({ pressed }) => [
-              styles.avatarBtn,
-              {
-                backgroundColor: colors.muted,
-                borderColor: colors.border,
-                opacity: pressed ? 0.78 : 1,
-              },
-            ]}
-          >
-            <Text
-              style={[
-                typography.bodySemibold,
-                { color: colors.foreground, fontFamily: fontFamilies.bold },
+          <View style={styles.rightActions}>
+            <Pressable
+              onPress={() => router.push("/notifications")}
+              accessibilityLabel={`Notifications${unreadNotificationsCount > 0 ? `, ${unreadNotificationsCount} unread` : ""}`}
+              accessibilityRole="button"
+              style={({ pressed }) => [
+                styles.iconBtn,
+                {
+                  backgroundColor: colors.muted,
+                  borderColor: colors.border,
+                  opacity: pressed ? 0.78 : 1,
+                },
               ]}
             >
-              {initials}
-            </Text>
-          </Pressable>
+              <Bell size={17} color={colors.foreground} />
+              {unreadNotificationsCount > 0 ? (
+                <View
+                  style={[
+                    styles.bellBadge,
+                    {
+                      backgroundColor: colors.destructive,
+                      borderColor: colors.headerBackground,
+                    },
+                  ]}
+                >
+                  <Text style={styles.bellBadgeText}>
+                    {unreadNotificationsCount > 99
+                      ? "99+"
+                      : String(unreadNotificationsCount)}
+                  </Text>
+                </View>
+              ) : null}
+            </Pressable>
+
+            <Pressable
+              onPress={() => setMenuOpen(true)}
+              accessibilityLabel="Open account menu"
+              accessibilityRole="button"
+              style={({ pressed }) => [
+                styles.avatarBtn,
+                {
+                  backgroundColor: colors.muted,
+                  borderColor: colors.border,
+                  opacity: pressed ? 0.78 : 1,
+                },
+              ]}
+            >
+              <Text
+                style={[
+                  typography.bodySemibold,
+                  { color: colors.foreground, fontFamily: fontFamilies.bold },
+                ]}
+              >
+                {initials}
+              </Text>
+            </Pressable>
+          </View>
         </View>
       </View>
 
@@ -175,6 +218,58 @@ export function DemoBanner({
               </Pressable>
 
               <Pressable
+                onPress={() => navigateAndClose("/notifications")}
+                style={({ pressed }) => [
+                  styles.menuItem,
+                  {
+                    borderRadius: radii.lg,
+                    backgroundColor: pressed ? colors.accent : "transparent",
+                  },
+                ]}
+              >
+                <Bell size={15} color={colors.mutedForeground} />
+                <Text
+                  style={[
+                    typography.bodyMedium,
+                    { color: colors.foreground, flex: 1 },
+                  ]}
+                >
+                  Notifications
+                </Text>
+                {unreadNotificationsCount > 0 ? (
+                  <Text
+                    style={[
+                      typography.micro,
+                      {
+                        color: colors.primary,
+                        fontFamily: fontFamilies.bold,
+                      },
+                    ]}
+                  >
+                    {unreadNotificationsCount}
+                  </Text>
+                ) : null}
+              </Pressable>
+
+              <Pressable
+                onPress={() => navigateAndClose("/security")}
+                style={({ pressed }) => [
+                  styles.menuItem,
+                  {
+                    borderRadius: radii.lg,
+                    backgroundColor: pressed ? colors.accent : "transparent",
+                  },
+                ]}
+              >
+                <ShieldCheck size={15} color={colors.mutedForeground} />
+                <Text
+                  style={[typography.bodyMedium, { color: colors.foreground }]}
+                >
+                  Security & Sessions
+                </Text>
+              </Pressable>
+
+              <Pressable
                 onPress={() => navigateAndClose("/settings")}
                 style={({ pressed }) => [
                   styles.menuItem,
@@ -253,6 +348,38 @@ const styles = StyleSheet.create({
     flex: 1,
     minWidth: 0,
   },
+  rightActions: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+  },
+  iconBtn: {
+    width: 36,
+    height: 36,
+    borderRadius: 9999,
+    borderWidth: 1,
+    alignItems: "center",
+    justifyContent: "center",
+    position: "relative",
+  },
+  bellBadge: {
+    position: "absolute",
+    top: -4,
+    right: -4,
+    minWidth: 18,
+    height: 18,
+    borderRadius: 9999,
+    borderWidth: 1.5,
+    paddingHorizontal: 4,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  bellBadgeText: {
+    color: "#FFFFFF",
+    fontSize: 10,
+    fontWeight: "700",
+    lineHeight: 12,
+  },
   avatarBtn: {
     width: 36,
     height: 36,
@@ -267,7 +394,7 @@ const styles = StyleSheet.create({
     alignItems: "flex-end",
   },
   dropdownCard: {
-    width: 228,
+    width: 236,
     borderWidth: 1,
     overflow: "hidden",
   },

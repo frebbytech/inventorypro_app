@@ -169,6 +169,27 @@ function ThemedNavigator() {
               headerBackTitle: "Account",
             }}
           />
+          <Stack.Screen
+            name="notifications"
+            options={{
+              title: "Notifications",
+              headerBackTitle: "Back",
+            }}
+          />
+          <Stack.Screen
+            name="messages"
+            options={{
+              title: "Messages & Broadcasts",
+              headerBackTitle: "Account",
+            }}
+          />
+          <Stack.Screen
+            name="security"
+            options={{
+              title: "Security & Sessions",
+              headerBackTitle: "Account",
+            }}
+          />
         </Stack.Protected>
       </Stack>
     </>

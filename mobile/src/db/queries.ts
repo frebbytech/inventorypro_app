@@ -3,8 +3,10 @@ import type { ExpoSqliteDrizzleDb } from "./client";
 import { generateId, generateSessionToken, hashPassword, verifyPassword } from "./crypto";
 import {
   auditLogs,
+  broadcastMessages,
   customers,
   inventory,
+  notifications,
   productCategories,
   products,
   saleItems,
@@ -22,8 +24,13 @@ import {
   type AuditLogsQueryParams,
   type AuthLoginResponse,
   type AuthSessionResponse,
+  type BroadcastChannel,
+  type BroadcastMessageItem,
+  type BroadcastRecipient,
+  type BroadcastRecipientGroup,
   type BulkImportProductsResult,
   type CategoryItem,
+  type ChangePasswordInput,
   type CreateCategoryInput,
   type CreateCustomerInput,
   type CreateEmployeeInput,
@@ -38,6 +45,8 @@ import {
   type DailyReportData,
   type EmployeeDetailResponse,
   type EmployeeItem,
+  type NotificationItem,
+  type NotificationsQueryParams,
   type PaySupplierBalanceInput,
   type PaymentBreakdownItem,
   type PaymentMode,
@@ -54,6 +63,7 @@ import {
   type SalesReportData,
   type SaleStatus,
   type SaleTransactionSummary,
+  type SendBroadcastInput,
   type SessionUser,
   type StockAlertItem,
   type StoreProfile,
@@ -66,8 +76,10 @@ import {
   type UpdateCategoryInput,
   type UpdateCustomerInput,
   type UpdateEmployeeInput,
+  type UpdateMyProfileInput,
   type UpdateProductInput,
   type UpdateSupplierInput,
+  type UserSessionItem,
 } from "@/types/domain";
 
 const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
@@ -1149,6 +1161,23 @@ export function refundSale(
         }),
       })
       .run();
+
+    tx.insert(notifications)
+      .values({
+        id: generateId("notif"),
+        userId: input.userId,
+        type: "refund",
+        title: `Sale refunded: ${existing.receiptNumber}`,
+        message: restockItems
+          ? `Refund processed (${restockedUnits} unit${restockedUnits === 1 ? "" : "s"} returned to inventory).`
+          : "Refund processed without restocking items.",
+        isRead: 0,
+        referenceType: "sale",
+        referenceId: existing.id,
+        createdAt: nowIso,
+        updatedAt: nowIso,
+      })
+      .run();
   });
 
   const updated = getSaleReceipt(db, input.saleId);
@@ -1436,6 +1465,38 @@ export function createSale(
         .set({ stockQuantity: item.newStock, updatedAt: nowIso })
         .where(eq(products.id, item.productId))
         .run();
+
+      if (item.newStock <= LOW_STOCK_THRESHOLD) {
+        const prodRow = tx
+          .select({ name: products.name, lowStockThreshold: products.lowStockThreshold })
+          .from(products)
+          .where(eq(products.id, item.productId))
+          .limit(1)
+          .get();
+        const threshold = Number(prodRow?.lowStockThreshold ?? LOW_STOCK_THRESHOLD);
+        if (prodRow && item.newStock < threshold) {
+          tx.insert(notifications)
+            .values({
+              id: generateId("notif"),
+              userId: input.userId,
+              type: "low_stock",
+              title:
+                item.newStock <= 0
+                  ? `Out of stock: ${prodRow.name}`
+                  : `Low stock: ${prodRow.name}`,
+              message:
+                item.newStock <= 0
+                  ? `Stock reached 0 after receipt ${receiptNo}. Time to reorder.`
+                  : `Only ${item.newStock} unit${item.newStock === 1 ? "" : "s"} left after receipt ${receiptNo}.`,
+              isRead: 0,
+              referenceType: "product",
+              referenceId: item.productId,
+              createdAt: nowIso,
+              updatedAt: nowIso,
+            })
+            .run();
+        }
+      }
     }
 
     tx.insert(auditLogs)
@@ -3505,4 +3566,705 @@ export function getDailyReport(
     ),
   };
 }
+
+// ---------------------------------------------------------------------------
+// Phase 7 — Notifications, Broadcast Messages & Account Security
+// ---------------------------------------------------------------------------
+
+function mapNotificationRow(
+  row: typeof notifications.$inferSelect,
+): NotificationItem {
+  return {
+    id: row.id,
+    userId: row.userId,
+    type: row.type,
+    title: row.title,
+    message: row.message,
+    isRead: row.isRead === 1,
+    referenceType: row.referenceType,
+    referenceId: row.referenceId,
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
+  };
+}
+
+export function listNotifications(
+  db: ExpoSqliteDrizzleDb,
+  params: NotificationsQueryParams & { userId: string },
+): NotificationItem[] {
+  const limit =
+    typeof params.limit === "number" && params.limit > 0
+      ? Math.min(200, Math.trunc(params.limit))
+      : 100;
+
+  const conditions = [eq(notifications.userId, params.userId)];
+  if (params.unreadOnly) {
+    conditions.push(eq(notifications.isRead, 0));
+  }
+
+  const rows = db
+    .select()
+    .from(notifications)
+    .where(and(...conditions))
+    .orderBy(desc(notifications.createdAt))
+    .limit(limit)
+    .all();
+
+  return rows.map(mapNotificationRow);
+}
+
+export function getUnreadNotificationCount(
+  db: ExpoSqliteDrizzleDb,
+  userId: string,
+): number {
+  const row = db
+    .select({ cnt: sql<number>`COUNT(*)` })
+    .from(notifications)
+    .where(and(eq(notifications.userId, userId), eq(notifications.isRead, 0)))
+    .get();
+  return Number(row?.cnt ?? 0);
+}
+
+export function markNotificationRead(
+  db: ExpoSqliteDrizzleDb,
+  input: { id: string; userId: string },
+): NotificationItem {
+  const existing = db
+    .select()
+    .from(notifications)
+    .where(
+      and(eq(notifications.id, input.id), eq(notifications.userId, input.userId)),
+    )
+    .limit(1)
+    .get();
+
+  if (!existing) {
+    throw new Error("Notification not found.");
+  }
+
+  if (existing.isRead === 1) {
+    return mapNotificationRow(existing);
+  }
+
+  const nowIso = new Date().toISOString();
+  db.update(notifications)
+    .set({ isRead: 1, updatedAt: nowIso })
+    .where(eq(notifications.id, existing.id))
+    .run();
+
+  return {
+    ...mapNotificationRow(existing),
+    isRead: true,
+    updatedAt: nowIso,
+  };
+}
+
+export function markAllNotificationsRead(
+  db: ExpoSqliteDrizzleDb,
+  userId: string,
+): { updatedCount: number } {
+  const nowIso = new Date().toISOString();
+  const unread = db
+    .select({ id: notifications.id })
+    .from(notifications)
+    .where(and(eq(notifications.userId, userId), eq(notifications.isRead, 0)))
+    .all();
+
+  if (unread.length === 0) {
+    return { updatedCount: 0 };
+  }
+
+  db.update(notifications)
+    .set({ isRead: 1, updatedAt: nowIso })
+    .where(and(eq(notifications.userId, userId), eq(notifications.isRead, 0)))
+    .run();
+
+  return { updatedCount: unread.length };
+}
+
+export function deleteNotificationById(
+  db: ExpoSqliteDrizzleDb,
+  input: { id: string; userId: string },
+): void {
+  const existing = db
+    .select({ id: notifications.id })
+    .from(notifications)
+    .where(
+      and(eq(notifications.id, input.id), eq(notifications.userId, input.userId)),
+    )
+    .limit(1)
+    .get();
+
+  if (!existing) {
+    throw new Error("Notification not found.");
+  }
+
+  db.delete(notifications).where(eq(notifications.id, existing.id)).run();
+}
+
+export function clearAllNotifications(
+  db: ExpoSqliteDrizzleDb,
+  userId: string,
+): { deletedCount: number } {
+  const existing = db
+    .select({ id: notifications.id })
+    .from(notifications)
+    .where(eq(notifications.userId, userId))
+    .all();
+
+  if (existing.length === 0) {
+    return { deletedCount: 0 };
+  }
+
+  db.transaction((tx) => {
+    tx.delete(notifications).where(eq(notifications.userId, userId)).run();
+    tx.insert(auditLogs)
+      .values({
+        id: generateId("aud"),
+        userId,
+        entityType: "notifications",
+        entityId: userId,
+        action: "delete",
+        oldValues: JSON.stringify({ clearedCount: existing.length }),
+      })
+      .run();
+  });
+
+  return { deletedCount: existing.length };
+}
+
+export function listBroadcastRecipients(
+  db: ExpoSqliteDrizzleDb,
+  group: BroadcastRecipientGroup,
+): BroadcastRecipient[] {
+  if (group === "employees") {
+    const rows = db
+      .select({
+        id: users.id,
+        username: users.username,
+        firstname: users.firstname,
+        lastname: users.lastname,
+        email: users.email,
+        phonenumber: users.phonenumber,
+        role: users.role,
+      })
+      .from(users)
+      .orderBy(asc(users.firstname))
+      .all();
+
+    return rows.map((r) => {
+      const email = r.email?.trim() || null;
+      const phone = r.phonenumber?.trim() || null;
+      const name =
+        [r.firstname, r.lastname].filter(Boolean).join(" ").trim() || r.username;
+      return {
+        id: r.id,
+        name,
+        email,
+        phonenumber: phone,
+        subtitle: r.role === "admin" ? "Administrator" : "Cashier / Staff",
+        hasValidEmail: Boolean(email && email.includes("@")),
+        hasValidPhone: Boolean(phone && phone.replace(/\D/g, "").length >= 5),
+        canReceiveInApp: true,
+      };
+    });
+  }
+
+  if (group === "customers") {
+    const rows = db
+      .select({
+        id: customers.id,
+        name: customers.name,
+        email: customers.email,
+        phonenumber: customers.phonenumber,
+      })
+      .from(customers)
+      .orderBy(asc(customers.name))
+      .all();
+
+    return rows
+      .filter((r) => r.id !== "cust-walkin")
+      .map((r) => {
+        const email = r.email?.trim() || null;
+        const phone = r.phonenumber?.trim() || null;
+        return {
+          id: r.id,
+          name: r.name,
+          email,
+          phonenumber: phone,
+          subtitle: phone || email || "Customer",
+          hasValidEmail: Boolean(email && email.includes("@")),
+          hasValidPhone: Boolean(phone && phone.replace(/\D/g, "").length >= 5),
+          canReceiveInApp: false,
+        };
+      });
+  }
+
+  const rows = db
+    .select({
+      id: suppliers.id,
+      name: suppliers.name,
+      companyName: suppliers.companyName,
+      email: suppliers.email,
+      phonenumber: suppliers.phonenumber,
+    })
+    .from(suppliers)
+    .where(eq(suppliers.isActive, 1))
+    .orderBy(asc(suppliers.name))
+    .all();
+
+  return rows.map((r) => {
+    const email = r.email?.trim() || null;
+    const phone = r.phonenumber?.trim() || null;
+    return {
+      id: r.id,
+      name: r.companyName ? `${r.name} (${r.companyName})` : r.name,
+      email,
+      phonenumber: phone,
+      subtitle: r.companyName || phone || email || "Supplier",
+      hasValidEmail: Boolean(email && email.includes("@")),
+      hasValidPhone: Boolean(phone && phone.replace(/\D/g, "").length >= 5),
+      canReceiveInApp: false,
+    };
+  });
+}
+
+export function listBroadcastMessages(
+  db: ExpoSqliteDrizzleDb,
+): BroadcastMessageItem[] {
+  const rows = db
+    .select()
+    .from(broadcastMessages)
+    .orderBy(desc(broadcastMessages.createdAt))
+    .limit(80)
+    .all();
+
+  return rows.map((r) => ({
+    id: r.id,
+    senderId: r.senderId,
+    senderName: r.senderName,
+    recipientGroup: r.recipientGroup,
+    channel: r.channel,
+    subject: r.subject,
+    content: r.content,
+    recipientCount: Number(r.recipientCount),
+    status: r.status,
+    createdAt: r.createdAt,
+  }));
+}
+
+export function sendBroadcastMessage(
+  db: ExpoSqliteDrizzleDb,
+  input: SendBroadcastInput & { senderId: string },
+): BroadcastMessageItem {
+  const cleanContent = input.content?.trim() ?? "";
+  const cleanSubject = input.subject?.trim() || "";
+
+  if (!cleanContent) {
+    throw new Error("Message content cannot be empty.");
+  }
+
+  if (input.channel === "email" && !cleanSubject) {
+    throw new Error("An email subject line is required for email broadcasts.");
+  }
+
+  if (input.channel === "in_app" && input.recipientGroup !== "employees") {
+    throw new Error("In-app notifications can only be sent to team employees.");
+  }
+
+  const sender = db
+    .select({
+      id: users.id,
+      username: users.username,
+      firstname: users.firstname,
+      lastname: users.lastname,
+    })
+    .from(users)
+    .where(eq(users.id, input.senderId))
+    .limit(1)
+    .get();
+
+  if (!sender) {
+    throw new Error("Sender account not found.");
+  }
+
+  let candidates = listBroadcastRecipients(db, input.recipientGroup);
+  if (input.recipientIds && input.recipientIds.length > 0) {
+    const allowed = new Set(input.recipientIds);
+    candidates = candidates.filter((c) => allowed.has(c.id));
+  }
+
+  if (candidates.length === 0) {
+    throw new Error(`No recipients available in ${input.recipientGroup}.`);
+  }
+
+  const eligible = candidates.filter((r) => {
+    if (input.channel === "email") return r.hasValidEmail;
+    if (input.channel === "sms") return r.hasValidPhone;
+    return r.canReceiveInApp;
+  });
+
+  if (eligible.length === 0) {
+    const requirement =
+      input.channel === "email"
+        ? "valid email addresses"
+        : input.channel === "sms"
+          ? "valid phone numbers"
+          : "active team accounts";
+    throw new Error(`None of the selected recipients have ${requirement}.`);
+  }
+
+  const senderName =
+    [sender.firstname, sender.lastname].filter(Boolean).join(" ").trim() ||
+    sender.username;
+  const nowIso = new Date().toISOString();
+  const broadcastId = generateId("bcast");
+  // In-app broadcasts deliver immediately into local employee notification inboxes;
+  // SMS/Email are queued locally until remote gateway sync is connected.
+  const status: BroadcastMessageItem["status"] =
+    input.channel === "in_app" ? "sent" : "queued";
+
+  db.transaction((tx) => {
+    tx.insert(broadcastMessages)
+      .values({
+        id: broadcastId,
+        senderId: sender.id,
+        senderName,
+        recipientGroup: input.recipientGroup,
+        channel: input.channel as BroadcastChannel,
+        subject: cleanSubject || null,
+        content: cleanContent,
+        recipientCount: eligible.length,
+        status,
+        createdAt: nowIso,
+        updatedAt: nowIso,
+      })
+      .run();
+
+    if (input.channel === "in_app") {
+      for (const emp of eligible) {
+        tx.insert(notifications)
+          .values({
+            id: generateId("notif"),
+            userId: emp.id,
+            type: "employee",
+            title: cleanSubject || `Team announcement from ${senderName}`,
+            message: cleanContent,
+            isRead: 0,
+            referenceType: "broadcast",
+            referenceId: broadcastId,
+            createdAt: nowIso,
+            updatedAt: nowIso,
+          })
+          .run();
+      }
+    }
+
+    tx.insert(auditLogs)
+      .values({
+        id: generateId("aud"),
+        userId: sender.id,
+        entityType: "broadcast_message",
+        entityId: broadcastId,
+        action: "create",
+        newValues: JSON.stringify({
+          channel: input.channel,
+          recipientGroup: input.recipientGroup,
+          recipientCount: eligible.length,
+          status,
+        }),
+      })
+      .run();
+  });
+
+  return {
+    id: broadcastId,
+    senderId: sender.id,
+    senderName,
+    recipientGroup: input.recipientGroup,
+    channel: input.channel,
+    subject: cleanSubject || null,
+    content: cleanContent,
+    recipientCount: eligible.length,
+    status,
+    createdAt: nowIso,
+  };
+}
+
+export function listUserSessions(
+  db: ExpoSqliteDrizzleDb,
+  input: { userId: string; currentToken?: string | null },
+): UserSessionItem[] {
+  const rows = db
+    .select()
+    .from(userSessions)
+    .where(eq(userSessions.userId, input.userId))
+    .orderBy(desc(userSessions.isActive), desc(userSessions.createdAt))
+    .limit(25)
+    .all();
+
+  const nowMs = Date.now();
+  return rows.map((row) => {
+    const notExpired = new Date(row.expiresAt).getTime() > nowMs;
+    const isActive = row.isActive === 1 && notExpired;
+    return {
+      id: row.id,
+      deviceName: row.deviceName?.trim() || "Inventory Pro Mobile",
+      deviceType: row.deviceType?.trim() || "mobile",
+      operatingSystem: row.operatingSystem?.trim() || "expo",
+      isActive,
+      isCurrent: Boolean(input.currentToken && row.token === input.currentToken),
+      lastActivityAt: row.lastActivityAt,
+      expiresAt: row.expiresAt,
+      createdAt: row.createdAt,
+    };
+  });
+}
+
+export function revokeUserSession(
+  db: ExpoSqliteDrizzleDb,
+  input: { sessionId: string; userId: string; currentToken?: string | null },
+): void {
+  const target = db
+    .select()
+    .from(userSessions)
+    .where(
+      and(
+        eq(userSessions.id, input.sessionId),
+        eq(userSessions.userId, input.userId),
+      ),
+    )
+    .limit(1)
+    .get();
+
+  if (!target) {
+    throw new Error("Session not found.");
+  }
+  if (input.currentToken && target.token === input.currentToken) {
+    throw new Error("Use Sign Out on the Account tab to end your current session.");
+  }
+  if (target.isActive === 0) {
+    return;
+  }
+
+  db.transaction((tx) => {
+    tx.update(userSessions)
+      .set({ isActive: 0 })
+      .where(eq(userSessions.id, target.id))
+      .run();
+
+    tx.insert(auditLogs)
+      .values({
+        id: generateId("aud"),
+        userId: input.userId,
+        entityType: "user_session",
+        entityId: target.id,
+        action: "logout",
+        newValues: JSON.stringify({
+          revokedDevice: target.deviceName || "Inventory Pro Mobile",
+        }),
+      })
+      .run();
+  });
+}
+
+export function revokeOtherUserSessions(
+  db: ExpoSqliteDrizzleDb,
+  input: { userId: string; currentToken: string },
+): { revokedCount: number } {
+  const activeSessions = db
+    .select({ id: userSessions.id, token: userSessions.token })
+    .from(userSessions)
+    .where(and(eq(userSessions.userId, input.userId), eq(userSessions.isActive, 1)))
+    .all();
+
+  const others = activeSessions.filter((s) => s.token !== input.currentToken);
+  if (others.length === 0) {
+    return { revokedCount: 0 };
+  }
+
+  db.transaction((tx) => {
+    for (const s of others) {
+      tx.update(userSessions)
+        .set({ isActive: 0 })
+        .where(eq(userSessions.id, s.id))
+        .run();
+    }
+
+    tx.insert(auditLogs)
+      .values({
+        id: generateId("aud"),
+        userId: input.userId,
+        entityType: "user_session",
+        entityId: input.userId,
+        action: "logout",
+        newValues: JSON.stringify({
+          revokedOtherSessionsCount: others.length,
+        }),
+      })
+      .run();
+  });
+
+  return { revokedCount: others.length };
+}
+
+export function updateOwnProfile(
+  db: ExpoSqliteDrizzleDb,
+  input: UpdateMyProfileInput & { userId: string },
+): SessionUser {
+  const firstname = input.firstname.trim();
+  const lastname = input.lastname.trim();
+  const email = input.email.trim().toLowerCase();
+  const phonenumber = input.phonenumber?.trim() || null;
+
+  if (!firstname) {
+    throw new Error("First name is required.");
+  }
+  if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    throw new Error("Enter a valid email address.");
+  }
+
+  const nowIso = new Date().toISOString();
+
+  db.transaction((tx) => {
+    const existing = tx
+      .select()
+      .from(users)
+      .where(eq(users.id, input.userId))
+      .limit(1)
+      .get();
+
+    if (!existing) {
+      throw new Error("User account not found.");
+    }
+
+    const dupEmail = tx
+      .select({ id: users.id })
+      .from(users)
+      .where(and(eq(sql`LOWER(${users.email})`, email), ne(users.id, existing.id)))
+      .limit(1)
+      .get();
+
+    if (dupEmail) {
+      throw new Error(`Email "${email}" is already used by another account.`);
+    }
+
+    tx.update(users)
+      .set({
+        firstname,
+        lastname,
+        email,
+        phonenumber,
+        updatedAt: nowIso,
+      })
+      .where(eq(users.id, existing.id))
+      .run();
+
+    tx.insert(auditLogs)
+      .values({
+        id: generateId("aud"),
+        userId: existing.id,
+        entityType: "user",
+        entityId: existing.id,
+        action: "update",
+        oldValues: JSON.stringify({
+          firstname: existing.firstname,
+          lastname: existing.lastname,
+          email: existing.email,
+          phonenumber: existing.phonenumber,
+        }),
+        newValues: JSON.stringify({
+          firstname,
+          lastname,
+          email,
+          phonenumber,
+        }),
+      })
+      .run();
+  });
+
+  const updated = db
+    .select()
+    .from(users)
+    .where(eq(users.id, input.userId))
+    .limit(1)
+    .get();
+  if (!updated) {
+    throw new Error("Profile updated, but failed to reload account.");
+  }
+  return mapSessionUser(updated);
+}
+
+export async function changeOwnPassword(
+  db: ExpoSqliteDrizzleDb,
+  input: ChangePasswordInput & { userId: string },
+): Promise<void> {
+  if (!input.currentPassword) {
+    throw new Error("Enter your current password.");
+  }
+  if (!input.newPassword || input.newPassword.length < 6) {
+    throw new Error("New password must be at least 6 characters.");
+  }
+  if (input.currentPassword === input.newPassword) {
+    throw new Error("New password must be different from your current password.");
+  }
+
+  const user = db
+    .select()
+    .from(users)
+    .where(eq(users.id, input.userId))
+    .limit(1)
+    .get();
+  if (!user) {
+    throw new Error("User account not found.");
+  }
+
+  const currentMatches = await verifyPassword(
+    input.currentPassword,
+    user.passwordHash,
+  );
+  if (!currentMatches) {
+    throw new Error("Current password is incorrect.");
+  }
+
+  const nextPasswordHash = await hashPassword(input.newPassword);
+  const nowIso = new Date().toISOString();
+
+  db.transaction((tx) => {
+    tx.update(users)
+      .set({
+        passwordHash: nextPasswordHash,
+        updatedAt: nowIso,
+      })
+      .where(eq(users.id, user.id))
+      .run();
+
+    tx.insert(notifications)
+      .values({
+        id: generateId("notif"),
+        userId: user.id,
+        type: "security",
+        title: "Account password changed",
+        message: "Your sign-in password was updated on this device.",
+        isRead: 0,
+        referenceType: "security",
+        referenceId: user.id,
+        createdAt: nowIso,
+        updatedAt: nowIso,
+      })
+      .run();
+
+    tx.insert(auditLogs)
+      .values({
+        id: generateId("aud"),
+        userId: user.id,
+        entityType: "user",
+        entityId: user.id,
+        action: "update",
+        newValues: JSON.stringify({ passwordChanged: true }),
+      })
+      .run();
+  });
+}
+
 

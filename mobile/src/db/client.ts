@@ -235,6 +235,40 @@ function ensureTablesSync(sqlite: SQLite.SQLiteDatabase): void {
 
     CREATE INDEX IF NOT EXISTS supplier_tx_idx_supplier ON supplier_transactions(supplier_id);
     CREATE INDEX IF NOT EXISTS supplier_tx_idx_date ON supplier_transactions(transaction_date);
+
+    CREATE TABLE IF NOT EXISTS notifications (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      type TEXT NOT NULL,
+      title TEXT NOT NULL,
+      message TEXT DEFAULT NULL,
+      is_read INTEGER NOT NULL DEFAULT 0,
+      reference_type TEXT DEFAULT NULL,
+      reference_id TEXT DEFAULT NULL,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS notifications_idx_user_read ON notifications(user_id, is_read);
+    CREATE INDEX IF NOT EXISTS notifications_idx_created ON notifications(created_at);
+
+    CREATE TABLE IF NOT EXISTS broadcast_messages (
+      id TEXT PRIMARY KEY,
+      sender_id TEXT NOT NULL,
+      sender_name TEXT NOT NULL,
+      recipient_group TEXT NOT NULL CHECK (recipient_group IN ('employees', 'customers', 'suppliers')),
+      channel TEXT NOT NULL CHECK (channel IN ('in_app', 'sms', 'email')),
+      subject TEXT DEFAULT NULL,
+      content TEXT NOT NULL,
+      recipient_count INTEGER NOT NULL DEFAULT 0,
+      status TEXT NOT NULL DEFAULT 'sent' CHECK (status IN ('sent', 'queued', 'partial', 'failed')),
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      FOREIGN KEY (sender_id) REFERENCES users(id)
+    );
+
+    CREATE INDEX IF NOT EXISTS broadcast_messages_idx_created ON broadcast_messages(created_at);
   `);
 }
 
@@ -753,6 +787,104 @@ function seedSuppliersIfEmpty(db: ExpoSqliteDrizzleDb): void {
   });
 }
 
+function seedNotificationsIfEmpty(db: ExpoSqliteDrizzleDb): void {
+  const existingNotifications = db
+    .select({ cnt: count() })
+    .from(schema.notifications)
+    .get();
+  if ((existingNotifications?.cnt ?? 0) > 0) {
+    return;
+  }
+
+  const allUsers = db
+    .select({
+      id: schema.users.id,
+      firstname: schema.users.firstname,
+      lastname: schema.users.lastname,
+      username: schema.users.username,
+    })
+    .from(schema.users)
+    .all();
+
+  if (allUsers.length === 0) return;
+
+  const firstAdmin = allUsers[0];
+  const senderName =
+    [firstAdmin.firstname, firstAdmin.lastname].filter(Boolean).join(" ").trim() ||
+    firstAdmin.username;
+
+  db.transaction((tx) => {
+    const starterRows: Array<typeof schema.notifications.$inferInsert> = [];
+
+    for (const u of allUsers) {
+      starterRows.push(
+        {
+          id: `notif-lowstock-rice-${u.id}`,
+          userId: u.id,
+          type: "low_stock",
+          title: "Out of stock: Royal Aroma Jasmine Rice 5kg",
+          message: "Current inventory is 0 units. Reorder from Olam Grains & Staples.",
+          isRead: 0,
+          referenceType: "product",
+          referenceId: "prod-004",
+          createdAt: isoDaysAgoAt(0, 10, 45),
+          updatedAt: isoDaysAgoAt(0, 10, 45),
+        },
+        {
+          id: `notif-lowstock-oil-${u.id}`,
+          userId: u.id,
+          type: "low_stock",
+          title: "Low stock alert: Frytol Vegetable Cooking Oil 1L",
+          message: "Only 2 bottles left (alert threshold: 5 units).",
+          isRead: 0,
+          referenceType: "product",
+          referenceId: "prod-005",
+          createdAt: isoDaysAgoAt(0, 9, 55),
+          updatedAt: isoDaysAgoAt(0, 9, 55),
+        },
+        {
+          id: `notif-team-welcome-${u.id}`,
+          userId: u.id,
+          type: "employee",
+          title: "Morning Shift Handover",
+          message:
+            "Please count the cash drawer before 8:00 AM and verify Milo & Peak stock shelves.",
+          isRead: 1,
+          referenceType: "broadcast",
+          referenceId: "bcast-001",
+          createdAt: isoDaysAgoAt(1, 7, 30),
+          updatedAt: isoDaysAgoAt(1, 7, 30),
+        },
+      );
+    }
+
+    tx.insert(schema.notifications).values(starterRows).run();
+
+    const existingBroadcasts = tx
+      .select({ cnt: count() })
+      .from(schema.broadcastMessages)
+      .get();
+    if ((existingBroadcasts?.cnt ?? 0) === 0) {
+      tx.insert(schema.broadcastMessages)
+        .values({
+          id: "bcast-001",
+          senderId: firstAdmin.id,
+          senderName,
+          recipientGroup: "employees",
+          channel: "in_app",
+          subject: "Morning Shift Handover",
+          content:
+            "Please count the cash drawer before 8:00 AM and verify Milo & Peak stock shelves.",
+          recipientCount: allUsers.length,
+          status: "sent",
+          createdAt: isoDaysAgoAt(1, 7, 30),
+          updatedAt: isoDaysAgoAt(1, 7, 30),
+        })
+        .run();
+    }
+  });
+}
+
 export async function ensureDbReady(): Promise<ExpoSqliteDrizzleDb> {
   if (!readyPromise) {
     readyPromise = (async () => {
@@ -761,6 +893,7 @@ export async function ensureDbReady(): Promise<ExpoSqliteDrizzleDb> {
       const db = getDrizzleDb();
       await seedDatabaseIfEmpty(db);
       seedSuppliersIfEmpty(db);
+      seedNotificationsIfEmpty(db);
       return db;
     })().catch((err) => {
       readyPromise = null;

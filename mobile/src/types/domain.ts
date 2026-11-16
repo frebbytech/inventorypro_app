@@ -515,3 +515,90 @@ export interface DailyReportData {
   cashierBreakdown: DailyCashierBreakdown[];
 }
 
+export type NotificationType =
+  | "low_stock"
+  | "sale"
+  | "refund"
+  | "employee"
+  | "system"
+  | "security";
+
+export interface NotificationItem {
+  id: string;
+  userId: string;
+  type: NotificationType | string;
+  title: string;
+  message?: string | null;
+  isRead: boolean;
+  referenceType?: string | null;
+  referenceId?: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface NotificationsQueryParams {
+  unreadOnly?: boolean;
+  limit?: number;
+}
+
+export type BroadcastRecipientGroup = "employees" | "customers" | "suppliers";
+export type BroadcastChannel = "in_app" | "sms" | "email";
+export type BroadcastStatus = "sent" | "queued" | "partial" | "failed";
+
+export interface BroadcastRecipient {
+  id: string;
+  name: string;
+  email?: string | null;
+  phonenumber?: string | null;
+  subtitle?: string | null;
+  hasValidEmail: boolean;
+  hasValidPhone: boolean;
+  canReceiveInApp: boolean;
+}
+
+export interface BroadcastMessageItem {
+  id: string;
+  senderId: string;
+  senderName: string;
+  recipientGroup: BroadcastRecipientGroup;
+  channel: BroadcastChannel;
+  subject?: string | null;
+  content: string;
+  recipientCount: number;
+  status: BroadcastStatus;
+  createdAt: string;
+}
+
+export interface SendBroadcastInput {
+  recipientGroup: BroadcastRecipientGroup;
+  channel: BroadcastChannel;
+  subject?: string;
+  content: string;
+  recipientIds?: string[];
+}
+
+export interface UserSessionItem {
+  id: string;
+  deviceName: string;
+  deviceType: string;
+  operatingSystem: string;
+  isActive: boolean;
+  isCurrent: boolean;
+  lastActivityAt?: string | null;
+  expiresAt: string;
+  createdAt: string;
+}
+
+export interface UpdateMyProfileInput {
+  firstname: string;
+  lastname: string;
+  email: string;
+  phonenumber?: string;
+}
+
+export interface ChangePasswordInput {
+  currentPassword: string;
+  newPassword: string;
+}
+
+

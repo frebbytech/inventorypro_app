@@ -2,8 +2,12 @@ import type {
   AdjustStockInput,
   AuditLogItem,
   AuditLogsQueryParams,
+  BroadcastMessageItem,
+  BroadcastRecipient,
+  BroadcastRecipientGroup,
   BulkImportProductsResult,
   CategoryItem,
+  ChangePasswordInput,
   CreateCategoryInput,
   CreateCustomerInput,
   CreateEmployeeInput,
@@ -17,6 +21,8 @@ import type {
   DailyReportData,
   EmployeeDetailResponse,
   EmployeeItem,
+  NotificationItem,
+  NotificationsQueryParams,
   PaySupplierBalanceInput,
   ProductDetailResponse,
   ProductItem,
@@ -29,6 +35,8 @@ import type {
   SalesQueryParams,
   SalesReportData,
   SaleTransactionSummary,
+  SendBroadcastInput,
+  SessionUser,
   StoreProfile,
   SupplierDetailResponse,
   SupplierItem,
@@ -38,8 +46,10 @@ import type {
   UpdateCategoryInput,
   UpdateCustomerInput,
   UpdateEmployeeInput,
+  UpdateMyProfileInput,
   UpdateProductInput,
   UpdateSupplierInput,
+  UserSessionItem,
 } from "@/types/domain";
 
 /**
@@ -86,6 +96,20 @@ export const API_ENDPOINTS = {
   employeeUpdate: "PATCH /api/mobile/v1/employees/:id",
   dailyReport: "GET /api/mobile/v1/reports/daily?date=",
   auditLogs: "GET /api/mobile/v1/audit-logs?q=&action=&limit=",
+  notificationsList: "GET /api/mobile/v1/notifications?unreadOnly=&limit=",
+  notificationsUnreadCount: "GET /api/mobile/v1/notifications/unread-count",
+  notificationMarkRead: "PATCH /api/mobile/v1/notifications/:id/read",
+  notificationMarkAllRead: "POST /api/mobile/v1/notifications/read-all",
+  notificationDelete: "DELETE /api/mobile/v1/notifications/:id",
+  notificationsClearAll: "DELETE /api/mobile/v1/notifications",
+  broadcastRecipients: "GET /api/mobile/v1/messages/recipients?group=",
+  broadcastMessagesList: "GET /api/mobile/v1/messages",
+  broadcastMessageSend: "POST /api/mobile/v1/messages",
+  securitySessionsList: "GET /api/mobile/v1/security/sessions",
+  securitySessionRevoke: "DELETE /api/mobile/v1/security/sessions/:id",
+  securitySessionsRevokeOthers: "POST /api/mobile/v1/security/sessions/revoke-others",
+  securityProfileUpdate: "PATCH /api/mobile/v1/security/profile",
+  securityPasswordChange: "POST /api/mobile/v1/security/password",
   storeThresholdUpdate: "PATCH /api/mobile/v1/settings/stock-threshold",
   storeBusinessUpdate: "PATCH /api/mobile/v1/settings/business",
 } as const;
@@ -158,6 +182,20 @@ export interface InventoryProApiClient {
   ): Promise<EmployeeItem>;
   getDailyReport(date?: string): Promise<DailyReportData>;
   getAuditLogs(params?: AuditLogsQueryParams): Promise<AuditLogItem[]>;
+  getNotifications(params?: NotificationsQueryParams): Promise<NotificationItem[]>;
+  getUnreadNotificationCount(): Promise<number>;
+  markNotificationRead(notificationId: string): Promise<NotificationItem>;
+  markAllNotificationsRead(): Promise<{ updatedCount: number }>;
+  deleteNotification(notificationId: string): Promise<void>;
+  clearAllNotifications(): Promise<{ deletedCount: number }>;
+  getBroadcastRecipients(group: BroadcastRecipientGroup): Promise<BroadcastRecipient[]>;
+  getBroadcastMessages(): Promise<BroadcastMessageItem[]>;
+  sendBroadcastMessage(input: SendBroadcastInput): Promise<BroadcastMessageItem>;
+  getUserSessions(): Promise<UserSessionItem[]>;
+  revokeUserSession(sessionId: string): Promise<void>;
+  revokeOtherUserSessions(): Promise<{ revokedCount: number }>;
+  updateMyProfile(input: UpdateMyProfileInput): Promise<SessionUser>;
+  changeMyPassword(input: ChangePasswordInput): Promise<void>;
   updateStockAlertThreshold(threshold: number): Promise<StoreProfile>;
   updateBusinessSettings(input: UpdateBusinessSettingsInput): Promise<StoreProfile>;
 }

@@ -339,6 +339,64 @@ export const supplierTransactions = sqliteTable(
   ],
 );
 
+export const notifications = sqliteTable(
+  "notifications",
+  {
+    id: text("id").primaryKey(),
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    type: text("type").notNull(),
+    title: text("title").notNull(),
+    message: text("message"),
+    isRead: integer("is_read").notNull().default(0),
+    referenceType: text("reference_type"),
+    referenceId: text("reference_id"),
+    createdAt: text("created_at")
+      .notNull()
+      .default(sql`(datetime('now'))`),
+    updatedAt: text("updated_at")
+      .notNull()
+      .default(sql`(datetime('now'))`),
+  },
+  (table) => [
+    index("notifications_idx_user_read").on(table.userId, table.isRead),
+    index("notifications_idx_created").on(table.createdAt),
+  ],
+);
+
+export const broadcastMessages = sqliteTable(
+  "broadcast_messages",
+  {
+    id: text("id").primaryKey(),
+    senderId: text("sender_id")
+      .notNull()
+      .references(() => users.id),
+    senderName: text("sender_name").notNull(),
+    recipientGroup: text("recipient_group", {
+      enum: ["employees", "customers", "suppliers"],
+    }).notNull(),
+    channel: text("channel", {
+      enum: ["in_app", "sms", "email"],
+    }).notNull(),
+    subject: text("subject"),
+    content: text("content").notNull(),
+    recipientCount: integer("recipient_count").notNull().default(0),
+    status: text("status", {
+      enum: ["sent", "queued", "partial", "failed"],
+    })
+      .notNull()
+      .default("sent"),
+    createdAt: text("created_at")
+      .notNull()
+      .default(sql`(datetime('now'))`),
+    updatedAt: text("updated_at")
+      .notNull()
+      .default(sql`(datetime('now'))`),
+  },
+  (table) => [index("broadcast_messages_idx_created").on(table.createdAt)],
+);
+
 export const productsRelations = relations(products, ({ one, many }) => ({
   category: one(productCategories, {
     fields: [products.categoryId],
@@ -379,3 +437,5 @@ export type CustomerRecord = typeof customers.$inferSelect;
 export type SupplierRecord = typeof suppliers.$inferSelect;
 export type SupplierTransactionRecord = typeof supplierTransactions.$inferSelect;
 export type SettingsRecord = typeof settings.$inferSelect;
+export type NotificationRecord = typeof notifications.$inferSelect;
+export type BroadcastMessageRecord = typeof broadcastMessages.$inferSelect;

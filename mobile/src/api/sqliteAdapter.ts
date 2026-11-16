@@ -5,12 +5,15 @@ import {
   adjustProductStock as dbAdjustProductStock,
   authenticateWithCredentials,
   bulkCreateProducts as dbBulkCreateProducts,
+  changeOwnPassword as dbChangeOwnPassword,
+  clearAllNotifications as dbClearAllNotifications,
   createCategory as dbCreateCategory,
   createCustomer as dbCreateCustomer,
   createEmployee as dbCreateEmployee,
   createProduct as dbCreateProduct,
   createSale as dbCreateSale,
   createSupplier as dbCreateSupplier,
+  deleteNotificationById as dbDeleteNotificationById,
   findProductByBarcode as dbFindProductByBarcode,
   getCustomerDetail as dbGetCustomerDetail,
   getDailyReport as dbGetDailyReport,
@@ -20,24 +23,35 @@ import {
   getSalesReport as dbGetSalesReport,
   getSupplierDetail as dbGetSupplierDetail,
   getTodayDashboard as dbGetTodayDashboard,
+  getUnreadNotificationCount as dbGetUnreadNotificationCount,
   listAuditLogs as dbListAuditLogs,
+  listBroadcastMessages as dbListBroadcastMessages,
+  listBroadcastRecipients as dbListBroadcastRecipients,
   listCategories as dbListCategories,
   listCategoryDetails as dbListCategoryDetails,
   listCustomers as dbListCustomers,
   listEmployees as dbListEmployees,
+  listNotifications as dbListNotifications,
   listProducts as dbListProducts,
   listRestockLogs as dbListRestockLogs,
   listSales as dbListSales,
   listSuppliers as dbListSuppliers,
+  listUserSessions as dbListUserSessions,
+  markAllNotificationsRead as dbMarkAllNotificationsRead,
+  markNotificationRead as dbMarkNotificationRead,
   paySupplierTransactionBalance as dbPaySupplierTransactionBalance,
   recordRestock as dbRecordRestock,
   recordSupplierTransaction as dbRecordSupplierTransaction,
   refundSale as dbRefundSale,
   restoreSessionByToken,
+  revokeOtherUserSessions as dbRevokeOtherUserSessions,
   revokeSessionByToken,
+  revokeUserSession as dbRevokeUserSession,
+  sendBroadcastMessage as dbSendBroadcastMessage,
   updateCategory as dbUpdateCategory,
   updateCustomer as dbUpdateCustomer,
   updateEmployee as dbUpdateEmployee,
+  updateOwnProfile as dbUpdateOwnProfile,
   updateProduct as dbUpdateProduct,
   updateStoreBusinessProfile,
   updateStoreStockThreshold,
@@ -50,8 +64,12 @@ import type {
   AuthLoginPayload,
   AuthLoginResponse,
   AuthSessionResponse,
+  BroadcastMessageItem,
+  BroadcastRecipient,
+  BroadcastRecipientGroup,
   BulkImportProductsResult,
   CategoryItem,
+  ChangePasswordInput,
   CreateCategoryInput,
   CreateCustomerInput,
   CreateEmployeeInput,
@@ -65,6 +83,8 @@ import type {
   DailyReportData,
   EmployeeDetailResponse,
   EmployeeItem,
+  NotificationItem,
+  NotificationsQueryParams,
   PaySupplierBalanceInput,
   ProductDetailResponse,
   ProductItem,
@@ -77,6 +97,8 @@ import type {
   SalesQueryParams,
   SalesReportData,
   SaleTransactionSummary,
+  SendBroadcastInput,
+  SessionUser,
   StoreProfile,
   SupplierDetailResponse,
   SupplierItem,
@@ -86,8 +108,10 @@ import type {
   UpdateCategoryInput,
   UpdateCustomerInput,
   UpdateEmployeeInput,
+  UpdateMyProfileInput,
   UpdateProductInput,
   UpdateSupplierInput,
+  UserSessionItem,
 } from "@/types/domain";
 
 export interface AuthenticatedApiClient extends InventoryProApiClient {
@@ -411,6 +435,111 @@ export class ExpoSqliteDrizzleClient implements AuthenticatedApiClient {
   async getAuditLogs(params?: AuditLogsQueryParams): Promise<AuditLogItem[]> {
     const { db } = await this.requireSession();
     return dbListAuditLogs(db, params);
+  }
+
+  async getNotifications(
+    params?: NotificationsQueryParams,
+  ): Promise<NotificationItem[]> {
+    const { db, session } = await this.requireSession();
+    return dbListNotifications(db, {
+      ...params,
+      userId: session.user.id,
+    });
+  }
+
+  async getUnreadNotificationCount(): Promise<number> {
+    const { db, session } = await this.requireSession();
+    return dbGetUnreadNotificationCount(db, session.user.id);
+  }
+
+  async markNotificationRead(notificationId: string): Promise<NotificationItem> {
+    const { db, session } = await this.requireSession();
+    return dbMarkNotificationRead(db, {
+      id: notificationId,
+      userId: session.user.id,
+    });
+  }
+
+  async markAllNotificationsRead(): Promise<{ updatedCount: number }> {
+    const { db, session } = await this.requireSession();
+    return dbMarkAllNotificationsRead(db, session.user.id);
+  }
+
+  async deleteNotification(notificationId: string): Promise<void> {
+    const { db, session } = await this.requireSession();
+    dbDeleteNotificationById(db, {
+      id: notificationId,
+      userId: session.user.id,
+    });
+  }
+
+  async clearAllNotifications(): Promise<{ deletedCount: number }> {
+    const { db, session } = await this.requireSession();
+    return dbClearAllNotifications(db, session.user.id);
+  }
+
+  async getBroadcastRecipients(
+    group: BroadcastRecipientGroup,
+  ): Promise<BroadcastRecipient[]> {
+    const { db } = await this.requireSession();
+    return dbListBroadcastRecipients(db, group);
+  }
+
+  async getBroadcastMessages(): Promise<BroadcastMessageItem[]> {
+    const { db } = await this.requireSession();
+    return dbListBroadcastMessages(db);
+  }
+
+  async sendBroadcastMessage(
+    input: SendBroadcastInput,
+  ): Promise<BroadcastMessageItem> {
+    const { db, session } = await this.requireSession();
+    return dbSendBroadcastMessage(db, {
+      ...input,
+      senderId: session.user.id,
+    });
+  }
+
+  async getUserSessions(): Promise<UserSessionItem[]> {
+    const { db, session } = await this.requireSession();
+    return dbListUserSessions(db, {
+      userId: session.user.id,
+      currentToken: this.config.getAccessToken(),
+    });
+  }
+
+  async revokeUserSession(sessionId: string): Promise<void> {
+    const { db, session } = await this.requireSession();
+    dbRevokeUserSession(db, {
+      sessionId,
+      userId: session.user.id,
+      currentToken: this.config.getAccessToken(),
+    });
+  }
+
+  async revokeOtherUserSessions(): Promise<{ revokedCount: number }> {
+    const { db, session } = await this.requireSession();
+    const currentToken = this.config.getAccessToken() || "";
+    return dbRevokeOtherUserSessions(db, {
+      userId: session.user.id,
+      currentToken,
+    });
+  }
+
+  async updateMyProfile(input: UpdateMyProfileInput): Promise<SessionUser> {
+    const { db, session } = await this.requireSession();
+    return dbUpdateOwnProfile(db, {
+      ...input,
+      userId: session.user.id,
+    });
+  }
+
+  async changeMyPassword(input: ChangePasswordInput): Promise<void> {
+    const { db, session } = await this.requireSession();
+    await dbChangeOwnPassword(db, {
+      ...input,
+      userId: session.user.id,
+    });
   }
 
   async updateStockAlertThreshold(threshold: number): Promise<StoreProfile> {

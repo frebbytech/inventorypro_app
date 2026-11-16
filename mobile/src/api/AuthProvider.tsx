@@ -21,9 +21,11 @@ import {
   setStoredAuthToken,
 } from "./tokenStorage";
 import type {
+  ChangePasswordInput,
   SessionUser,
   StoreProfile,
   UpdateBusinessSettingsInput,
+  UpdateMyProfileInput,
 } from "@/types/domain";
 
 interface AuthContextValue {
@@ -33,12 +35,16 @@ interface AuthContextValue {
   isRestoring: boolean;
   isAuthenticated: boolean;
   hasCompletedOnboarding: boolean;
+  unreadNotificationsCount: number;
+  refreshUnreadNotifications: () => Promise<void>;
   completeOnboarding: () => Promise<void>;
   apiClient: AuthenticatedApiClient;
   signIn: (identifier: string, password: string) => Promise<void>;
   signOut: () => Promise<void>;
   updateStockThreshold: (threshold: number) => Promise<StoreProfile>;
   updateBusinessSettings: (input: UpdateBusinessSettingsInput) => Promise<StoreProfile>;
+  updateMyProfile: (input: UpdateMyProfileInput) => Promise<SessionUser>;
+  changePassword: (input: ChangePasswordInput) => Promise<void>;
 }
 
 const AuthContext = createContext<AuthContextValue | null>(null);
@@ -49,6 +55,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [token, setToken] = useState<string | null>(null);
   const [hasCompletedOnboarding, setHasCompletedOnboardingState] =
     useState(false);
+  const [unreadNotificationsCount, setUnreadNotificationsCount] = useState(0);
   const [isRestoring, setIsRestoring] = useState(true);
 
   const tokenRef = useRef<string | null>(null);
@@ -58,6 +65,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     tokenRef.current = null;
     setToken(null);
     setUser(null);
+    setUnreadNotificationsCount(0);
     void clearStoredAuthToken();
   }, []);
 
@@ -76,6 +84,19 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       onUnauthorized: handleUnauthorized,
     });
   }, [handleUnauthorized]);
+
+  const refreshUnreadNotifications = useCallback(async () => {
+    if (!tokenRef.current) {
+      setUnreadNotificationsCount(0);
+      return;
+    }
+    try {
+      const cnt = await apiClient.getUnreadNotificationCount();
+      setUnreadNotificationsCount(cnt);
+    } catch {
+      // Ignore transient lookup errors
+    }
+  }, [apiClient]);
 
   useEffect(() => {
     let active = true;
@@ -101,6 +122,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             setHasCompletedOnboardingState(true);
             void setHasCompletedOnboarding(true);
           }
+          const unread = await apiClient
+            .getUnreadNotificationCount()
+            .catch(() => 0);
+          if (active) {
+            setUnreadNotificationsCount(unread);
+          }
         }
       } catch {
         tokenRef.current = null;
@@ -109,6 +136,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           setToken(null);
           setUser(null);
           setStore(null);
+          setUnreadNotificationsCount(0);
         }
       } finally {
         if (active) {
@@ -139,6 +167,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       setToken(response.token);
       setUser(response.user);
       setStore(response.store);
+      const unread = await apiClient
+        .getUnreadNotificationCount()
+        .catch(() => 0);
+      setUnreadNotificationsCount(unread);
     },
     [apiClient],
   );
@@ -156,6 +188,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       setToken(null);
       setUser(null);
       setStore(null);
+      setUnreadNotificationsCount(0);
     }
   }, [apiClient]);
 
@@ -177,6 +210,23 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     [apiClient],
   );
 
+  const updateMyProfile = useCallback(
+    async (input: UpdateMyProfileInput): Promise<SessionUser> => {
+      const updated = await apiClient.updateMyProfile(input);
+      setUser(updated);
+      return updated;
+    },
+    [apiClient],
+  );
+
+  const changePassword = useCallback(
+    async (input: ChangePasswordInput): Promise<void> => {
+      await apiClient.changeMyPassword(input);
+      await refreshUnreadNotifications();
+    },
+    [apiClient, refreshUnreadNotifications],
+  );
+
   const value = useMemo<AuthContextValue>(
     () => ({
       user,
@@ -185,12 +235,16 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       isRestoring,
       isAuthenticated: Boolean(user && token),
       hasCompletedOnboarding,
+      unreadNotificationsCount,
+      refreshUnreadNotifications,
       completeOnboarding,
       apiClient,
       signIn,
       signOut,
       updateStockThreshold,
       updateBusinessSettings,
+      updateMyProfile,
+      changePassword,
     }),
     [
       user,
@@ -198,12 +252,16 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       token,
       isRestoring,
       hasCompletedOnboarding,
+      unreadNotificationsCount,
+      refreshUnreadNotifications,
       completeOnboarding,
       apiClient,
       signIn,
       signOut,
       updateStockThreshold,
       updateBusinessSettings,
+      updateMyProfile,
+      changePassword,
     ],
   );
 
