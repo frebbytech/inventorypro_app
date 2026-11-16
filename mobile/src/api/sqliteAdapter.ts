@@ -5,6 +5,7 @@ import {
   adjustProductStock as dbAdjustProductStock,
   authenticateWithCredentials,
   bulkCreateProducts as dbBulkCreateProducts,
+  createCategory as dbCreateCategory,
   createProduct as dbCreateProduct,
   createSale as dbCreateSale,
   findProductByBarcode as dbFindProductByBarcode,
@@ -14,11 +15,16 @@ import {
   getTodayDashboard as dbGetTodayDashboard,
   listAuditLogs as dbListAuditLogs,
   listCategories as dbListCategories,
+  listCategoryDetails as dbListCategoryDetails,
   listProducts as dbListProducts,
+  listRestockLogs as dbListRestockLogs,
   listSales as dbListSales,
+  recordRestock as dbRecordRestock,
   refundSale as dbRefundSale,
   restoreSessionByToken,
   revokeSessionByToken,
+  updateCategory as dbUpdateCategory,
+  updateProduct as dbUpdateProduct,
   updateStoreBusinessProfile,
   updateStoreStockThreshold,
 } from "@/db/queries";
@@ -30,12 +36,17 @@ import type {
   AuthLoginResponse,
   AuthSessionResponse,
   BulkImportProductsResult,
+  CategoryItem,
+  CreateCategoryInput,
   CreateProductInput,
+  CreateRestockInput,
   CreateSaleInput,
   ProductDetailResponse,
   ProductItem,
   ProductQueryParams,
   RefundSaleInput,
+  RestockLogItem,
+  RestockQueryParams,
   SaleReceiptDetail,
   SalesDateRange,
   SalesQueryParams,
@@ -44,6 +55,8 @@ import type {
   StoreProfile,
   TodayDashboardData,
   UpdateBusinessSettingsInput,
+  UpdateCategoryInput,
+  UpdateProductInput,
 } from "@/types/domain";
 
 export interface AuthenticatedApiClient extends InventoryProApiClient {
@@ -117,6 +130,31 @@ export class ExpoSqliteDrizzleClient implements AuthenticatedApiClient {
     return dbListCategories(db);
   }
 
+  async getCategoryDetails(query?: string): Promise<CategoryItem[]> {
+    const { db } = await this.requireSession();
+    return dbListCategoryDetails(db, query);
+  }
+
+  async createCategory(input: CreateCategoryInput): Promise<CategoryItem> {
+    const { db, session } = await this.requireSession();
+    return dbCreateCategory(db, {
+      ...input,
+      userId: session.user.id,
+    });
+  }
+
+  async updateCategory(
+    categoryId: string,
+    input: UpdateCategoryInput,
+  ): Promise<CategoryItem> {
+    const { db, session } = await this.requireSession();
+    return dbUpdateCategory(db, {
+      ...input,
+      categoryId,
+      userId: session.user.id,
+    });
+  }
+
   async getProducts(params?: ProductQueryParams): Promise<ProductItem[]> {
     const { db } = await this.requireSession();
     return dbListProducts(db, params);
@@ -131,6 +169,18 @@ export class ExpoSqliteDrizzleClient implements AuthenticatedApiClient {
     const { db, session } = await this.requireSession();
     return dbCreateProduct(db, {
       ...input,
+      userId: session.user.id,
+    });
+  }
+
+  async updateProduct(
+    productId: string,
+    input: UpdateProductInput,
+  ): Promise<ProductItem> {
+    const { db, session } = await this.requireSession();
+    return dbUpdateProduct(db, {
+      ...input,
+      productId,
       userId: session.user.id,
     });
   }
@@ -160,6 +210,19 @@ export class ExpoSqliteDrizzleClient implements AuthenticatedApiClient {
   async lookupProductByBarcode(barcode: string): Promise<ProductItem | null> {
     const { db } = await this.requireSession();
     return dbFindProductByBarcode(db, barcode);
+  }
+
+  async getRestockLogs(params?: RestockQueryParams): Promise<RestockLogItem[]> {
+    const { db } = await this.requireSession();
+    return dbListRestockLogs(db, params);
+  }
+
+  async recordRestock(input: CreateRestockInput): Promise<RestockLogItem> {
+    const { db, session } = await this.requireSession();
+    return dbRecordRestock(db, {
+      ...input,
+      userId: session.user.id,
+    });
   }
 
   async getRecentSales(params?: SalesQueryParams): Promise<SaleTransactionSummary[]> {

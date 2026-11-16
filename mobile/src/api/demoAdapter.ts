@@ -11,7 +11,10 @@ import {
   type AuditLogItem,
   type AuditLogsQueryParams,
   type BulkImportProductsResult,
+  type CategoryItem,
+  type CreateCategoryInput,
   type CreateProductInput,
+  type CreateRestockInput,
   type PaymentBreakdownItem,
   type PaymentMode,
   type ProductDetailResponse,
@@ -19,6 +22,8 @@ import {
   type ProductQueryParams,
   type ProductSaleRecord,
   type RefundSaleInput,
+  type RestockLogItem,
+  type RestockQueryParams,
   type SaleReceiptDetail,
   type SalesDateRange,
   type SalesQueryParams,
@@ -29,6 +34,8 @@ import {
   type TodayDashboardData,
   type TopSellingProductItem,
   type UpdateBusinessSettingsInput,
+  type UpdateCategoryInput,
+  type UpdateProductInput,
 } from "@/types/domain";
 
 function computeSaleTotals(seed: DemoSaleSeed) {
@@ -133,6 +140,43 @@ export class DemoDataAdapter implements InventoryProApiClient {
     await this.simulateLatency(40);
     const unique = new Set(DEMO_PRODUCTS.map((p) => p.categoryName));
     return ["All", ...Array.from(unique).sort()];
+  }
+
+  async getCategoryDetails(query?: string): Promise<CategoryItem[]> {
+    await this.simulateLatency(60);
+    const q = query?.trim().toLowerCase() ?? "";
+    const map = new Map<string, CategoryItem>();
+    for (const p of DEMO_PRODUCTS) {
+      const existing = map.get(p.categoryId);
+      if (existing) {
+        existing.productCount += 1;
+        existing.totalUnits += p.stockQuantity;
+      } else {
+        map.set(p.categoryId, {
+          id: p.categoryId,
+          name: p.categoryName,
+          description: "Sample category",
+          isActive: true,
+          productCount: 1,
+          totalUnits: p.stockQuantity,
+          updatedAt: p.updatedAt,
+        });
+      }
+    }
+    return Array.from(map.values())
+      .filter((c) => !q || c.name.toLowerCase().includes(q))
+      .sort((a, b) => a.name.localeCompare(b.name));
+  }
+
+  async createCategory(_input: CreateCategoryInput): Promise<CategoryItem> {
+    throw new Error("Creating categories requires the on-device SQLite backend.");
+  }
+
+  async updateCategory(
+    _categoryId: string,
+    _input: UpdateCategoryInput,
+  ): Promise<CategoryItem> {
+    throw new Error("Updating categories requires the on-device SQLite backend.");
   }
 
   async getProducts(params?: ProductQueryParams): Promise<ProductItem[]> {
@@ -263,6 +307,13 @@ export class DemoDataAdapter implements InventoryProApiClient {
     throw new Error("Adding products requires the on-device SQLite backend.");
   }
 
+  async updateProduct(
+    _productId: string,
+    _input: UpdateProductInput,
+  ): Promise<ProductItem> {
+    throw new Error("Editing products requires the on-device SQLite backend.");
+  }
+
   async bulkCreateProducts(
     _items: CreateProductInput[],
   ): Promise<BulkImportProductsResult> {
@@ -271,6 +322,15 @@ export class DemoDataAdapter implements InventoryProApiClient {
 
   async adjustProductStock(): Promise<ProductItem> {
     throw new Error("Stock adjustments require the live SQLite Expo API backend.");
+  }
+
+  async getRestockLogs(_params?: RestockQueryParams): Promise<RestockLogItem[]> {
+    await this.simulateLatency(60);
+    return [];
+  }
+
+  async recordRestock(_input: CreateRestockInput): Promise<RestockLogItem> {
+    throw new Error("Recording restocks requires the on-device SQLite backend.");
   }
 
   async createSale(): Promise<SaleReceiptDetail> {

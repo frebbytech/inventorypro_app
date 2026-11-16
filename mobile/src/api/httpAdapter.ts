@@ -9,12 +9,17 @@ import type {
   AuthLoginResponse,
   AuthSessionResponse,
   BulkImportProductsResult,
+  CategoryItem,
+  CreateCategoryInput,
   CreateProductInput,
+  CreateRestockInput,
   CreateSaleInput,
   ProductDetailResponse,
   ProductItem,
   ProductQueryParams,
   RefundSaleInput,
+  RestockLogItem,
+  RestockQueryParams,
   SaleReceiptDetail,
   SalesDateRange,
   SalesQueryParams,
@@ -23,6 +28,8 @@ import type {
   StoreProfile,
   TodayDashboardData,
   UpdateBusinessSettingsInput,
+  UpdateCategoryInput,
+  UpdateProductInput,
 } from "@/types/domain";
 
 export function resolveApiBaseUrl(): string {
@@ -155,6 +162,31 @@ export class HttpApiClient implements AuthenticatedApiClient {
     return this.request<string[]>("/api/mobile/v1/categories");
   }
 
+  getCategoryDetails(query?: string): Promise<CategoryItem[]> {
+    const suffix = query?.trim() ? `?q=${encodeURIComponent(query.trim())}` : "";
+    return this.request<CategoryItem[]>(`/api/mobile/v1/categories/manage${suffix}`);
+  }
+
+  createCategory(input: CreateCategoryInput): Promise<CategoryItem> {
+    return this.request<CategoryItem>("/api/mobile/v1/categories", {
+      method: "POST",
+      body: JSON.stringify(input),
+    });
+  }
+
+  updateCategory(
+    categoryId: string,
+    input: UpdateCategoryInput,
+  ): Promise<CategoryItem> {
+    return this.request<CategoryItem>(
+      `/api/mobile/v1/categories/${encodeURIComponent(categoryId)}`,
+      {
+        method: "PATCH",
+        body: JSON.stringify(input),
+      },
+    );
+  }
+
   getProducts(params?: ProductQueryParams): Promise<ProductItem[]> {
     const qs = new URLSearchParams();
     if (params?.query) qs.set("q", params.query);
@@ -181,6 +213,19 @@ export class HttpApiClient implements AuthenticatedApiClient {
       method: "POST",
       body: JSON.stringify(input),
     });
+  }
+
+  updateProduct(
+    productId: string,
+    input: UpdateProductInput,
+  ): Promise<ProductItem> {
+    return this.request<ProductItem>(
+      `/api/mobile/v1/products/${encodeURIComponent(productId)}`,
+      {
+        method: "PATCH",
+        body: JSON.stringify(input),
+      },
+    );
   }
 
   bulkCreateProducts(
@@ -210,6 +255,24 @@ export class HttpApiClient implements AuthenticatedApiClient {
       `/api/mobile/v1/products/barcode/${encodeURIComponent(barcode.trim())}`,
       { allowNotFound: true },
     );
+  }
+
+  getRestockLogs(params?: RestockQueryParams): Promise<RestockLogItem[]> {
+    const qs = new URLSearchParams();
+    if (params?.query) qs.set("q", params.query);
+    if (params?.productId) qs.set("productId", params.productId);
+    if (typeof params?.limit === "number") qs.set("limit", String(params.limit));
+    const suffix = qs.toString() ? `?${qs.toString()}` : "";
+    return this.request<RestockLogItem[]>(
+      `/api/mobile/v1/inventory/restocks${suffix}`,
+    );
+  }
+
+  recordRestock(input: CreateRestockInput): Promise<RestockLogItem> {
+    return this.request<RestockLogItem>("/api/mobile/v1/inventory/restocks", {
+      method: "POST",
+      body: JSON.stringify(input),
+    });
   }
 
   getRecentSales(params?: SalesQueryParams): Promise<SaleTransactionSummary[]> {

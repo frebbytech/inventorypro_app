@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, gt, gte, like, lt, lte, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, gte, like, lt, lte, ne, or, sql } from "drizzle-orm";
 import type { ExpoSqliteDrizzleDb } from "./client";
 import { generateId, generateSessionToken, verifyPassword } from "./crypto";
 import {
@@ -21,7 +21,10 @@ import {
   type AuthLoginResponse,
   type AuthSessionResponse,
   type BulkImportProductsResult,
+  type CategoryItem,
+  type CreateCategoryInput,
   type CreateProductInput,
+  type CreateRestockInput,
   type CreateSaleInput,
   type PaymentBreakdownItem,
   type PaymentMode,
@@ -30,6 +33,8 @@ import {
   type ProductQueryParams,
   type ProductSaleRecord,
   type RefundSaleInput,
+  type RestockLogItem,
+  type RestockQueryParams,
   type SaleReceiptDetail,
   type SalesDateRange,
   type SalesQueryParams,
@@ -42,6 +47,8 @@ import {
   type TodayDashboardData,
   type TopSellingProductItem,
   type UpdateBusinessSettingsInput,
+  type UpdateCategoryInput,
+  type UpdateProductInput,
 } from "@/types/domain";
 
 const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
@@ -1677,4 +1684,556 @@ export function listAuditLogs(
       createdAt: r.createdAt,
     };
   });
+}
+
+export function updateProduct(
+  db: ExpoSqliteDrizzleDb,
+  input: UpdateProductInput & { productId: string; userId: string },
+): ProductItem {
+  return db.transaction((tx) => {
+    const existing = tx
+      .select({
+        id: products.id,
+        userId: products.userId,
+        categoryId: products.categoryId,
+        name: products.name,
+        description: products.description,
+        barcode: products.barcode,
+        costPrice: products.costPrice,
+        unitPrice: products.unitPrice,
+        lowStockThreshold: products.lowStockThreshold,
+        isActive: products.isActive,
+      })
+      .from(products)
+      .where(eq(products.id, input.productId))
+      .limit(1)
+      .get();
+
+    if (!existing) {
+      throw new Error("Product not found.");
+    }
+
+    const nextName =
+      input.name !== undefined ? input.name.trim() : existing.name;
+    if (!nextName) {
+      throw new Error("Product name cannot be empty.");
+    }
+
+    const nextCostPrice =
+      input.costPrice !== undefined
+        ? Number(input.costPrice)
+        : Number(existing.costPrice);
+    if (!Number.isFinite(nextCostPrice) || nextCostPrice < 0) {
+      throw new Error("Cost price must be 0 or greater.");
+    }
+
+    const nextUnitPrice =
+      input.unitPrice !== undefined
+        ? Number(input.unitPrice)
+        : Number(existing.unitPrice);
+    if (!Number.isFinite(nextUnitPrice) || nextUnitPrice < 0) {
+      throw new Error("Selling price must be 0 or greater.");
+    }
+
+    const nextThreshold =
+      input.lowStockThreshold !== undefined
+        ? Math.trunc(Number(input.lowStockThreshold))
+        : Number(existing.lowStockThreshold);
+    if (!Number.isFinite(nextThreshold) || nextThreshold < 1) {
+      throw new Error("Low-stock alert threshold must be at least 1.");
+    }
+
+    const nextBarcode =
+      input.barcode !== undefined
+        ? input.barcode.trim()
+        : existing.barcode || "";
+    if (nextBarcode) {
+      const dupBarcode = tx
+        .select({ id: products.id, name: products.name })
+        .from(products)
+        .where(
+          and(
+            eq(sql`TRIM(${products.barcode})`, nextBarcode),
+            ne(products.id, existing.id),
+          ),
+        )
+        .limit(1)
+        .get();
+      if (dupBarcode) {
+        throw new Error(
+          `Barcode "${nextBarcode}" is already assigned to "${dupBarcode.name}".`,
+        );
+      }
+    }
+
+    const nowIso = new Date().toISOString();
+    let nextCategoryId = existing.categoryId;
+
+    if (input.categoryName !== undefined) {
+      const cleanCatName = input.categoryName.trim() || "General";
+      const matchedCat = tx
+        .select({ id: productCategories.id })
+        .from(productCategories)
+        .where(eq(sql`LOWER(${productCategories.name})`, cleanCatName.toLowerCase()))
+        .limit(1)
+        .get();
+
+      if (matchedCat) {
+        nextCategoryId = matchedCat.id;
+      } else {
+        const newCatId = generateId("cat");
+        tx.insert(productCategories)
+          .values({
+            id: newCatId,
+            userId: input.userId,
+            name: cleanCatName,
+            description: "Added while editing product",
+            isActive: 1,
+            createdAt: nowIso,
+            updatedAt: nowIso,
+          })
+          .run();
+        nextCategoryId = newCatId;
+      }
+    }
+
+    const nextDescription =
+      input.description !== undefined
+        ? input.description.trim()
+        : existing.description || "";
+    const nextIsActive =
+      input.active !== undefined ? (input.active ? 1 : 0) : existing.isActive;
+
+    const cleanCost = Number(nextCostPrice.toFixed(2));
+    const cleanUnit = Number(nextUnitPrice.toFixed(2));
+
+    tx.update(products)
+      .set({
+        name: nextName,
+        categoryId: nextCategoryId,
+        barcode: nextBarcode,
+        description: nextDescription,
+        costPrice: cleanCost,
+        unitPrice: cleanUnit,
+        lowStockThreshold: nextThreshold,
+        isActive: nextIsActive,
+        updatedAt: nowIso,
+      })
+      .where(eq(products.id, existing.id))
+      .run();
+
+    tx.insert(auditLogs)
+      .values({
+        id: generateId("aud"),
+        userId: input.userId,
+        entityType: "product",
+        entityId: existing.id,
+        action: "update",
+        oldValues: JSON.stringify({
+          name: existing.name,
+          category_id: existing.categoryId,
+          barcode: existing.barcode || "",
+          cost_price: Number(existing.costPrice),
+          unit_price: Number(existing.unitPrice),
+          low_stock_threshold: existing.lowStockThreshold,
+          is_active: existing.isActive,
+        }),
+        newValues: JSON.stringify({
+          name: nextName,
+          category_id: nextCategoryId,
+          barcode: nextBarcode,
+          cost_price: cleanCost,
+          unit_price: cleanUnit,
+          low_stock_threshold: nextThreshold,
+          is_active: nextIsActive,
+        }),
+      })
+      .run();
+
+    const updated = tx
+      .select({
+        id: products.id,
+        name: products.name,
+        description: products.description,
+        categoryId: products.categoryId,
+        categoryName: productCategories.name,
+        barcode: products.barcode,
+        costPrice: products.costPrice,
+        unitPrice: products.unitPrice,
+        stockQuantity: products.stockQuantity,
+        lowStockThreshold: products.lowStockThreshold,
+        isActive: products.isActive,
+        updatedAt: products.updatedAt,
+      })
+      .from(products)
+      .innerJoin(productCategories, eq(products.categoryId, productCategories.id))
+      .where(eq(products.id, existing.id))
+      .limit(1)
+      .get();
+
+    if (!updated) {
+      throw new Error("Unable to load updated product.");
+    }
+
+    return mapProductRow(updated);
+  });
+}
+
+export function listCategoryDetails(
+  db: ExpoSqliteDrizzleDb,
+  query?: string,
+): CategoryItem[] {
+  const cleanQuery = query?.trim();
+  const baseQuery = db
+    .select({
+      id: productCategories.id,
+      name: productCategories.name,
+      description: productCategories.description,
+      isActive: productCategories.isActive,
+      updatedAt: productCategories.updatedAt,
+      productCount: sql<number>`COUNT(${products.id})`,
+      totalUnits: sql<number>`COALESCE(SUM(${products.stockQuantity}), 0)`,
+    })
+    .from(productCategories)
+    .leftJoin(products, eq(products.categoryId, productCategories.id));
+
+  const rows = cleanQuery
+    ? baseQuery
+        .where(
+          or(
+            like(productCategories.name, `%${cleanQuery}%`),
+            like(productCategories.description, `%${cleanQuery}%`),
+          ),
+        )
+        .groupBy(productCategories.id)
+        .orderBy(desc(productCategories.isActive), asc(productCategories.name))
+        .all()
+    : baseQuery
+        .groupBy(productCategories.id)
+        .orderBy(desc(productCategories.isActive), asc(productCategories.name))
+        .all();
+
+  return rows.map((r) => ({
+    id: r.id,
+    name: r.name,
+    description: r.description || "",
+    isActive: r.isActive === 1,
+    productCount: Number(r.productCount) || 0,
+    totalUnits: Number(r.totalUnits) || 0,
+    updatedAt: r.updatedAt,
+  }));
+}
+
+export function createCategory(
+  db: ExpoSqliteDrizzleDb,
+  input: CreateCategoryInput & { userId: string },
+): CategoryItem {
+  const name = input.name.trim();
+  if (!name) {
+    throw new Error("Category name is required.");
+  }
+
+  const description = input.description?.trim() || "";
+  const isActive = input.isActive !== false ? 1 : 0;
+  const nowIso = new Date().toISOString();
+
+  const categoryId = db.transaction((tx) => {
+    const duplicate = tx
+      .select({ id: productCategories.id })
+      .from(productCategories)
+      .where(eq(sql`LOWER(${productCategories.name})`, name.toLowerCase()))
+      .limit(1)
+      .get();
+
+    if (duplicate) {
+      throw new Error(`Category "${name}" already exists.`);
+    }
+
+    const id = generateId("cat");
+    tx.insert(productCategories)
+      .values({
+        id,
+        userId: input.userId,
+        name,
+        description,
+        isActive,
+        createdAt: nowIso,
+        updatedAt: nowIso,
+      })
+      .run();
+
+    tx.insert(auditLogs)
+      .values({
+        id: generateId("aud"),
+        userId: input.userId,
+        entityType: "product_category",
+        entityId: id,
+        action: "create",
+        newValues: JSON.stringify({
+          name,
+          description: description || undefined,
+          is_active: isActive,
+        }),
+      })
+      .run();
+
+    return id;
+  });
+
+  const created = listCategoryDetails(db).find((c) => c.id === categoryId);
+  if (!created) {
+    throw new Error("Category created, but failed to reload details.");
+  }
+  return created;
+}
+
+export function updateCategory(
+  db: ExpoSqliteDrizzleDb,
+  input: UpdateCategoryInput & { categoryId: string; userId: string },
+): CategoryItem {
+  db.transaction((tx) => {
+    const existing = tx
+      .select({
+        id: productCategories.id,
+        name: productCategories.name,
+        description: productCategories.description,
+        isActive: productCategories.isActive,
+      })
+      .from(productCategories)
+      .where(eq(productCategories.id, input.categoryId))
+      .limit(1)
+      .get();
+
+    if (!existing) {
+      throw new Error("Category not found.");
+    }
+
+    const nextName =
+      input.name !== undefined ? input.name.trim() : existing.name;
+    if (!nextName) {
+      throw new Error("Category name cannot be empty.");
+    }
+
+    const duplicate = tx
+      .select({ id: productCategories.id })
+      .from(productCategories)
+      .where(
+        and(
+          eq(sql`LOWER(${productCategories.name})`, nextName.toLowerCase()),
+          ne(productCategories.id, existing.id),
+        ),
+      )
+      .limit(1)
+      .get();
+
+    if (duplicate) {
+      throw new Error(`Another category named "${nextName}" already exists.`);
+    }
+
+    const nextDescription =
+      input.description !== undefined
+        ? input.description.trim()
+        : existing.description || "";
+    const nextIsActive =
+      input.isActive !== undefined ? (input.isActive ? 1 : 0) : existing.isActive;
+    const nowIso = new Date().toISOString();
+
+    tx.update(productCategories)
+      .set({
+        name: nextName,
+        description: nextDescription,
+        isActive: nextIsActive,
+        updatedAt: nowIso,
+      })
+      .where(eq(productCategories.id, existing.id))
+      .run();
+
+    tx.insert(auditLogs)
+      .values({
+        id: generateId("aud"),
+        userId: input.userId,
+        entityType: "product_category",
+        entityId: existing.id,
+        action: "update",
+        oldValues: JSON.stringify({
+          name: existing.name,
+          description: existing.description || "",
+          is_active: existing.isActive,
+        }),
+        newValues: JSON.stringify({
+          name: nextName,
+          description: nextDescription,
+          is_active: nextIsActive,
+        }),
+      })
+      .run();
+  });
+
+  const updated = listCategoryDetails(db).find((c) => c.id === input.categoryId);
+  if (!updated) {
+    throw new Error("Category updated, but failed to reload details.");
+  }
+  return updated;
+}
+
+export function listRestockLogs(
+  db: ExpoSqliteDrizzleDb,
+  params?: RestockQueryParams,
+): RestockLogItem[] {
+  const limit =
+    typeof params?.limit === "number" && params.limit > 0
+      ? Math.min(200, Math.trunc(params.limit))
+      : 100;
+
+  const conditions = [];
+  if (params?.productId?.trim()) {
+    conditions.push(eq(inventory.productId, params.productId.trim()));
+  }
+
+  if (params?.query?.trim()) {
+    const pattern = `%${params.query.trim()}%`;
+    conditions.push(
+      or(
+        like(products.name, pattern),
+        like(productCategories.name, pattern),
+        like(inventory.notes, pattern),
+        like(users.username, pattern),
+      ),
+    );
+  }
+
+  const baseQuery = db
+    .select({
+      id: inventory.id,
+      productId: inventory.productId,
+      productName: products.name,
+      categoryName: productCategories.name,
+      quantity: inventory.quantity,
+      restockDate: inventory.restockDate,
+      notes: inventory.notes,
+      firstname: users.firstname,
+      lastname: users.lastname,
+      username: users.username,
+      createdAt: inventory.createdAt,
+    })
+    .from(inventory)
+    .innerJoin(products, eq(inventory.productId, products.id))
+    .innerJoin(
+      productCategories,
+      eq(inventory.productCategoryId, productCategories.id),
+    )
+    .leftJoin(users, eq(inventory.userId, users.id));
+
+  const rows =
+    conditions.length > 0
+      ? baseQuery
+          .where(and(...conditions))
+          .orderBy(desc(inventory.restockDate), desc(inventory.createdAt))
+          .limit(limit)
+          .all()
+      : baseQuery
+          .orderBy(desc(inventory.restockDate), desc(inventory.createdAt))
+          .limit(limit)
+          .all();
+
+  return rows.map((r) => {
+    const fullName = [r.firstname, r.lastname].filter(Boolean).join(" ").trim();
+    return {
+      id: r.id,
+      productId: r.productId,
+      productName: r.productName,
+      categoryName: r.categoryName,
+      quantity: Number(r.quantity) || 0,
+      restockDate: r.restockDate,
+      notes: r.notes || "",
+      userName: fullName || r.username || "Staff",
+      createdAt: r.createdAt,
+    };
+  });
+}
+
+export function recordRestock(
+  db: ExpoSqliteDrizzleDb,
+  input: CreateRestockInput & { userId: string },
+): RestockLogItem {
+  const quantity = Math.trunc(Number(input.quantity));
+  if (!Number.isFinite(quantity) || quantity <= 0) {
+    throw new Error("Restock quantity must be a positive whole number.");
+  }
+
+  const cleanDate = input.restockDate?.trim() || new Date().toISOString().slice(0, 10);
+  const cleanNotes = input.notes?.trim() || "Supplier delivery restock";
+  const nowIso = new Date().toISOString();
+
+  const invId = db.transaction((tx) => {
+    const product = tx
+      .select({
+        id: products.id,
+        categoryId: products.categoryId,
+        stockQuantity: products.stockQuantity,
+        name: products.name,
+      })
+      .from(products)
+      .where(eq(products.id, input.productId))
+      .limit(1)
+      .get();
+
+    if (!product) {
+      throw new Error("Product not found.");
+    }
+
+    const oldQty = Number(product.stockQuantity) || 0;
+    const nextQty = oldQty + quantity;
+
+    tx.update(products)
+      .set({ stockQuantity: nextQty, updatedAt: nowIso })
+      .where(eq(products.id, product.id))
+      .run();
+
+    const newInvId = generateId("inv");
+    tx.insert(inventory)
+      .values({
+        id: newInvId,
+        userId: input.userId,
+        productId: product.id,
+        productCategoryId: product.categoryId,
+        quantity,
+        restockDate: cleanDate,
+        notes: cleanNotes,
+        createdAt: nowIso,
+        updatedAt: nowIso,
+      })
+      .run();
+
+    tx.insert(auditLogs)
+      .values({
+        id: generateId("aud"),
+        userId: input.userId,
+        entityType: "inventory",
+        entityId: newInvId,
+        action: "create",
+        oldValues: JSON.stringify({
+          product_name: product.name,
+          stock_quantity: oldQty,
+        }),
+        newValues: JSON.stringify({
+          product_name: product.name,
+          added_quantity: quantity,
+          stock_quantity: nextQty,
+          restock_date: cleanDate,
+          notes: cleanNotes,
+        }),
+      })
+      .run();
+
+    return newInvId;
+  });
+
+  const created = listRestockLogs(db, { productId: input.productId, limit: 25 }).find(
+    (item) => item.id === invId,
+  );
+  if (!created) {
+    throw new Error("Restock recorded, but failed to reload entry.");
+  }
+  return created;
 }

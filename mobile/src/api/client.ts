@@ -3,12 +3,17 @@ import type {
   AuditLogItem,
   AuditLogsQueryParams,
   BulkImportProductsResult,
+  CategoryItem,
+  CreateCategoryInput,
   CreateProductInput,
+  CreateRestockInput,
   CreateSaleInput,
   ProductDetailResponse,
   ProductItem,
   ProductQueryParams,
   RefundSaleInput,
+  RestockLogItem,
+  RestockQueryParams,
   SaleReceiptDetail,
   SalesDateRange,
   SalesQueryParams,
@@ -17,6 +22,8 @@ import type {
   StoreProfile,
   TodayDashboardData,
   UpdateBusinessSettingsInput,
+  UpdateCategoryInput,
+  UpdateProductInput,
 } from "@/types/domain";
 
 /**
@@ -30,12 +37,18 @@ export const API_ENDPOINTS = {
   authLogout: "POST /api/mobile/v1/auth/logout",
   todayDashboard: "GET /api/mobile/v1/dashboard/today",
   categories: "GET /api/mobile/v1/categories",
+  categoryDetails: "GET /api/mobile/v1/categories/manage?q=",
+  categoryCreate: "POST /api/mobile/v1/categories",
+  categoryUpdate: "PATCH /api/mobile/v1/categories/:id",
   productsList: "GET /api/mobile/v1/products?q=&category=&stock=&threshold=",
   productsCreate: "POST /api/mobile/v1/products",
   productsBulkCreate: "POST /api/mobile/v1/products/bulk",
   productDetail: "GET /api/mobile/v1/products/:id",
+  productUpdate: "PATCH /api/mobile/v1/products/:id",
   productStockAdjust: "PATCH /api/mobile/v1/products/:id/stock",
   productByBarcode: "GET /api/mobile/v1/products/barcode/:code",
+  restockLogs: "GET /api/mobile/v1/inventory/restocks?q=&productId=&limit=",
+  restockCreate: "POST /api/mobile/v1/inventory/restocks",
   salesList: "GET /api/mobile/v1/sales?q=&paymentMode=&status=&dateRange=",
   salesCreate: "POST /api/mobile/v1/sales",
   saleReceipt: "GET /api/mobile/v1/sales/:id/receipt",
@@ -54,9 +67,19 @@ export interface InventoryProApiClient {
 
   getTodayDashboard(): Promise<TodayDashboardData>;
   getCategories(): Promise<string[]>;
+  getCategoryDetails(query?: string): Promise<CategoryItem[]>;
+  createCategory(input: CreateCategoryInput): Promise<CategoryItem>;
+  updateCategory(
+    categoryId: string,
+    input: UpdateCategoryInput,
+  ): Promise<CategoryItem>;
   getProducts(params?: ProductQueryParams): Promise<ProductItem[]>;
   getProductById(productId: string): Promise<ProductDetailResponse | null>;
   createProduct(input: CreateProductInput): Promise<ProductItem>;
+  updateProduct(
+    productId: string,
+    input: UpdateProductInput,
+  ): Promise<ProductItem>;
   bulkCreateProducts(
     items: CreateProductInput[],
   ): Promise<BulkImportProductsResult>;
@@ -65,6 +88,8 @@ export interface InventoryProApiClient {
     input: AdjustStockInput,
   ): Promise<ProductItem>;
   lookupProductByBarcode(barcode: string): Promise<ProductItem | null>;
+  getRestockLogs(params?: RestockQueryParams): Promise<RestockLogItem[]>;
+  recordRestock(input: CreateRestockInput): Promise<RestockLogItem>;
   getRecentSales(params?: SalesQueryParams): Promise<SaleTransactionSummary[]>;
   getSaleReceiptById(saleId: string): Promise<SaleReceiptDetail | null>;
   createSale(input: CreateSaleInput): Promise<SaleReceiptDetail>;

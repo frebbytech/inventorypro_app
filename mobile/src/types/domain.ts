@@ -93,6 +93,64 @@ export interface CreateProductInput {
   active?: boolean;
 }
 
+export interface UpdateProductInput {
+  name?: string;
+  categoryName?: string;
+  barcode?: string;
+  description?: string;
+  costPrice?: number;
+  unitPrice?: number;
+  lowStockThreshold?: number;
+  active?: boolean;
+}
+
+export interface CategoryItem {
+  id: string;
+  name: string;
+  description: string;
+  isActive: boolean;
+  productCount: number;
+  totalUnits: number;
+  updatedAt: string;
+}
+
+export interface CreateCategoryInput {
+  name: string;
+  description?: string;
+  isActive?: boolean;
+}
+
+export interface UpdateCategoryInput {
+  name?: string;
+  description?: string;
+  isActive?: boolean;
+}
+
+export interface RestockLogItem {
+  id: string;
+  productId: string;
+  productName: string;
+  categoryName: string;
+  quantity: number;
+  restockDate: string;
+  notes: string;
+  userName: string;
+  createdAt: string;
+}
+
+export interface RestockQueryParams {
+  query?: string;
+  productId?: string;
+  limit?: number;
+}
+
+export interface CreateRestockInput {
+  productId: string;
+  quantity: number;
+  restockDate?: string;
+  notes?: string;
+}
+
 export interface BulkImportProductsResult {
   createdCount: number;
   newCategoriesCount: number;

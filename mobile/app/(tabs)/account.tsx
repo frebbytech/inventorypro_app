@@ -7,8 +7,10 @@ import {
   ChevronRight,
   Clock,
   History,
+  Layers,
   LogOut,
   Mail,
+  PackagePlus,
   Phone,
   Settings,
   Shield,
@@ -47,9 +49,26 @@ export default function AccountScreen() {
   const menuItems: ReadonlyArray<{
     title: string;
     description: string;
-    route: "/audit-logs" | "/sales/summary" | "/settings";
+    route:
+      | "/categories"
+      | "/restocks"
+      | "/audit-logs"
+      | "/sales/summary"
+      | "/settings";
     icon: React.ReactNode;
   }> = [
+    {
+      title: "Product Categories",
+      description: "Organize catalog categories and active visibility",
+      route: "/categories",
+      icon: <Layers size={18} color={colors.primary} />,
+    },
+    {
+      title: "Restock History",
+      description: "Track stock deliveries, manual counts, and adjustments",
+      route: "/restocks",
+      icon: <PackagePlus size={18} color={colors.primary} />,
+    },
     {
       title: "Audit Logs",
       description: "Activity trail of sign-ins, sales, and inventory updates",

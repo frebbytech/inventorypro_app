@@ -58,9 +58,30 @@ function ThemedNavigator() {
             }}
           />
           <Stack.Screen
+            name="product/edit"
+            options={{
+              title: "Edit Product",
+              headerBackTitle: "Product",
+            }}
+          />
+          <Stack.Screen
             name="product/[id]"
             options={{
               title: "Product Details",
+              headerBackTitle: "Back",
+            }}
+          />
+          <Stack.Screen
+            name="categories"
+            options={{
+              title: "Categories",
+              headerBackTitle: "Back",
+            }}
+          />
+          <Stack.Screen
+            name="restocks"
+            options={{
+              title: "Restock History",
               headerBackTitle: "Back",
             }}
           />

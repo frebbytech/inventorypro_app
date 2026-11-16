@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
   Pressable,
   ScrollView,
@@ -6,8 +6,17 @@ import {
   Text,
   View,
 } from "react-native";
-import { useLocalSearchParams, useRouter } from "expo-router";
-import { Barcode, Minus, Package, Plus, ShoppingCart } from "lucide-react-native";
+import { useFocusEffect, useLocalSearchParams, useRouter } from "expo-router";
+import {
+  Barcode,
+  Edit3,
+  History,
+  Minus,
+  Package,
+  Plus,
+  Power,
+  ShoppingCart,
+} from "lucide-react-native";
 import { useApiClient } from "@/api/ApiProvider";
 import { useAuth } from "@/api/AuthProvider";
 import { EmptyState } from "@/components/EmptyState";
@@ -42,31 +51,43 @@ export default function ProductDetailScreen() {
   const [detail, setDetail] = useState<ProductDetailResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [adjusting, setAdjusting] = useState(false);
+  const [togglingActive, setTogglingActive] = useState(false);
   const [customQty, setCustomQty] = useState("");
   const [adjustReason, setAdjustReason] = useState("");
   const [adjustError, setAdjustError] = useState<string | null>(null);
   const [adjustSuccess, setAdjustSuccess] = useState<string | null>(null);
+  const hasLoadedRef = useRef(false);
 
-  useEffect(() => {
-    let active = true;
-    async function load() {
+  const loadDetail = useCallback(
+    async (silent = false) => {
       if (!id) {
         setLoading(false);
         return;
       }
-      setLoading(true);
+      if (!silent) setLoading(true);
       try {
         const res = await api.getProductById(String(id));
-        if (active) setDetail(res);
+        setDetail(res);
+        hasLoadedRef.current = true;
       } finally {
-        if (active) setLoading(false);
+        setLoading(false);
       }
-    }
-    void load();
-    return () => {
-      active = false;
-    };
-  }, [api, id]);
+    },
+    [api, id],
+  );
+
+  useEffect(() => {
+    hasLoadedRef.current = false;
+    void loadDetail();
+  }, [loadDetail]);
+
+  useFocusEffect(
+    useCallback(() => {
+      if (hasLoadedRef.current) {
+        void loadDetail(true);
+      }
+    }, [loadDetail]),
+  );
 
   if (loading) {
     return <LoadingState message="Loading product details..." />;
@@ -118,6 +139,30 @@ export default function ProductDetailScreen() {
       );
     } finally {
       setAdjusting(false);
+    }
+  };
+
+  const handleToggleActive = async () => {
+    if (!detail || togglingActive) return;
+    setTogglingActive(true);
+    setAdjustError(null);
+    setAdjustSuccess(null);
+    try {
+      const updated = await api.updateProduct(detail.product.id, {
+        active: !detail.product.active,
+      });
+      setDetail({ ...detail, product: updated });
+      setAdjustSuccess(
+        updated.active
+          ? "Product is now Active and visible in POS."
+          : "Product disabled and hidden from New Sale.",
+      );
+    } catch (err) {
+      setAdjustError(
+        err instanceof Error ? err.message : "Failed to update product status.",
+      );
+    } finally {
+      setTogglingActive(false);
     }
   };
 
@@ -235,6 +280,47 @@ export default function ProductDetailScreen() {
             >
               {product.barcode || "No barcode assigned"}
             </Text>
+          </View>
+
+          <View style={styles.identityActionsRow}>
+            <Button
+              title="Edit Product"
+              variant="outline"
+              size="sm"
+              style={{ flex: 1 }}
+              leftIcon={<Edit3 size={14} color={colors.foreground} />}
+              onPress={() =>
+                router.push({
+                  pathname: "/product/edit",
+                  params: { id: product.id },
+                })
+              }
+            />
+            <Button
+              title={product.active ? "Disable" : "Activate"}
+              variant={product.active ? "secondary" : "default"}
+              size="sm"
+              loading={togglingActive}
+              leftIcon={
+                <Power
+                  size={14}
+                  color={product.active ? colors.foreground : "#FFFFFF"}
+                />
+              }
+              onPress={() => void handleToggleActive()}
+            />
+            <Button
+              title="Restocks"
+              variant="outline"
+              size="sm"
+              leftIcon={<History size={14} color={colors.foreground} />}
+              onPress={() =>
+                router.push({
+                  pathname: "/restocks",
+                  params: { productId: product.id, productName: product.name },
+                })
+              }
+            />
           </View>
         </CardContent>
       </Card>
@@ -577,5 +663,12 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     gap: 8,
+  },
+  identityActionsRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    flexWrap: "wrap",
+    gap: 8,
+    marginTop: 2,
   },
 });

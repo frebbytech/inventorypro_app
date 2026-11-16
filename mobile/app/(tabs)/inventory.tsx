@@ -14,6 +14,8 @@ import {
   AlertTriangle,
   Check,
   FileSpreadsheet,
+  History,
+  Layers,
   Minus,
   Package,
   Plus,
@@ -330,6 +332,25 @@ export default function InventoryScreen() {
           value={stockStatus}
           onChange={setStockStatus}
         />
+
+        <View style={styles.catalogToolsRow}>
+          <Button
+            title="Categories"
+            variant="outline"
+            size="sm"
+            style={{ flex: 1 }}
+            leftIcon={<Layers size={14} color={colors.foreground} />}
+            onPress={() => router.push("/categories")}
+          />
+          <Button
+            title="Restock History"
+            variant="outline"
+            size="sm"
+            style={{ flex: 1 }}
+            leftIcon={<History size={14} color={colors.foreground} />}
+            onPress={() => router.push("/restocks")}
+          />
+        </View>
 
         {/* Low-Stock Status & Configurable Threshold Bar */}
         <View
@@ -765,5 +786,10 @@ const styles = StyleSheet.create({
   },
   catChip: {
     borderWidth: 1,
+  },
+  catalogToolsRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
   },
 });
