@@ -271,6 +271,74 @@ export const auditLogs = sqliteTable("audit_logs", {
     .default(sql`(datetime('now'))`),
 });
 
+export const suppliers = sqliteTable(
+  "suppliers",
+  {
+    id: text("id").primaryKey(),
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id),
+    name: text("name").notNull(),
+    companyName: text("company_name").notNull().default(""),
+    email: text("email"),
+    address: text("address"),
+    phonenumber: text("phonenumber"),
+    isActive: integer("is_active").notNull().default(1),
+    createdAt: text("created_at")
+      .notNull()
+      .default(sql`(datetime('now'))`),
+    updatedAt: text("updated_at")
+      .notNull()
+      .default(sql`(datetime('now'))`),
+  },
+  (table) => [
+    index("suppliers_idx_name").on(table.name),
+    index("suppliers_idx_company").on(table.companyName),
+  ],
+);
+
+export const supplierTransactions = sqliteTable(
+  "supplier_transactions",
+  {
+    id: text("id").primaryKey(),
+    transactionNo: text("transaction_no").notNull().unique(),
+    supplierId: text("supplier_id")
+      .notNull()
+      .references(() => suppliers.id, { onDelete: "cascade" }),
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id),
+    deliveredBy: text("delivered_by"),
+    transactionDate: text("transaction_date")
+      .notNull()
+      .default(sql`(datetime('now'))`),
+    totalAmount: real("total_amount").notNull(),
+    amountPaid: real("amount_paid").notNull().default(0),
+    balance: real("balance").notNull().default(0),
+    paymentMode: text("payment_mode", {
+      enum: ["cash", "momo", "bank", "cheque"],
+    })
+      .notNull()
+      .default("cash"),
+    status: text("status", {
+      enum: ["completed", "pending", "cancelled"],
+    })
+      .notNull()
+      .default("completed"),
+    notes: text("notes").default(""),
+    createdAt: text("created_at")
+      .notNull()
+      .default(sql`(datetime('now'))`),
+    updatedAt: text("updated_at")
+      .notNull()
+      .default(sql`(datetime('now'))`),
+  },
+  (table) => [
+    index("supplier_tx_idx_supplier").on(table.supplierId),
+    index("supplier_tx_idx_date").on(table.transactionDate),
+  ],
+);
+
 export const productsRelations = relations(products, ({ one, many }) => ({
   category: one(productCategories, {
     fields: [products.categoryId],
@@ -308,4 +376,6 @@ export type ProductCategoryRecord = typeof productCategories.$inferSelect;
 export type SaleRecord = typeof sales.$inferSelect;
 export type SaleItemRecord = typeof saleItems.$inferSelect;
 export type CustomerRecord = typeof customers.$inferSelect;
+export type SupplierRecord = typeof suppliers.$inferSelect;
+export type SupplierTransactionRecord = typeof supplierTransactions.$inferSelect;
 export type SettingsRecord = typeof settings.$inferSelect;

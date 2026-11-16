@@ -24,6 +24,8 @@ import {
   Search,
   ShoppingCart,
   Trash2,
+  UserCheck,
+  Users,
   X,
 } from "lucide-react-native";
 import { useApiClient } from "@/api/ApiProvider";
@@ -39,7 +41,7 @@ import {
   SegmentedTabs,
 } from "@/components/ui";
 import { useTheme } from "@/theme";
-import type { PaymentMode, ProductItem } from "@/types/domain";
+import type { CustomerItem, PaymentMode, ProductItem } from "@/types/domain";
 import { formatCurrency } from "@/utils/formatters";
 
 interface CartLine {
@@ -78,12 +80,34 @@ export default function NewSaleScreen() {
 
   const [customerName, setCustomerName] = useState("");
   const [customerPhone, setCustomerPhone] = useState("");
+  const [customers, setCustomers] = useState<CustomerItem[]>([]);
+  const [customerPickerOpen, setCustomerPickerOpen] = useState(false);
+  const [customerSearch, setCustomerSearch] = useState("");
   const [discountText, setDiscountText] = useState("");
   const [paymentMode, setPaymentMode] = useState<PaymentMode>("cash");
   const [cashTenderedText, setCashTenderedText] = useState("");
   const [applyTax, setApplyTax] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!cartOpen || customers.length > 0) return;
+    void api
+      .getCustomers()
+      .then((list) => setCustomers(list))
+      .catch(() => {});
+  }, [api, cartOpen, customers.length]);
+
+  const filteredCustomers = useMemo(() => {
+    const q = customerSearch.trim().toLowerCase();
+    if (!q) return customers;
+    return customers.filter(
+      (c) =>
+        c.name.toLowerCase().includes(q) ||
+        (c.phonenumber?.toLowerCase().includes(q) ?? false) ||
+        (c.email?.toLowerCase().includes(q) ?? false),
+    );
+  }, [customers, customerSearch]);
 
   const loadProducts = useCallback(
     async (isRefresh = false) => {
@@ -783,21 +807,57 @@ export default function NewSaleScreen() {
                   </View>
 
                   <CardFooter style={{ gap: spacing.md }}>
-                    <View style={styles.inputRow}>
-                      <View style={{ flex: 1.3 }}>
-                        <Input
-                          value={customerName}
-                          onChangeText={setCustomerName}
-                          placeholder="Customer (Walk-in)"
-                        />
+                    <View style={{ gap: spacing.xs + 2 }}>
+                      <View style={styles.rowBetween}>
+                        <Text
+                          style={[
+                            typography.caption,
+                            {
+                              color: colors.mutedForeground,
+                              fontFamily: fontFamilies.semibold,
+                            },
+                          ]}
+                        >
+                          Customer
+                        </Text>
+                        <Pressable
+                          onPress={() => {
+                            setCustomerSearch("");
+                            setCustomerPickerOpen(true);
+                          }}
+                          style={styles.pickCustomerBtn}
+                        >
+                          <Users size={13} color={colors.primary} />
+                          <Text
+                            style={[
+                              typography.caption,
+                              {
+                                color: colors.primary,
+                                fontFamily: fontFamilies.semibold,
+                              },
+                            ]}
+                          >
+                            Pick Saved ({customers.length})
+                          </Text>
+                        </Pressable>
                       </View>
-                      <View style={{ flex: 1 }}>
-                        <Input
-                          value={customerPhone}
-                          onChangeText={setCustomerPhone}
-                          placeholder="Phone (opt)"
-                          keyboardType="phone-pad"
-                        />
+
+                      <View style={styles.inputRow}>
+                        <View style={{ flex: 1.3 }}>
+                          <Input
+                            value={customerName}
+                            onChangeText={setCustomerName}
+                            placeholder="Customer (Walk-in)"
+                          />
+                        </View>
+                        <View style={{ flex: 1 }}>
+                          <Input
+                            value={customerPhone}
+                            onChangeText={setCustomerPhone}
+                            placeholder="Phone (opt)"
+                            keyboardType="phone-pad"
+                          />
+                        </View>
                       </View>
                     </View>
 
@@ -1032,6 +1092,134 @@ export default function NewSaleScreen() {
         onDecrementProduct={(id) => updateCartQty(id, -1)}
         currency={currency}
       />
+
+      {/* Saved Customer Picker Modal */}
+      <Modal
+        visible={customerPickerOpen}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setCustomerPickerOpen(false)}
+      >
+        <View style={styles.pickerOverlay}>
+          <View
+            style={[
+              styles.pickerCard,
+              {
+                backgroundColor: colors.card,
+                borderColor: colors.border,
+                borderRadius: radii["2xl"],
+                padding: spacing.base,
+                gap: spacing.sm + 2,
+              },
+            ]}
+          >
+            <View style={styles.rowBetween}>
+              <Text style={[typography.titleSm, { color: colors.foreground }]}>
+                Select Customer
+              </Text>
+              <Pressable
+                onPress={() => setCustomerPickerOpen(false)}
+                hitSlop={8}
+              >
+                <X size={20} color={colors.mutedForeground} />
+              </Pressable>
+            </View>
+
+            <Input
+              value={customerSearch}
+              onChangeText={setCustomerSearch}
+              placeholder="Search saved customers..."
+              autoCapitalize="none"
+              leftIcon={<Search size={16} color={colors.mutedForeground} />}
+            />
+
+            <ScrollView style={{ maxHeight: 320 }}>
+              <Pressable
+                onPress={() => {
+                  setCustomerName("");
+                  setCustomerPhone("");
+                  setCustomerPickerOpen(false);
+                }}
+                style={({ pressed }) => [
+                  styles.pickerRow,
+                  {
+                    borderBottomColor: colors.border,
+                    backgroundColor: pressed ? colors.muted : "transparent",
+                  },
+                ]}
+              >
+                <View style={{ flex: 1 }}>
+                  <Text
+                    style={[
+                      typography.bodySemibold,
+                      { color: colors.foreground },
+                    ]}
+                  >
+                    Walk-in Customer
+                  </Text>
+                  <Text
+                    style={[
+                      typography.caption,
+                      { color: colors.mutedForeground },
+                    ]}
+                  >
+                    Default quick checkout
+                  </Text>
+                </View>
+                {!customerName.trim() ? (
+                  <UserCheck size={16} color={colors.primary} />
+                ) : null}
+              </Pressable>
+
+              {filteredCustomers.map((c) => {
+                const selected =
+                  customerName.trim().toLowerCase() === c.name.toLowerCase();
+                return (
+                  <Pressable
+                    key={c.id}
+                    onPress={() => {
+                      setCustomerName(c.name);
+                      setCustomerPhone(c.phonenumber ?? "");
+                      setCustomerPickerOpen(false);
+                    }}
+                    style={({ pressed }) => [
+                      styles.pickerRow,
+                      {
+                        borderBottomColor: colors.border,
+                        backgroundColor: pressed ? colors.muted : "transparent",
+                      },
+                    ]}
+                  >
+                    <View style={{ flex: 1, minWidth: 0 }}>
+                      <Text
+                        numberOfLines={1}
+                        style={[
+                          typography.bodySemibold,
+                          { color: colors.foreground },
+                        ]}
+                      >
+                        {c.name}
+                      </Text>
+                      <Text
+                        numberOfLines={1}
+                        style={[
+                          typography.caption,
+                          { color: colors.mutedForeground },
+                        ]}
+                      >
+                        {c.phonenumber || "No phone"} · {c.orderCount} orders
+                      </Text>
+                    </View>
+                    {selected ? (
+                      <UserCheck size={16} color={colors.primary} />
+                    ) : null}
+                  </Pressable>
+                );
+              })}
+            </ScrollView>
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 }
@@ -1188,5 +1376,26 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     paddingHorizontal: 10,
     paddingVertical: 5,
+  },
+  pickCustomerBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 5,
+  },
+  pickerOverlay: {
+    flex: 1,
+    backgroundColor: "rgba(15, 23, 42, 0.55)",
+    justifyContent: "center",
+    padding: 20,
+  },
+  pickerCard: {
+    borderWidth: 1,
+  },
+  pickerRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    paddingVertical: 11,
+    borderBottomWidth: StyleSheet.hairlineWidth,
   },
 });

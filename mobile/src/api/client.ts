@@ -5,9 +5,19 @@ import type {
   BulkImportProductsResult,
   CategoryItem,
   CreateCategoryInput,
+  CreateCustomerInput,
+  CreateEmployeeInput,
   CreateProductInput,
   CreateRestockInput,
   CreateSaleInput,
+  CreateSupplierInput,
+  CreateSupplierTransactionInput,
+  CustomerDetailResponse,
+  CustomerItem,
+  DailyReportData,
+  EmployeeDetailResponse,
+  EmployeeItem,
+  PaySupplierBalanceInput,
   ProductDetailResponse,
   ProductItem,
   ProductQueryParams,
@@ -20,10 +30,16 @@ import type {
   SalesReportData,
   SaleTransactionSummary,
   StoreProfile,
+  SupplierDetailResponse,
+  SupplierItem,
+  SupplierTransactionSummary,
   TodayDashboardData,
   UpdateBusinessSettingsInput,
   UpdateCategoryInput,
+  UpdateCustomerInput,
+  UpdateEmployeeInput,
   UpdateProductInput,
+  UpdateSupplierInput,
 } from "@/types/domain";
 
 /**
@@ -54,6 +70,21 @@ export const API_ENDPOINTS = {
   saleReceipt: "GET /api/mobile/v1/sales/:id/receipt",
   saleRefund: "POST /api/mobile/v1/sales/:id/refund",
   salesReport: "GET /api/mobile/v1/sales/report?range=",
+  customersList: "GET /api/mobile/v1/customers?q=",
+  customerDetail: "GET /api/mobile/v1/customers/:id",
+  customerCreate: "POST /api/mobile/v1/customers",
+  customerUpdate: "PATCH /api/mobile/v1/customers/:id",
+  suppliersList: "GET /api/mobile/v1/suppliers?q=",
+  supplierDetail: "GET /api/mobile/v1/suppliers/:id",
+  supplierCreate: "POST /api/mobile/v1/suppliers",
+  supplierUpdate: "PATCH /api/mobile/v1/suppliers/:id",
+  supplierTxCreate: "POST /api/mobile/v1/suppliers/:id/transactions",
+  supplierTxPay: "POST /api/mobile/v1/suppliers/transactions/:txId/pay",
+  employeesList: "GET /api/mobile/v1/employees?q=",
+  employeeDetail: "GET /api/mobile/v1/employees/:id",
+  employeeCreate: "POST /api/mobile/v1/employees",
+  employeeUpdate: "PATCH /api/mobile/v1/employees/:id",
+  dailyReport: "GET /api/mobile/v1/reports/daily?date=",
   auditLogs: "GET /api/mobile/v1/audit-logs?q=&action=&limit=",
   storeThresholdUpdate: "PATCH /api/mobile/v1/settings/stock-threshold",
   storeBusinessUpdate: "PATCH /api/mobile/v1/settings/business",
@@ -98,6 +129,34 @@ export interface InventoryProApiClient {
     input?: RefundSaleInput,
   ): Promise<SaleReceiptDetail>;
   getSalesReport(dateRange?: SalesDateRange): Promise<SalesReportData>;
+  getCustomers(query?: string): Promise<CustomerItem[]>;
+  getCustomerById(customerId: string): Promise<CustomerDetailResponse | null>;
+  createCustomer(input: CreateCustomerInput): Promise<CustomerItem>;
+  updateCustomer(
+    customerId: string,
+    input: UpdateCustomerInput,
+  ): Promise<CustomerItem>;
+  getSuppliers(query?: string): Promise<SupplierItem[]>;
+  getSupplierById(supplierId: string): Promise<SupplierDetailResponse | null>;
+  createSupplier(input: CreateSupplierInput): Promise<SupplierItem>;
+  updateSupplier(
+    supplierId: string,
+    input: UpdateSupplierInput,
+  ): Promise<SupplierItem>;
+  recordSupplierTransaction(
+    input: CreateSupplierTransactionInput,
+  ): Promise<SupplierTransactionSummary>;
+  paySupplierTransactionBalance(
+    input: PaySupplierBalanceInput,
+  ): Promise<SupplierTransactionSummary>;
+  getEmployees(query?: string): Promise<EmployeeItem[]>;
+  getEmployeeById(employeeId: string): Promise<EmployeeDetailResponse | null>;
+  createEmployee(input: CreateEmployeeInput): Promise<EmployeeItem>;
+  updateEmployee(
+    employeeId: string,
+    input: UpdateEmployeeInput,
+  ): Promise<EmployeeItem>;
+  getDailyReport(date?: string): Promise<DailyReportData>;
   getAuditLogs(params?: AuditLogsQueryParams): Promise<AuditLogItem[]>;
   updateStockAlertThreshold(threshold: number): Promise<StoreProfile>;
   updateBusinessSettings(input: UpdateBusinessSettingsInput): Promise<StoreProfile>;

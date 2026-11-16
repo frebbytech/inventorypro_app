@@ -13,8 +13,18 @@ import {
   type BulkImportProductsResult,
   type CategoryItem,
   type CreateCategoryInput,
+  type CreateCustomerInput,
+  type CreateEmployeeInput,
   type CreateProductInput,
   type CreateRestockInput,
+  type CreateSupplierInput,
+  type CreateSupplierTransactionInput,
+  type CustomerDetailResponse,
+  type CustomerItem,
+  type DailyReportData,
+  type EmployeeDetailResponse,
+  type EmployeeItem,
+  type PaySupplierBalanceInput,
   type PaymentBreakdownItem,
   type PaymentMode,
   type ProductDetailResponse,
@@ -31,11 +41,17 @@ import {
   type SaleTransactionSummary,
   type StockAlertItem,
   type StoreProfile,
+  type SupplierDetailResponse,
+  type SupplierItem,
+  type SupplierTransactionSummary,
   type TodayDashboardData,
   type TopSellingProductItem,
   type UpdateBusinessSettingsInput,
   type UpdateCategoryInput,
+  type UpdateCustomerInput,
+  type UpdateEmployeeInput,
   type UpdateProductInput,
+  type UpdateSupplierInput,
 } from "@/types/domain";
 
 function computeSaleTotals(seed: DemoSaleSeed) {
@@ -426,6 +442,141 @@ export class DemoDataAdapter implements InventoryProApiClient {
       topProducts: Array.from(productMap.values())
         .sort((a, b) => b.revenue - a.revenue)
         .slice(0, 5),
+    };
+  }
+
+  async getCustomers(query?: string): Promise<CustomerItem[]> {
+    await this.simulateLatency(60);
+    const q = query?.trim().toLowerCase() ?? "";
+    const byName = new Map<string, CustomerItem>();
+    for (const s of DEMO_SALES) {
+      const { totalAmount } = computeSaleTotals(s);
+      const existing = byName.get(s.customerName);
+      if (existing) {
+        if (s.status === "completed") {
+          existing.orderCount += 1;
+          existing.totalSpent = Number((existing.totalSpent + totalAmount).toFixed(2));
+        }
+      } else {
+        byName.set(s.customerName, {
+          id: `demo-cust-${byName.size + 1}`,
+          name: s.customerName,
+          phonenumber: s.customerPhone,
+          orderCount: s.status === "completed" ? 1 : 0,
+          totalSpent: s.status === "completed" ? Number(totalAmount.toFixed(2)) : 0,
+          lastOrderAt: s.saleDate,
+          createdAt: s.saleDate,
+          updatedAt: s.saleDate,
+        });
+      }
+    }
+    return Array.from(byName.values()).filter(
+      (c) => !q || c.name.toLowerCase().includes(q),
+    );
+  }
+
+  async getCustomerById(customerId: string): Promise<CustomerDetailResponse | null> {
+    const list = await this.getCustomers();
+    const customer = list.find((c) => c.id === customerId);
+    if (!customer) return null;
+    const recentSales = DEMO_SALES.filter(
+      (s) => s.customerName === customer.name,
+    ).map(toTransactionSummary);
+    return { customer, recentSales };
+  }
+
+  async createCustomer(_input: CreateCustomerInput): Promise<CustomerItem> {
+    throw new Error("Managing customers requires the on-device SQLite backend.");
+  }
+
+  async updateCustomer(
+    _customerId: string,
+    _input: UpdateCustomerInput,
+  ): Promise<CustomerItem> {
+    throw new Error("Managing customers requires the on-device SQLite backend.");
+  }
+
+  async getSuppliers(_query?: string): Promise<SupplierItem[]> {
+    await this.simulateLatency(60);
+    return [];
+  }
+
+  async getSupplierById(_supplierId: string): Promise<SupplierDetailResponse | null> {
+    await this.simulateLatency(60);
+    return null;
+  }
+
+  async createSupplier(_input: CreateSupplierInput): Promise<SupplierItem> {
+    throw new Error("Managing suppliers requires the on-device SQLite backend.");
+  }
+
+  async updateSupplier(
+    _supplierId: string,
+    _input: UpdateSupplierInput,
+  ): Promise<SupplierItem> {
+    throw new Error("Managing suppliers requires the on-device SQLite backend.");
+  }
+
+  async recordSupplierTransaction(
+    _input: CreateSupplierTransactionInput,
+  ): Promise<SupplierTransactionSummary> {
+    throw new Error(
+      "Recording supplier deliveries requires the on-device SQLite backend.",
+    );
+  }
+
+  async paySupplierTransactionBalance(
+    _input: PaySupplierBalanceInput,
+  ): Promise<SupplierTransactionSummary> {
+    throw new Error(
+      "Recording supplier payments requires the on-device SQLite backend.",
+    );
+  }
+
+  async getEmployees(_query?: string): Promise<EmployeeItem[]> {
+    await this.simulateLatency(60);
+    return [];
+  }
+
+  async getEmployeeById(
+    _employeeId: string,
+  ): Promise<EmployeeDetailResponse | null> {
+    await this.simulateLatency(60);
+    return null;
+  }
+
+  async createEmployee(_input: CreateEmployeeInput): Promise<EmployeeItem> {
+    throw new Error("Managing employees requires the on-device SQLite backend.");
+  }
+
+  async updateEmployee(
+    _employeeId: string,
+    _input: UpdateEmployeeInput,
+  ): Promise<EmployeeItem> {
+    throw new Error("Managing employees requires the on-device SQLite backend.");
+  }
+
+  async getDailyReport(date?: string): Promise<DailyReportData> {
+    const report = await this.getSalesReport("today");
+    return {
+      date: date || new Date().toISOString().slice(0, 10),
+      currency: report.currency,
+      storeName: DEMO_STORE_PROFILE.storeName,
+      totalTransactions: report.completedCount + report.refundedCount,
+      completedCount: report.completedCount,
+      refundedCount: report.refundedCount,
+      grossRevenue: report.grossRevenue,
+      refundedAmount: report.refundedAmount,
+      totalDiscount: report.totalDiscount,
+      totalTax: report.totalTax,
+      estimatedCost: report.estimatedCost,
+      grossProfit: report.grossProfit,
+      profitMarginPercent: report.profitMarginPercent,
+      averageOrderValue: report.averageOrderValue,
+      totalUnitsSold: report.totalUnitsSold,
+      paymentBreakdown: report.paymentBreakdown,
+      topProducts: report.topProducts,
+      cashierBreakdown: [],
     };
   }
 

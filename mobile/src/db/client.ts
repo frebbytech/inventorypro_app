@@ -196,6 +196,45 @@ function ensureTablesSync(sqlite: SQLite.SQLiteDatabase): void {
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
       FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL
     );
+
+    CREATE TABLE IF NOT EXISTS suppliers (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      name TEXT NOT NULL,
+      company_name TEXT NOT NULL DEFAULT '',
+      email TEXT DEFAULT NULL,
+      address TEXT DEFAULT NULL,
+      phonenumber TEXT DEFAULT NULL,
+      is_active INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      FOREIGN KEY (user_id) REFERENCES users(id)
+    );
+
+    CREATE INDEX IF NOT EXISTS suppliers_idx_name ON suppliers(name);
+    CREATE INDEX IF NOT EXISTS suppliers_idx_company ON suppliers(company_name);
+
+    CREATE TABLE IF NOT EXISTS supplier_transactions (
+      id TEXT PRIMARY KEY,
+      transaction_no TEXT NOT NULL UNIQUE,
+      supplier_id TEXT NOT NULL,
+      user_id TEXT NOT NULL,
+      delivered_by TEXT DEFAULT NULL,
+      transaction_date TEXT NOT NULL DEFAULT (datetime('now')),
+      total_amount REAL NOT NULL CHECK (total_amount >= 0),
+      amount_paid REAL NOT NULL DEFAULT 0 CHECK (amount_paid >= 0),
+      balance REAL NOT NULL DEFAULT 0,
+      payment_mode TEXT NOT NULL DEFAULT 'cash' CHECK (payment_mode IN ('cash', 'momo', 'bank', 'cheque')),
+      status TEXT NOT NULL DEFAULT 'completed' CHECK (status IN ('completed', 'pending', 'cancelled')),
+      notes TEXT DEFAULT '',
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      FOREIGN KEY (supplier_id) REFERENCES suppliers(id) ON DELETE CASCADE,
+      FOREIGN KEY (user_id) REFERENCES users(id)
+    );
+
+    CREATE INDEX IF NOT EXISTS supplier_tx_idx_supplier ON supplier_transactions(supplier_id);
+    CREATE INDEX IF NOT EXISTS supplier_tx_idx_date ON supplier_transactions(transaction_date);
   `);
 }
 
@@ -616,6 +655,104 @@ async function seedDatabaseIfEmpty(db: ExpoSqliteDrizzleDb): Promise<void> {
   });
 }
 
+function seedSuppliersIfEmpty(db: ExpoSqliteDrizzleDb): void {
+  const existingSuppliers = db
+    .select({ cnt: count() })
+    .from(schema.suppliers)
+    .get();
+  if ((existingSuppliers?.cnt ?? 0) > 0) {
+    return;
+  }
+
+  const firstUser = db
+    .select({ id: schema.users.id })
+    .from(schema.users)
+    .limit(1)
+    .get();
+  if (!firstUser) return;
+
+  const ownerId = firstUser.id;
+  db.transaction((tx) => {
+    tx.insert(schema.suppliers)
+      .values([
+        {
+          id: "sup-nestle",
+          userId: ownerId,
+          name: "Daniel Boateng",
+          companyName: "Nestle Ghana Wholesale",
+          email: "orders@nestle-dist.gh",
+          address: "Adum Commercial Hub, Kumasi",
+          phonenumber: "+233322021455",
+          isActive: 1,
+        },
+        {
+          id: "sup-unilever",
+          userId: ownerId,
+          name: "Abena Asante",
+          companyName: "Unilever Trade Partners",
+          email: "trade@unilever-gh.com",
+          address: "Tema Industrial Area, Plot 14",
+          phonenumber: "+233303208910",
+          isActive: 1,
+        },
+        {
+          id: "sup-voltic",
+          userId: ownerId,
+          name: "Kojo Mensah",
+          companyName: "Voltic & Beverage Supply",
+          email: "dispatch@volticgh.com",
+          address: "Asokwa Depot, Kumasi",
+          phonenumber: "+233244890122",
+          isActive: 1,
+        },
+        {
+          id: "sup-olam",
+          userId: ownerId,
+          name: "Ibrahim Musa",
+          companyName: "Olam Grains & Staples",
+          email: "grains@olamghana.com",
+          address: "Aboabo Wholesale Market, Kumasi",
+          phonenumber: "+233501223344",
+          isActive: 1,
+        },
+      ])
+      .run();
+
+    tx.insert(schema.supplierTransactions)
+      .values([
+        {
+          id: "stx-001",
+          transactionNo: "SUP-TXN-8801",
+          supplierId: "sup-nestle",
+          userId: ownerId,
+          deliveredBy: "K. Antwi (Van 04)",
+          transactionDate: isoDaysAgoAt(2, 10, 30),
+          totalAmount: 1850.0,
+          amountPaid: 1850.0,
+          balance: 0,
+          paymentMode: "bank",
+          status: "completed",
+          notes: "Monthly Milo & Peak Evaporated Milk restock",
+        },
+        {
+          id: "stx-002",
+          transactionNo: "SUP-TXN-8802",
+          supplierId: "sup-unilever",
+          userId: ownerId,
+          deliveredBy: "Unilever Logistics",
+          transactionDate: isoDaysAgoAt(1, 14, 15),
+          totalAmount: 940.0,
+          amountPaid: 600.0,
+          balance: 340.0,
+          paymentMode: "momo",
+          status: "pending",
+          notes: "Geisha soap & Pepsodent carton delivery",
+        },
+      ])
+      .run();
+  });
+}
+
 export async function ensureDbReady(): Promise<ExpoSqliteDrizzleDb> {
   if (!readyPromise) {
     readyPromise = (async () => {
@@ -623,6 +760,7 @@ export async function ensureDbReady(): Promise<ExpoSqliteDrizzleDb> {
       ensureTablesSync(sqlite);
       const db = getDrizzleDb();
       await seedDatabaseIfEmpty(db);
+      seedSuppliersIfEmpty(db);
       return db;
     })().catch((err) => {
       readyPromise = null;

@@ -1,6 +1,6 @@
 import { and, asc, desc, eq, gt, gte, like, lt, lte, ne, or, sql } from "drizzle-orm";
 import type { ExpoSqliteDrizzleDb } from "./client";
-import { generateId, generateSessionToken, verifyPassword } from "./crypto";
+import { generateId, generateSessionToken, hashPassword, verifyPassword } from "./crypto";
 import {
   auditLogs,
   customers,
@@ -10,6 +10,8 @@ import {
   saleItems,
   sales,
   settings,
+  suppliers,
+  supplierTransactions,
   userSessions,
   users,
 } from "./schema";
@@ -23,9 +25,20 @@ import {
   type BulkImportProductsResult,
   type CategoryItem,
   type CreateCategoryInput,
+  type CreateCustomerInput,
+  type CreateEmployeeInput,
   type CreateProductInput,
   type CreateRestockInput,
   type CreateSaleInput,
+  type CreateSupplierInput,
+  type CreateSupplierTransactionInput,
+  type CustomerDetailResponse,
+  type CustomerItem,
+  type DailyCashierBreakdown,
+  type DailyReportData,
+  type EmployeeDetailResponse,
+  type EmployeeItem,
+  type PaySupplierBalanceInput,
   type PaymentBreakdownItem,
   type PaymentMode,
   type ProductDetailResponse,
@@ -44,11 +57,17 @@ import {
   type SessionUser,
   type StockAlertItem,
   type StoreProfile,
+  type SupplierDetailResponse,
+  type SupplierItem,
+  type SupplierTransactionSummary,
   type TodayDashboardData,
   type TopSellingProductItem,
   type UpdateBusinessSettingsInput,
   type UpdateCategoryInput,
+  type UpdateCustomerInput,
+  type UpdateEmployeeInput,
   type UpdateProductInput,
+  type UpdateSupplierInput,
 } from "@/types/domain";
 
 const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
@@ -2237,3 +2256,1253 @@ export function recordRestock(
   }
   return created;
 }
+
+export function listCustomers(
+  db: ExpoSqliteDrizzleDb,
+  query?: string,
+): CustomerItem[] {
+  const cleanQuery = query?.trim();
+  const baseQuery = db
+    .select({
+      id: customers.id,
+      name: customers.name,
+      email: customers.email,
+      phonenumber: customers.phonenumber,
+      address: customers.address,
+      createdAt: customers.createdAt,
+      updatedAt: customers.updatedAt,
+      orderCount: sql<number>`COALESCE(SUM(CASE WHEN ${sales.status} = 'completed' THEN 1 ELSE 0 END), 0)`,
+      totalSpent: sql<number>`COALESCE(SUM(CASE WHEN ${sales.status} = 'completed' THEN ${sales.totalAmount} ELSE 0 END), 0)`,
+      lastOrderAt: sql<string | null>`MAX(${sales.date})`,
+    })
+    .from(customers)
+    .leftJoin(sales, eq(sales.customerId, customers.id));
+
+  const rows = cleanQuery
+    ? baseQuery
+        .where(
+          or(
+            like(customers.name, `%${cleanQuery}%`),
+            like(customers.phonenumber, `%${cleanQuery}%`),
+            like(customers.email, `%${cleanQuery}%`),
+            like(customers.address, `%${cleanQuery}%`),
+          ),
+        )
+        .groupBy(customers.id)
+        .orderBy(desc(sql`MAX(${sales.date})`), asc(customers.name))
+        .all()
+    : baseQuery
+        .groupBy(customers.id)
+        .orderBy(desc(sql`MAX(${sales.date})`), asc(customers.name))
+        .all();
+
+  return rows.map((r) => ({
+    id: r.id,
+    name: r.name,
+    email: r.email || undefined,
+    phonenumber: r.phonenumber || undefined,
+    address: r.address || undefined,
+    orderCount: Number(r.orderCount) || 0,
+    totalSpent: Number((Number(r.totalSpent) || 0).toFixed(2)),
+    lastOrderAt: r.lastOrderAt,
+    createdAt: r.createdAt,
+    updatedAt: r.updatedAt,
+  }));
+}
+
+export function getCustomerDetail(
+  db: ExpoSqliteDrizzleDb,
+  customerId: string,
+): CustomerDetailResponse | null {
+  const customer = listCustomers(db).find((c) => c.id === customerId);
+  if (!customer) return null;
+
+  const saleRows = db
+    .select({
+      id: sales.id,
+      receiptNo: sales.receiptNumber,
+      customerName: customers.name,
+      customerPhone: customers.phonenumber,
+      firstname: users.firstname,
+      lastname: users.lastname,
+      username: users.username,
+      saleDate: sales.date,
+      totalAmount: sales.totalAmount,
+      amountPaid: sales.amountPaid,
+      discount: sales.discountAmount,
+      tax: sales.taxAmount,
+      paymentMode: sales.paymentMode,
+      status: sales.status,
+      itemCount: sql<number>`(SELECT COALESCE(SUM(si.quantity), 0) FROM sale_items si WHERE si.sales_id = ${sales.id})`,
+    })
+    .from(sales)
+    .innerJoin(customers, eq(sales.customerId, customers.id))
+    .innerJoin(users, eq(sales.userId, users.id))
+    .where(eq(sales.customerId, customerId))
+    .orderBy(desc(sales.date))
+    .limit(30)
+    .all();
+
+  const recentSales: SaleTransactionSummary[] = saleRows.map((r) => {
+    const fullName = `${r.firstname} ${r.lastname}`.trim();
+    return {
+      id: r.id,
+      receiptNo: r.receiptNo,
+      customerName: r.customerName,
+      customerPhone: r.customerPhone ?? undefined,
+      cashierName: fullName || r.username,
+      saleDate: r.saleDate,
+      totalAmount: Number(r.totalAmount),
+      amountPaid: Number(r.amountPaid),
+      discount: Number(r.discount),
+      tax: Number(r.tax),
+      paymentMode: r.paymentMode as PaymentMode,
+      status: r.status as SaleStatus,
+      itemCount: Number(r.itemCount),
+    };
+  });
+
+  return { customer, recentSales };
+}
+
+export function createCustomer(
+  db: ExpoSqliteDrizzleDb,
+  input: CreateCustomerInput & { userId: string },
+): CustomerItem {
+  const name = input.name.trim();
+  if (!name) {
+    throw new Error("Customer name is required.");
+  }
+
+  const email = input.email?.trim() || null;
+  if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    throw new Error("Enter a valid customer email address.");
+  }
+
+  const phonenumber = input.phonenumber?.trim() || null;
+  const address = input.address?.trim() || null;
+  const nowIso = new Date().toISOString();
+
+  const customerId = db.transaction((tx) => {
+    const dup = tx
+      .select({ id: customers.id })
+      .from(customers)
+      .where(eq(sql`LOWER(${customers.name})`, name.toLowerCase()))
+      .limit(1)
+      .get();
+
+    if (dup) {
+      throw new Error(`Customer "${name}" already exists.`);
+    }
+
+    const id = generateId("cust");
+    tx.insert(customers)
+      .values({
+        id,
+        userId: input.userId,
+        name,
+        email,
+        phonenumber,
+        address,
+        createdAt: nowIso,
+        updatedAt: nowIso,
+      })
+      .run();
+
+    tx.insert(auditLogs)
+      .values({
+        id: generateId("aud"),
+        userId: input.userId,
+        entityType: "customer",
+        entityId: id,
+        action: "create",
+        newValues: JSON.stringify({
+          name,
+          phonenumber: phonenumber ?? undefined,
+          email: email ?? undefined,
+          address: address ?? undefined,
+        }),
+      })
+      .run();
+
+    return id;
+  });
+
+  const created = listCustomers(db).find((c) => c.id === customerId);
+  if (!created) {
+    throw new Error("Customer created, but failed to reload record.");
+  }
+  return created;
+}
+
+export function updateCustomer(
+  db: ExpoSqliteDrizzleDb,
+  input: UpdateCustomerInput & { customerId: string; userId: string },
+): CustomerItem {
+  db.transaction((tx) => {
+    const existing = tx
+      .select({
+        id: customers.id,
+        name: customers.name,
+        email: customers.email,
+        phonenumber: customers.phonenumber,
+        address: customers.address,
+      })
+      .from(customers)
+      .where(eq(customers.id, input.customerId))
+      .limit(1)
+      .get();
+
+    if (!existing) {
+      throw new Error("Customer not found.");
+    }
+
+    const nextName =
+      input.name !== undefined ? input.name.trim() : existing.name;
+    if (!nextName) {
+      throw new Error("Customer name cannot be empty.");
+    }
+
+    const dup = tx
+      .select({ id: customers.id })
+      .from(customers)
+      .where(
+        and(
+          eq(sql`LOWER(${customers.name})`, nextName.toLowerCase()),
+          ne(customers.id, existing.id),
+        ),
+      )
+      .limit(1)
+      .get();
+
+    if (dup) {
+      throw new Error(`Another customer named "${nextName}" already exists.`);
+    }
+
+    const nextEmail =
+      input.email !== undefined ? input.email.trim() || null : existing.email;
+    if (nextEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(nextEmail)) {
+      throw new Error("Enter a valid customer email address.");
+    }
+
+    const nextPhone =
+      input.phonenumber !== undefined
+        ? input.phonenumber.trim() || null
+        : existing.phonenumber;
+    const nextAddress =
+      input.address !== undefined
+        ? input.address.trim() || null
+        : existing.address;
+    const nowIso = new Date().toISOString();
+
+    tx.update(customers)
+      .set({
+        name: nextName,
+        email: nextEmail,
+        phonenumber: nextPhone,
+        address: nextAddress,
+        updatedAt: nowIso,
+      })
+      .where(eq(customers.id, existing.id))
+      .run();
+
+    tx.insert(auditLogs)
+      .values({
+        id: generateId("aud"),
+        userId: input.userId,
+        entityType: "customer",
+        entityId: existing.id,
+        action: "update",
+        oldValues: JSON.stringify({
+          name: existing.name,
+          phonenumber: existing.phonenumber ?? undefined,
+          email: existing.email ?? undefined,
+          address: existing.address ?? undefined,
+        }),
+        newValues: JSON.stringify({
+          name: nextName,
+          phonenumber: nextPhone ?? undefined,
+          email: nextEmail ?? undefined,
+          address: nextAddress ?? undefined,
+        }),
+      })
+      .run();
+  });
+
+  const updated = listCustomers(db).find((c) => c.id === input.customerId);
+  if (!updated) {
+    throw new Error("Customer updated, but failed to reload record.");
+  }
+  return updated;
+}
+
+export function listSuppliers(
+  db: ExpoSqliteDrizzleDb,
+  query?: string,
+): SupplierItem[] {
+  const cleanQuery = query?.trim();
+  const baseQuery = db
+    .select({
+      id: suppliers.id,
+      name: suppliers.name,
+      companyName: suppliers.companyName,
+      email: suppliers.email,
+      phonenumber: suppliers.phonenumber,
+      address: suppliers.address,
+      isActive: suppliers.isActive,
+      createdAt: suppliers.createdAt,
+      updatedAt: suppliers.updatedAt,
+      orderCount: sql<number>`COUNT(${supplierTransactions.id})`,
+      totalPurchases: sql<number>`COALESCE(SUM(CASE WHEN ${supplierTransactions.status} != 'cancelled' THEN ${supplierTransactions.totalAmount} ELSE 0 END), 0)`,
+      outstandingBalance: sql<number>`COALESCE(SUM(CASE WHEN ${supplierTransactions.status} != 'cancelled' THEN ${supplierTransactions.balance} ELSE 0 END), 0)`,
+      lastOrderAt: sql<string | null>`MAX(${supplierTransactions.transactionDate})`,
+    })
+    .from(suppliers)
+    .leftJoin(
+      supplierTransactions,
+      eq(supplierTransactions.supplierId, suppliers.id),
+    );
+
+  const rows = cleanQuery
+    ? baseQuery
+        .where(
+          or(
+            like(suppliers.companyName, `%${cleanQuery}%`),
+            like(suppliers.name, `%${cleanQuery}%`),
+            like(suppliers.phonenumber, `%${cleanQuery}%`),
+            like(suppliers.email, `%${cleanQuery}%`),
+            like(suppliers.address, `%${cleanQuery}%`),
+          ),
+        )
+        .groupBy(suppliers.id)
+        .orderBy(desc(suppliers.isActive), asc(suppliers.companyName), asc(suppliers.name))
+        .all()
+    : baseQuery
+        .groupBy(suppliers.id)
+        .orderBy(desc(suppliers.isActive), asc(suppliers.companyName), asc(suppliers.name))
+        .all();
+
+  return rows.map((r) => ({
+    id: r.id,
+    name: r.name,
+    companyName: r.companyName,
+    email: r.email || undefined,
+    phonenumber: r.phonenumber || undefined,
+    address: r.address || undefined,
+    isActive: r.isActive === 1,
+    orderCount: Number(r.orderCount) || 0,
+    totalPurchases: Number((Number(r.totalPurchases) || 0).toFixed(2)),
+    outstandingBalance: Number((Number(r.outstandingBalance) || 0).toFixed(2)),
+    lastOrderAt: r.lastOrderAt,
+    createdAt: r.createdAt,
+    updatedAt: r.updatedAt,
+  }));
+}
+
+export function getSupplierDetail(
+  db: ExpoSqliteDrizzleDb,
+  supplierId: string,
+): SupplierDetailResponse | null {
+  const supplier = listSuppliers(db).find((s) => s.id === supplierId);
+  if (!supplier) return null;
+
+  const txRows = db
+    .select()
+    .from(supplierTransactions)
+    .where(eq(supplierTransactions.supplierId, supplierId))
+    .orderBy(desc(supplierTransactions.transactionDate))
+    .limit(30)
+    .all();
+
+  const transactions: SupplierTransactionSummary[] = txRows.map((t) => ({
+    id: t.id,
+    transactionNo: t.transactionNo,
+    supplierId: t.supplierId,
+    deliveredBy: t.deliveredBy ?? undefined,
+    transactionDate: t.transactionDate,
+    totalAmount: Number(t.totalAmount) || 0,
+    amountPaid: Number(t.amountPaid) || 0,
+    balance: Number(t.balance) || 0,
+    paymentMode: t.paymentMode as PaymentMode,
+    status: t.status as "completed" | "pending" | "cancelled",
+    notes: t.notes || undefined,
+  }));
+
+  return { supplier, transactions };
+}
+
+export function createSupplier(
+  db: ExpoSqliteDrizzleDb,
+  input: CreateSupplierInput & { userId: string },
+): SupplierItem {
+  const name = input.name.trim();
+  const companyName = input.companyName.trim();
+  if (!companyName) {
+    throw new Error("Supplier company name is required.");
+  }
+  if (!name) {
+    throw new Error("Contact person name is required.");
+  }
+
+  const email = input.email?.trim() || null;
+  if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    throw new Error("Enter a valid supplier email address.");
+  }
+
+  const phonenumber = input.phonenumber?.trim() || null;
+  const address = input.address?.trim() || null;
+  const isActive = input.isActive !== false ? 1 : 0;
+  const nowIso = new Date().toISOString();
+
+  const supplierId = db.transaction((tx) => {
+    const id = generateId("sup");
+    tx.insert(suppliers)
+      .values({
+        id,
+        userId: input.userId,
+        name,
+        companyName,
+        email,
+        phonenumber,
+        address,
+        isActive,
+        createdAt: nowIso,
+        updatedAt: nowIso,
+      })
+      .run();
+
+    tx.insert(auditLogs)
+      .values({
+        id: generateId("aud"),
+        userId: input.userId,
+        entityType: "supplier",
+        entityId: id,
+        action: "create",
+        newValues: JSON.stringify({
+          company_name: companyName,
+          name,
+          phonenumber: phonenumber ?? undefined,
+          email: email ?? undefined,
+          is_active: isActive,
+        }),
+      })
+      .run();
+
+    return id;
+  });
+
+  const created = listSuppliers(db).find((s) => s.id === supplierId);
+  if (!created) {
+    throw new Error("Supplier created, but failed to reload record.");
+  }
+  return created;
+}
+
+export function updateSupplier(
+  db: ExpoSqliteDrizzleDb,
+  input: UpdateSupplierInput & { supplierId: string; userId: string },
+): SupplierItem {
+  db.transaction((tx) => {
+    const existing = tx
+      .select()
+      .from(suppliers)
+      .where(eq(suppliers.id, input.supplierId))
+      .limit(1)
+      .get();
+
+    if (!existing) {
+      throw new Error("Supplier not found.");
+    }
+
+    const nextCompany =
+      input.companyName !== undefined
+        ? input.companyName.trim()
+        : existing.companyName;
+    if (!nextCompany) {
+      throw new Error("Supplier company name cannot be empty.");
+    }
+
+    const nextName =
+      input.name !== undefined ? input.name.trim() : existing.name;
+    if (!nextName) {
+      throw new Error("Contact person name cannot be empty.");
+    }
+
+    const nextEmail =
+      input.email !== undefined ? input.email.trim() || null : existing.email;
+    if (nextEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(nextEmail)) {
+      throw new Error("Enter a valid supplier email address.");
+    }
+
+    const nextPhone =
+      input.phonenumber !== undefined
+        ? input.phonenumber.trim() || null
+        : existing.phonenumber;
+    const nextAddress =
+      input.address !== undefined
+        ? input.address.trim() || null
+        : existing.address;
+    const nextIsActive =
+      input.isActive !== undefined ? (input.isActive ? 1 : 0) : existing.isActive;
+    const nowIso = new Date().toISOString();
+
+    tx.update(suppliers)
+      .set({
+        companyName: nextCompany,
+        name: nextName,
+        email: nextEmail,
+        phonenumber: nextPhone,
+        address: nextAddress,
+        isActive: nextIsActive,
+        updatedAt: nowIso,
+      })
+      .where(eq(suppliers.id, existing.id))
+      .run();
+
+    tx.insert(auditLogs)
+      .values({
+        id: generateId("aud"),
+        userId: input.userId,
+        entityType: "supplier",
+        entityId: existing.id,
+        action: "update",
+        oldValues: JSON.stringify({
+          company_name: existing.companyName,
+          name: existing.name,
+          is_active: existing.isActive,
+        }),
+        newValues: JSON.stringify({
+          company_name: nextCompany,
+          name: nextName,
+          is_active: nextIsActive,
+        }),
+      })
+      .run();
+  });
+
+  const updated = listSuppliers(db).find((s) => s.id === input.supplierId);
+  if (!updated) {
+    throw new Error("Supplier updated, but failed to reload record.");
+  }
+  return updated;
+}
+
+export function recordSupplierTransaction(
+  db: ExpoSqliteDrizzleDb,
+  input: CreateSupplierTransactionInput & { userId: string },
+): SupplierTransactionSummary {
+  const totalAmount = Number(input.totalAmount);
+  if (!Number.isFinite(totalAmount) || totalAmount <= 0) {
+    throw new Error("Invoice total amount must be greater than 0.");
+  }
+
+  const amountPaid =
+    input.amountPaid !== undefined && Number.isFinite(Number(input.amountPaid))
+      ? Math.max(0, Number(input.amountPaid))
+      : totalAmount;
+  const cleanTotal = Number(totalAmount.toFixed(2));
+  const cleanPaid = Number(Math.min(cleanTotal, amountPaid).toFixed(2));
+  const balance = Number(Math.max(0, cleanTotal - cleanPaid).toFixed(2));
+  const status: "completed" | "pending" = balance > 0 ? "pending" : "completed";
+  const nowIso = new Date().toISOString();
+  const txDate = input.transactionDate?.trim() || nowIso;
+
+  const txId = db.transaction((tx) => {
+    const supplier = tx
+      .select({ id: suppliers.id, companyName: suppliers.companyName })
+      .from(suppliers)
+      .where(eq(suppliers.id, input.supplierId))
+      .limit(1)
+      .get();
+
+    if (!supplier) {
+      throw new Error("Supplier not found.");
+    }
+
+    const newId = generateId("stx");
+    const txNo = `SUP-TXN-${Math.floor(1000 + Math.random() * 9000)}`;
+
+    tx.insert(supplierTransactions)
+      .values({
+        id: newId,
+        transactionNo: txNo,
+        supplierId: supplier.id,
+        userId: input.userId,
+        deliveredBy: input.deliveredBy?.trim() || null,
+        transactionDate: txDate,
+        totalAmount: cleanTotal,
+        amountPaid: cleanPaid,
+        balance,
+        paymentMode: input.paymentMode || "cash",
+        status,
+        notes: input.notes?.trim() || "Supplier stock delivery",
+        createdAt: nowIso,
+        updatedAt: nowIso,
+      })
+      .run();
+
+    tx.insert(auditLogs)
+      .values({
+        id: generateId("aud"),
+        userId: input.userId,
+        entityType: "supplier_transaction",
+        entityId: newId,
+        action: "create",
+        newValues: JSON.stringify({
+          transaction_no: txNo,
+          supplier: supplier.companyName,
+          total_amount: cleanTotal,
+          amount_paid: cleanPaid,
+          balance,
+        }),
+      })
+      .run();
+
+    return newId;
+  });
+
+  const row = db
+    .select()
+    .from(supplierTransactions)
+    .where(eq(supplierTransactions.id, txId))
+    .limit(1)
+    .get();
+
+  if (!row) {
+    throw new Error("Supplier transaction recorded, but failed to reload entry.");
+  }
+
+  return {
+    id: row.id,
+    transactionNo: row.transactionNo,
+    supplierId: row.supplierId,
+    deliveredBy: row.deliveredBy ?? undefined,
+    transactionDate: row.transactionDate,
+    totalAmount: Number(row.totalAmount) || 0,
+    amountPaid: Number(row.amountPaid) || 0,
+    balance: Number(row.balance) || 0,
+    paymentMode: row.paymentMode as PaymentMode,
+    status: row.status as "completed" | "pending" | "cancelled",
+    notes: row.notes || undefined,
+  };
+}
+
+export function paySupplierTransactionBalance(
+  db: ExpoSqliteDrizzleDb,
+  input: PaySupplierBalanceInput & { userId: string },
+): SupplierTransactionSummary {
+  const paymentAmount = Number(input.paymentAmount);
+  if (!Number.isFinite(paymentAmount) || paymentAmount <= 0) {
+    throw new Error("Payment amount must be greater than 0.");
+  }
+
+  const nowIso = new Date().toISOString();
+
+  db.transaction((tx) => {
+    const existing = tx
+      .select()
+      .from(supplierTransactions)
+      .where(eq(supplierTransactions.id, input.transactionId))
+      .limit(1)
+      .get();
+
+    if (!existing) {
+      throw new Error("Supplier transaction not found.");
+    }
+    if (existing.status === "cancelled") {
+      throw new Error("Cannot record payment for a cancelled transaction.");
+    }
+
+    const total = Number(existing.totalAmount) || 0;
+    const prevPaid = Number(existing.amountPaid) || 0;
+    const prevBalance = Math.max(0, Number(existing.balance) || 0);
+    if (prevBalance <= 0) {
+      throw new Error("This delivery invoice has already been paid in full.");
+    }
+
+    const applied = Number(Math.min(prevBalance, paymentAmount).toFixed(2));
+    const nextPaid = Number(Math.min(total, prevPaid + applied).toFixed(2));
+    const nextBalance = Number(Math.max(0, total - nextPaid).toFixed(2));
+    const nextStatus = nextBalance <= 0 ? "completed" : "pending";
+    const nextMode = input.paymentMode || (existing.paymentMode as PaymentMode);
+
+    const paymentNote = input.notes?.trim();
+    const nextNotes = paymentNote
+      ? existing.notes?.trim()
+        ? `${existing.notes.trim()} · ${paymentNote}`
+        : paymentNote
+      : existing.notes || "";
+
+    tx.update(supplierTransactions)
+      .set({
+        amountPaid: nextPaid,
+        balance: nextBalance,
+        paymentMode: nextMode,
+        status: nextStatus,
+        notes: nextNotes,
+        updatedAt: nowIso,
+      })
+      .where(eq(supplierTransactions.id, existing.id))
+      .run();
+
+    tx.insert(auditLogs)
+      .values({
+        id: generateId("aud"),
+        userId: input.userId,
+        entityType: "supplier_transaction",
+        entityId: existing.id,
+        action: "update",
+        oldValues: JSON.stringify({
+          amount_paid: prevPaid,
+          balance: prevBalance,
+          status: existing.status,
+        }),
+        newValues: JSON.stringify({
+          payment_added: applied,
+          amount_paid: nextPaid,
+          balance: nextBalance,
+          status: nextStatus,
+          payment_mode: nextMode,
+        }),
+      })
+      .run();
+  });
+
+  const updated = db
+    .select()
+    .from(supplierTransactions)
+    .where(eq(supplierTransactions.id, input.transactionId))
+    .limit(1)
+    .get();
+
+  if (!updated) {
+    throw new Error("Failed to reload updated supplier transaction.");
+  }
+
+  return {
+    id: updated.id,
+    transactionNo: updated.transactionNo,
+    supplierId: updated.supplierId,
+    deliveredBy: updated.deliveredBy ?? undefined,
+    transactionDate: updated.transactionDate,
+    totalAmount: Number(updated.totalAmount) || 0,
+    amountPaid: Number(updated.amountPaid) || 0,
+    balance: Number(updated.balance) || 0,
+    paymentMode: updated.paymentMode as PaymentMode,
+    status: updated.status as "completed" | "pending" | "cancelled",
+    notes: updated.notes || undefined,
+  };
+}
+
+export function listEmployees(
+  db: ExpoSqliteDrizzleDb,
+  query?: string,
+): EmployeeItem[] {
+  const cleanQuery = query?.trim().toLowerCase() ?? "";
+  const userRows = db
+    .select()
+    .from(users)
+    .orderBy(asc(users.role), asc(users.firstname), asc(users.username))
+    .all();
+
+  const saleRows = db
+    .select({
+      userId: sales.userId,
+      status: sales.status,
+      totalAmount: sales.totalAmount,
+    })
+    .from(sales)
+    .all();
+
+  const statsMap = new Map<
+    string,
+    { completed: number; refunded: number; revenue: number }
+  >();
+
+  for (const row of saleRows) {
+    const cur = statsMap.get(row.userId) ?? {
+      completed: 0,
+      refunded: 0,
+      revenue: 0,
+    };
+    if (row.status === "completed") {
+      cur.completed += 1;
+      cur.revenue += Number(row.totalAmount) || 0;
+    } else if (row.status === "refunded") {
+      cur.refunded += 1;
+    }
+    statsMap.set(row.userId, cur);
+  }
+
+  const nowMs = Date.now();
+  const mapped: EmployeeItem[] = userRows.map((u) => {
+    const fullName =
+      [u.firstname, u.lastname].filter(Boolean).join(" ").trim() || u.username;
+    const stats = statsMap.get(u.id) ?? {
+      completed: 0,
+      refunded: 0,
+      revenue: 0,
+    };
+    const isLocked =
+      Boolean(u.lockedUntil) && new Date(u.lockedUntil!).getTime() > nowMs;
+    const revenue = Number(stats.revenue.toFixed(2));
+    const avg =
+      stats.completed > 0
+        ? Number((revenue / stats.completed).toFixed(2))
+        : 0;
+
+    return {
+      id: u.id,
+      username: u.username,
+      email: u.email,
+      firstname: u.firstname,
+      lastname: u.lastname,
+      fullName,
+      phonenumber: u.phonenumber ?? undefined,
+      role: u.role,
+      isLocked,
+      lastLoginAt: u.lastLoginAt,
+      completedSalesCount: stats.completed,
+      refundedSalesCount: stats.refunded,
+      totalRevenue: revenue,
+      averageTicket: avg,
+      createdAt: u.createdAt,
+    };
+  });
+
+  if (!cleanQuery) return mapped;
+  return mapped.filter(
+    (e) =>
+      e.fullName.toLowerCase().includes(cleanQuery) ||
+      e.username.toLowerCase().includes(cleanQuery) ||
+      e.email.toLowerCase().includes(cleanQuery) ||
+      (e.phonenumber?.toLowerCase().includes(cleanQuery) ?? false),
+  );
+}
+
+export function getEmployeeDetail(
+  db: ExpoSqliteDrizzleDb,
+  employeeId: string,
+): EmployeeDetailResponse | null {
+  const employee = listEmployees(db).find((e) => e.id === employeeId);
+  if (!employee) return null;
+
+  const saleRows = db
+    .select({
+      id: sales.id,
+      receiptNo: sales.receiptNumber,
+      customerName: customers.name,
+      customerPhone: customers.phonenumber,
+      firstname: users.firstname,
+      lastname: users.lastname,
+      username: users.username,
+      saleDate: sales.date,
+      totalAmount: sales.totalAmount,
+      amountPaid: sales.amountPaid,
+      discount: sales.discountAmount,
+      tax: sales.taxAmount,
+      paymentMode: sales.paymentMode,
+      status: sales.status,
+      itemCount: sql<number>`(SELECT COALESCE(SUM(si.quantity), 0) FROM sale_items si WHERE si.sales_id = ${sales.id})`,
+    })
+    .from(sales)
+    .innerJoin(customers, eq(sales.customerId, customers.id))
+    .innerJoin(users, eq(sales.userId, users.id))
+    .where(eq(sales.userId, employeeId))
+    .orderBy(desc(sales.date))
+    .limit(40)
+    .all();
+
+  const completedSales = saleRows.filter((r) => r.status === "completed");
+  const grossRevenue = completedSales.reduce(
+    (sum, s) => sum + (Number(s.totalAmount) || 0),
+    0,
+  );
+  const modes: PaymentMode[] = ["cash", "momo", "bank", "cheque"];
+  const paymentBreakdown: PaymentBreakdownItem[] = modes.map((mode) => {
+    const matching = completedSales.filter((s) => s.paymentMode === mode);
+    const amount = matching.reduce(
+      (sum, s) => sum + (Number(s.totalAmount) || 0),
+      0,
+    );
+    return {
+      paymentMode: mode,
+      count: matching.length,
+      amount: Number(amount.toFixed(2)),
+      sharePercent:
+        grossRevenue > 0 ? Number(((amount / grossRevenue) * 100).toFixed(1)) : 0,
+    };
+  });
+
+  const recentSales: SaleTransactionSummary[] = saleRows.map((r) => ({
+    id: r.id,
+    receiptNo: r.receiptNo,
+    customerName: r.customerName,
+    customerPhone: r.customerPhone ?? undefined,
+    cashierName: employee.fullName,
+    saleDate: r.saleDate,
+    totalAmount: Number(r.totalAmount),
+    amountPaid: Number(r.amountPaid),
+    discount: Number(r.discount),
+    tax: Number(r.tax),
+    paymentMode: r.paymentMode as PaymentMode,
+    status: r.status as SaleStatus,
+    itemCount: Number(r.itemCount),
+  }));
+
+  return { employee, paymentBreakdown, recentSales };
+}
+
+export async function createEmployee(
+  db: ExpoSqliteDrizzleDb,
+  input: CreateEmployeeInput & { actorUserId: string },
+): Promise<EmployeeItem> {
+  const username = input.username.trim().toLowerCase();
+  const email = input.email.trim().toLowerCase();
+  const firstname = input.firstname.trim();
+  const lastname = input.lastname.trim();
+  const phonenumber = input.phonenumber?.trim() || null;
+
+  if (!username || username.length < 3) {
+    throw new Error("Username must be at least 3 characters.");
+  }
+  if (!/^[a-z0-9._-]+$/.test(username)) {
+    throw new Error(
+      "Username may only contain letters, numbers, dots, underscores, or hyphens.",
+    );
+  }
+  if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    throw new Error("Enter a valid email address.");
+  }
+  if (!firstname) {
+    throw new Error("First name is required.");
+  }
+  if (!input.password || input.password.length < 6) {
+    throw new Error("Password must be at least 6 characters.");
+  }
+
+  const passwordHash = await hashPassword(input.password);
+  const nowIso = new Date().toISOString();
+
+  const employeeId = db.transaction((tx) => {
+    const dupUsername = tx
+      .select({ id: users.id })
+      .from(users)
+      .where(eq(sql`LOWER(${users.username})`, username))
+      .limit(1)
+      .get();
+    if (dupUsername) {
+      throw new Error(`Username "@${username}" is already taken.`);
+    }
+
+    const dupEmail = tx
+      .select({ id: users.id })
+      .from(users)
+      .where(eq(sql`LOWER(${users.email})`, email))
+      .limit(1)
+      .get();
+    if (dupEmail) {
+      throw new Error(`Email "${email}" is already registered.`);
+    }
+
+    const id = generateId("user");
+    tx.insert(users)
+      .values({
+        id,
+        username,
+        email,
+        passwordHash,
+        firstname,
+        lastname,
+        phonenumber,
+        role: input.role,
+        createdAt: nowIso,
+        updatedAt: nowIso,
+      })
+      .run();
+
+    tx.insert(auditLogs)
+      .values({
+        id: generateId("aud"),
+        userId: input.actorUserId,
+        entityType: "employee",
+        entityId: id,
+        action: "create",
+        newValues: JSON.stringify({
+          username,
+          email,
+          role: input.role,
+          name: `${firstname} ${lastname}`.trim(),
+        }),
+      })
+      .run();
+
+    return id;
+  });
+
+  const created = listEmployees(db).find((e) => e.id === employeeId);
+  if (!created) {
+    throw new Error("Team member created, but failed to reload profile.");
+  }
+  return created;
+}
+
+export async function updateEmployee(
+  db: ExpoSqliteDrizzleDb,
+  input: UpdateEmployeeInput & { employeeId: string; actorUserId: string },
+): Promise<EmployeeItem> {
+  const newPasswordHash = input.password?.trim()
+    ? await hashPassword(input.password.trim())
+    : null;
+  if (input.password !== undefined && input.password.trim().length > 0 && input.password.trim().length < 6) {
+    throw new Error("New password must be at least 6 characters.");
+  }
+
+  const nowIso = new Date().toISOString();
+
+  db.transaction((tx) => {
+    const existing = tx
+      .select()
+      .from(users)
+      .where(eq(users.id, input.employeeId))
+      .limit(1)
+      .get();
+    if (!existing) {
+      throw new Error("Team member not found.");
+    }
+
+    const nextFirstname =
+      input.firstname !== undefined
+        ? input.firstname.trim()
+        : existing.firstname;
+    const nextLastname =
+      input.lastname !== undefined ? input.lastname.trim() : existing.lastname;
+    if (!nextFirstname) {
+      throw new Error("First name cannot be empty.");
+    }
+
+    const nextEmail =
+      input.email !== undefined
+        ? input.email.trim().toLowerCase()
+        : existing.email;
+    if (!nextEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(nextEmail)) {
+      throw new Error("Enter a valid email address.");
+    }
+
+    const dupEmail = tx
+      .select({ id: users.id })
+      .from(users)
+      .where(
+        and(
+          eq(sql`LOWER(${users.email})`, nextEmail),
+          ne(users.id, existing.id),
+        ),
+      )
+      .limit(1)
+      .get();
+    if (dupEmail) {
+      throw new Error(`Email "${nextEmail}" belongs to another user.`);
+    }
+
+    const nextPhone =
+      input.phonenumber !== undefined
+        ? input.phonenumber.trim() || null
+        : existing.phonenumber;
+    const nextRole = input.role ?? existing.role;
+
+    tx.update(users)
+      .set({
+        firstname: nextFirstname,
+        lastname: nextLastname,
+        email: nextEmail,
+        phonenumber: nextPhone,
+        role: nextRole,
+        ...(newPasswordHash ? { passwordHash: newPasswordHash } : {}),
+        updatedAt: nowIso,
+      })
+      .where(eq(users.id, existing.id))
+      .run();
+
+    tx.insert(auditLogs)
+      .values({
+        id: generateId("aud"),
+        userId: input.actorUserId,
+        entityType: "employee",
+        entityId: existing.id,
+        action: "update",
+        oldValues: JSON.stringify({
+          name: `${existing.firstname} ${existing.lastname}`.trim(),
+          email: existing.email,
+          role: existing.role,
+        }),
+        newValues: JSON.stringify({
+          name: `${nextFirstname} ${nextLastname}`.trim(),
+          email: nextEmail,
+          role: nextRole,
+          passwordChanged: Boolean(newPasswordHash),
+        }),
+      })
+      .run();
+  });
+
+  const updated = listEmployees(db).find((e) => e.id === input.employeeId);
+  if (!updated) {
+    throw new Error("Team member updated, but failed to reload profile.");
+  }
+  return updated;
+}
+
+export function getDailyReport(
+  db: ExpoSqliteDrizzleDb,
+  dateStr?: string,
+): DailyReportData {
+  const store = getStoreProfile(db);
+  const targetDate = (dateStr?.trim() || new Date().toISOString().slice(0, 10)).slice(0, 10);
+
+  const saleRows = db
+    .select({
+      id: sales.id,
+      userId: sales.userId,
+      firstname: users.firstname,
+      lastname: users.lastname,
+      username: users.username,
+      totalAmount: sales.totalAmount,
+      discountAmount: sales.discountAmount,
+      taxAmount: sales.taxAmount,
+      paymentMode: sales.paymentMode,
+      status: sales.status,
+    })
+    .from(sales)
+    .innerJoin(users, eq(sales.userId, users.id))
+    .where(eq(sql`substr(${sales.date}, 1, 10)`, targetDate))
+    .all();
+
+  const completedSales = saleRows.filter((s) => s.status === "completed");
+  const refundedSales = saleRows.filter((s) => s.status === "refunded");
+
+  const grossRevenue = completedSales.reduce(
+    (sum, s) => sum + Number(s.totalAmount),
+    0,
+  );
+  const refundedAmount = refundedSales.reduce(
+    (sum, s) => sum + Number(s.totalAmount),
+    0,
+  );
+  const totalDiscount = completedSales.reduce(
+    (sum, s) => sum + Number(s.discountAmount),
+    0,
+  );
+  const totalTax = completedSales.reduce(
+    (sum, s) => sum + Number(s.taxAmount),
+    0,
+  );
+  const averageOrderValue =
+    completedSales.length > 0 ? grossRevenue / completedSales.length : 0;
+
+  const modes: PaymentMode[] = ["cash", "momo", "bank", "cheque"];
+  const paymentBreakdown: PaymentBreakdownItem[] = modes.map((mode) => {
+    const matching = completedSales.filter((s) => s.paymentMode === mode);
+    const amount = matching.reduce((sum, s) => sum + Number(s.totalAmount), 0);
+    return {
+      paymentMode: mode,
+      count: matching.length,
+      amount: Number(amount.toFixed(2)),
+      sharePercent:
+        grossRevenue > 0 ? Number(((amount / grossRevenue) * 100).toFixed(1)) : 0,
+    };
+  });
+
+  const cashierMap = new Map<string, DailyCashierBreakdown>();
+  for (const s of completedSales) {
+    const name = `${s.firstname} ${s.lastname}`.trim() || s.username;
+    const cur = cashierMap.get(s.userId);
+    const amt = Number(s.totalAmount) || 0;
+    if (cur) {
+      cur.salesCount += 1;
+      cur.revenue = Number((cur.revenue + amt).toFixed(2));
+    } else {
+      cashierMap.set(s.userId, {
+        userId: s.userId,
+        cashierName: name,
+        salesCount: 1,
+        revenue: Number(amt.toFixed(2)),
+      });
+    }
+  }
+
+  const lineRows = db
+    .select({
+      productId: saleItems.productId,
+      productName: products.name,
+      quantity: saleItems.quantity,
+      unitPrice: saleItems.unitPrice,
+      costPrice: products.costPrice,
+    })
+    .from(saleItems)
+    .innerJoin(sales, eq(saleItems.salesId, sales.id))
+    .innerJoin(products, eq(saleItems.productId, products.id))
+    .where(
+      and(
+        eq(sales.status, "completed"),
+        eq(sql`substr(${sales.date}, 1, 10)`, targetDate),
+      ),
+    )
+    .all();
+
+  let estimatedCost = 0;
+  let totalUnitsSold = 0;
+  const productTotals = new Map<string, TopSellingProductItem>();
+
+  for (const line of lineRows) {
+    const qty = Number(line.quantity) || 0;
+    const price = Number(line.unitPrice) || 0;
+    const cost = Number(line.costPrice) || 0;
+    const rev = qty * price;
+    totalUnitsSold += qty;
+    estimatedCost += qty * cost;
+
+    const existing = productTotals.get(line.productId);
+    if (existing) {
+      existing.unitsSold += qty;
+      existing.revenue = Number((existing.revenue + rev).toFixed(2));
+    } else {
+      productTotals.set(line.productId, {
+        productId: line.productId,
+        productName: line.productName,
+        unitsSold: qty,
+        revenue: Number(rev.toFixed(2)),
+      });
+    }
+  }
+
+  const netBeforeTax = Math.max(0, grossRevenue - totalTax);
+  const grossProfit = netBeforeTax - estimatedCost;
+  const profitMarginPercent =
+    netBeforeTax > 0 ? (grossProfit / netBeforeTax) * 100 : 0;
+
+  return {
+    date: targetDate,
+    currency: store.currency,
+    storeName: store.storeName,
+    totalTransactions: saleRows.length,
+    completedCount: completedSales.length,
+    refundedCount: refundedSales.length,
+    grossRevenue: Number(grossRevenue.toFixed(2)),
+    refundedAmount: Number(refundedAmount.toFixed(2)),
+    totalDiscount: Number(totalDiscount.toFixed(2)),
+    totalTax: Number(totalTax.toFixed(2)),
+    estimatedCost: Number(estimatedCost.toFixed(2)),
+    grossProfit: Number(grossProfit.toFixed(2)),
+    profitMarginPercent: Number(profitMarginPercent.toFixed(1)),
+    averageOrderValue: Number(averageOrderValue.toFixed(2)),
+    totalUnitsSold,
+    paymentBreakdown,
+    topProducts: Array.from(productTotals.values())
+      .sort((a, b) => b.revenue - a.revenue || b.unitsSold - a.unitsSold)
+      .slice(0, 5),
+    cashierBreakdown: Array.from(cashierMap.values()).sort(
+      (a, b) => b.revenue - a.revenue,
+    ),
+  };
+}
+

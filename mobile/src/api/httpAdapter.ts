@@ -11,9 +11,19 @@ import type {
   BulkImportProductsResult,
   CategoryItem,
   CreateCategoryInput,
+  CreateCustomerInput,
+  CreateEmployeeInput,
   CreateProductInput,
   CreateRestockInput,
   CreateSaleInput,
+  CreateSupplierInput,
+  CreateSupplierTransactionInput,
+  CustomerDetailResponse,
+  CustomerItem,
+  DailyReportData,
+  EmployeeDetailResponse,
+  EmployeeItem,
+  PaySupplierBalanceInput,
   ProductDetailResponse,
   ProductItem,
   ProductQueryParams,
@@ -26,10 +36,16 @@ import type {
   SalesReportData,
   SaleTransactionSummary,
   StoreProfile,
+  SupplierDetailResponse,
+  SupplierItem,
+  SupplierTransactionSummary,
   TodayDashboardData,
   UpdateBusinessSettingsInput,
   UpdateCategoryInput,
+  UpdateCustomerInput,
+  UpdateEmployeeInput,
   UpdateProductInput,
+  UpdateSupplierInput,
 } from "@/types/domain";
 
 export function resolveApiBaseUrl(): string {
@@ -322,6 +338,131 @@ export class HttpApiClient implements AuthenticatedApiClient {
     return this.request<SalesReportData>(
       `/api/mobile/v1/sales/report?range=${encodeURIComponent(dateRange)}`,
     );
+  }
+
+  getCustomers(query?: string): Promise<CustomerItem[]> {
+    const suffix = query?.trim() ? `?q=${encodeURIComponent(query.trim())}` : "";
+    return this.request<CustomerItem[]>(`/api/mobile/v1/customers${suffix}`);
+  }
+
+  getCustomerById(customerId: string): Promise<CustomerDetailResponse | null> {
+    return this.request<CustomerDetailResponse | null>(
+      `/api/mobile/v1/customers/${encodeURIComponent(customerId)}`,
+      { allowNotFound: true },
+    );
+  }
+
+  createCustomer(input: CreateCustomerInput): Promise<CustomerItem> {
+    return this.request<CustomerItem>("/api/mobile/v1/customers", {
+      method: "POST",
+      body: JSON.stringify(input),
+    });
+  }
+
+  updateCustomer(
+    customerId: string,
+    input: UpdateCustomerInput,
+  ): Promise<CustomerItem> {
+    return this.request<CustomerItem>(
+      `/api/mobile/v1/customers/${encodeURIComponent(customerId)}`,
+      {
+        method: "PATCH",
+        body: JSON.stringify(input),
+      },
+    );
+  }
+
+  getSuppliers(query?: string): Promise<SupplierItem[]> {
+    const suffix = query?.trim() ? `?q=${encodeURIComponent(query.trim())}` : "";
+    return this.request<SupplierItem[]>(`/api/mobile/v1/suppliers${suffix}`);
+  }
+
+  getSupplierById(supplierId: string): Promise<SupplierDetailResponse | null> {
+    return this.request<SupplierDetailResponse | null>(
+      `/api/mobile/v1/suppliers/${encodeURIComponent(supplierId)}`,
+      { allowNotFound: true },
+    );
+  }
+
+  createSupplier(input: CreateSupplierInput): Promise<SupplierItem> {
+    return this.request<SupplierItem>("/api/mobile/v1/suppliers", {
+      method: "POST",
+      body: JSON.stringify(input),
+    });
+  }
+
+  updateSupplier(
+    supplierId: string,
+    input: UpdateSupplierInput,
+  ): Promise<SupplierItem> {
+    return this.request<SupplierItem>(
+      `/api/mobile/v1/suppliers/${encodeURIComponent(supplierId)}`,
+      {
+        method: "PATCH",
+        body: JSON.stringify(input),
+      },
+    );
+  }
+
+  recordSupplierTransaction(
+    input: CreateSupplierTransactionInput,
+  ): Promise<SupplierTransactionSummary> {
+    return this.request<SupplierTransactionSummary>(
+      `/api/mobile/v1/suppliers/${encodeURIComponent(input.supplierId)}/transactions`,
+      {
+        method: "POST",
+        body: JSON.stringify(input),
+      },
+    );
+  }
+
+  paySupplierTransactionBalance(
+    input: PaySupplierBalanceInput,
+  ): Promise<SupplierTransactionSummary> {
+    return this.request<SupplierTransactionSummary>(
+      `/api/mobile/v1/suppliers/transactions/${encodeURIComponent(input.transactionId)}/pay`,
+      {
+        method: "POST",
+        body: JSON.stringify(input),
+      },
+    );
+  }
+
+  getEmployees(query?: string): Promise<EmployeeItem[]> {
+    const suffix = query?.trim() ? `?q=${encodeURIComponent(query.trim())}` : "";
+    return this.request<EmployeeItem[]>(`/api/mobile/v1/employees${suffix}`);
+  }
+
+  getEmployeeById(employeeId: string): Promise<EmployeeDetailResponse | null> {
+    return this.request<EmployeeDetailResponse | null>(
+      `/api/mobile/v1/employees/${encodeURIComponent(employeeId)}`,
+      { allowNotFound: true },
+    );
+  }
+
+  createEmployee(input: CreateEmployeeInput): Promise<EmployeeItem> {
+    return this.request<EmployeeItem>("/api/mobile/v1/employees", {
+      method: "POST",
+      body: JSON.stringify(input),
+    });
+  }
+
+  updateEmployee(
+    employeeId: string,
+    input: UpdateEmployeeInput,
+  ): Promise<EmployeeItem> {
+    return this.request<EmployeeItem>(
+      `/api/mobile/v1/employees/${encodeURIComponent(employeeId)}`,
+      {
+        method: "PATCH",
+        body: JSON.stringify(input),
+      },
+    );
+  }
+
+  getDailyReport(date?: string): Promise<DailyReportData> {
+    const suffix = date?.trim() ? `?date=${encodeURIComponent(date.trim())}` : "";
+    return this.request<DailyReportData>(`/api/mobile/v1/reports/daily${suffix}`);
   }
 
   getAuditLogs(params?: AuditLogsQueryParams): Promise<AuditLogItem[]> {

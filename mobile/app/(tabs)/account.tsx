@@ -6,6 +6,7 @@ import {
   BarChart3,
   ChevronRight,
   Clock,
+  FileSpreadsheet,
   History,
   Layers,
   LogOut,
@@ -14,6 +15,9 @@ import {
   Phone,
   Settings,
   Shield,
+  Truck,
+  UserCog,
+  Users,
 } from "lucide-react-native";
 import { useAuth } from "@/api/AuthProvider";
 import { DemoBanner } from "@/components/DemoBanner";
@@ -50,6 +54,10 @@ export default function AccountScreen() {
     title: string;
     description: string;
     route:
+      | "/customers"
+      | "/suppliers"
+      | "/employees"
+      | "/reports"
       | "/categories"
       | "/restocks"
       | "/audit-logs"
@@ -57,6 +65,30 @@ export default function AccountScreen() {
       | "/settings";
     icon: React.ReactNode;
   }> = [
+    {
+      title: "Customers",
+      description: "Directory, contact profiles, and customer order history",
+      route: "/customers",
+      icon: <Users size={18} color={colors.primary} />,
+    },
+    {
+      title: "Suppliers",
+      description: "Distributors, stock deliveries, and balances due",
+      route: "/suppliers",
+      icon: <Truck size={18} color={colors.primary} />,
+    },
+    {
+      title: "Team & Cashiers",
+      description: "Staff accounts, roles, and sales performance by operator",
+      route: "/employees",
+      icon: <UserCog size={18} color={colors.primary} />,
+    },
+    {
+      title: "Daily Reports",
+      description: "End-of-day revenue, profit, cashier mix & printable PDF",
+      route: "/reports",
+      icon: <FileSpreadsheet size={18} color={colors.primary} />,
+    },
     {
       title: "Product Categories",
       description: "Organize catalog categories and active visibility",

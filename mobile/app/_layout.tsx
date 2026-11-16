@@ -107,6 +107,55 @@ function ThemedNavigator() {
             }}
           />
           <Stack.Screen
+            name="customers"
+            options={{
+              title: "Customers",
+              headerBackTitle: "Account",
+            }}
+          />
+          <Stack.Screen
+            name="customer/[id]"
+            options={{
+              title: "Customer Profile",
+              headerBackTitle: "Customers",
+            }}
+          />
+          <Stack.Screen
+            name="suppliers"
+            options={{
+              title: "Suppliers",
+              headerBackTitle: "Account",
+            }}
+          />
+          <Stack.Screen
+            name="supplier/[id]"
+            options={{
+              title: "Supplier Profile",
+              headerBackTitle: "Suppliers",
+            }}
+          />
+          <Stack.Screen
+            name="employees"
+            options={{
+              title: "Team & Cashiers",
+              headerBackTitle: "Account",
+            }}
+          />
+          <Stack.Screen
+            name="employee/[id]"
+            options={{
+              title: "Staff Performance",
+              headerBackTitle: "Team",
+            }}
+          />
+          <Stack.Screen
+            name="reports"
+            options={{
+              title: "Daily Reports",
+              headerBackTitle: "Account",
+            }}
+          />
+          <Stack.Screen
             name="settings"
             options={{
               title: "Settings",

@@ -341,3 +341,177 @@ export interface AuditLogsQueryParams {
   action?: string;
   limit?: number;
 }
+
+export interface CustomerItem {
+  id: string;
+  name: string;
+  email?: string;
+  phonenumber?: string;
+  address?: string;
+  orderCount: number;
+  totalSpent: number;
+  lastOrderAt?: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CustomerDetailResponse {
+  customer: CustomerItem;
+  recentSales: SaleTransactionSummary[];
+}
+
+export interface CreateCustomerInput {
+  name: string;
+  email?: string;
+  phonenumber?: string;
+  address?: string;
+}
+
+export interface UpdateCustomerInput {
+  name?: string;
+  email?: string;
+  phonenumber?: string;
+  address?: string;
+}
+
+export interface SupplierItem {
+  id: string;
+  name: string;
+  companyName: string;
+  email?: string;
+  phonenumber?: string;
+  address?: string;
+  isActive: boolean;
+  orderCount: number;
+  totalPurchases: number;
+  outstandingBalance: number;
+  lastOrderAt?: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface SupplierTransactionSummary {
+  id: string;
+  transactionNo: string;
+  supplierId: string;
+  deliveredBy?: string;
+  transactionDate: string;
+  totalAmount: number;
+  amountPaid: number;
+  balance: number;
+  paymentMode: PaymentMode;
+  status: "completed" | "pending" | "cancelled";
+  notes?: string;
+}
+
+export interface SupplierDetailResponse {
+  supplier: SupplierItem;
+  transactions: SupplierTransactionSummary[];
+}
+
+export interface CreateSupplierInput {
+  name: string;
+  companyName: string;
+  email?: string;
+  phonenumber?: string;
+  address?: string;
+  isActive?: boolean;
+}
+
+export interface UpdateSupplierInput {
+  name?: string;
+  companyName?: string;
+  email?: string;
+  phonenumber?: string;
+  address?: string;
+  isActive?: boolean;
+}
+
+export interface CreateSupplierTransactionInput {
+  supplierId: string;
+  deliveredBy?: string;
+  transactionDate?: string;
+  totalAmount: number;
+  amountPaid?: number;
+  paymentMode: PaymentMode;
+  notes?: string;
+}
+
+export interface PaySupplierBalanceInput {
+  transactionId: string;
+  paymentAmount: number;
+  paymentMode?: PaymentMode;
+  notes?: string;
+}
+
+export interface EmployeeItem {
+  id: string;
+  username: string;
+  email: string;
+  firstname: string;
+  lastname: string;
+  fullName: string;
+  phonenumber?: string;
+  role: "admin" | "member";
+  isLocked: boolean;
+  lastLoginAt?: string | null;
+  completedSalesCount: number;
+  refundedSalesCount: number;
+  totalRevenue: number;
+  averageTicket: number;
+  createdAt: string;
+}
+
+export interface EmployeeDetailResponse {
+  employee: EmployeeItem;
+  paymentBreakdown: PaymentBreakdownItem[];
+  recentSales: SaleTransactionSummary[];
+}
+
+export interface CreateEmployeeInput {
+  username: string;
+  email: string;
+  firstname: string;
+  lastname: string;
+  phonenumber?: string;
+  role: "admin" | "member";
+  password: string;
+}
+
+export interface UpdateEmployeeInput {
+  firstname?: string;
+  lastname?: string;
+  email?: string;
+  phonenumber?: string;
+  role?: "admin" | "member";
+  password?: string;
+}
+
+export interface DailyCashierBreakdown {
+  userId: string;
+  cashierName: string;
+  salesCount: number;
+  revenue: number;
+}
+
+export interface DailyReportData {
+  date: string;
+  currency: string;
+  storeName: string;
+  totalTransactions: number;
+  completedCount: number;
+  refundedCount: number;
+  grossRevenue: number;
+  refundedAmount: number;
+  totalDiscount: number;
+  totalTax: number;
+  estimatedCost: number;
+  grossProfit: number;
+  profitMarginPercent: number;
+  averageOrderValue: number;
+  totalUnitsSold: number;
+  paymentBreakdown: PaymentBreakdownItem[];
+  topProducts: TopSellingProductItem[];
+  cashierBreakdown: DailyCashierBreakdown[];
+}
+

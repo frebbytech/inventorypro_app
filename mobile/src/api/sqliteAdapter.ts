@@ -6,27 +6,42 @@ import {
   authenticateWithCredentials,
   bulkCreateProducts as dbBulkCreateProducts,
   createCategory as dbCreateCategory,
+  createCustomer as dbCreateCustomer,
+  createEmployee as dbCreateEmployee,
   createProduct as dbCreateProduct,
   createSale as dbCreateSale,
+  createSupplier as dbCreateSupplier,
   findProductByBarcode as dbFindProductByBarcode,
+  getCustomerDetail as dbGetCustomerDetail,
+  getDailyReport as dbGetDailyReport,
+  getEmployeeDetail as dbGetEmployeeDetail,
   getProductDetail as dbGetProductDetail,
   getSaleReceipt as dbGetSaleReceipt,
   getSalesReport as dbGetSalesReport,
+  getSupplierDetail as dbGetSupplierDetail,
   getTodayDashboard as dbGetTodayDashboard,
   listAuditLogs as dbListAuditLogs,
   listCategories as dbListCategories,
   listCategoryDetails as dbListCategoryDetails,
+  listCustomers as dbListCustomers,
+  listEmployees as dbListEmployees,
   listProducts as dbListProducts,
   listRestockLogs as dbListRestockLogs,
   listSales as dbListSales,
+  listSuppliers as dbListSuppliers,
+  paySupplierTransactionBalance as dbPaySupplierTransactionBalance,
   recordRestock as dbRecordRestock,
+  recordSupplierTransaction as dbRecordSupplierTransaction,
   refundSale as dbRefundSale,
   restoreSessionByToken,
   revokeSessionByToken,
   updateCategory as dbUpdateCategory,
+  updateCustomer as dbUpdateCustomer,
+  updateEmployee as dbUpdateEmployee,
   updateProduct as dbUpdateProduct,
   updateStoreBusinessProfile,
   updateStoreStockThreshold,
+  updateSupplier as dbUpdateSupplier,
 } from "@/db/queries";
 import type {
   AdjustStockInput,
@@ -38,9 +53,19 @@ import type {
   BulkImportProductsResult,
   CategoryItem,
   CreateCategoryInput,
+  CreateCustomerInput,
+  CreateEmployeeInput,
   CreateProductInput,
   CreateRestockInput,
   CreateSaleInput,
+  CreateSupplierInput,
+  CreateSupplierTransactionInput,
+  CustomerDetailResponse,
+  CustomerItem,
+  DailyReportData,
+  EmployeeDetailResponse,
+  EmployeeItem,
+  PaySupplierBalanceInput,
   ProductDetailResponse,
   ProductItem,
   ProductQueryParams,
@@ -53,10 +78,16 @@ import type {
   SalesReportData,
   SaleTransactionSummary,
   StoreProfile,
+  SupplierDetailResponse,
+  SupplierItem,
+  SupplierTransactionSummary,
   TodayDashboardData,
   UpdateBusinessSettingsInput,
   UpdateCategoryInput,
+  UpdateCustomerInput,
+  UpdateEmployeeInput,
   UpdateProductInput,
+  UpdateSupplierInput,
 } from "@/types/domain";
 
 export interface AuthenticatedApiClient extends InventoryProApiClient {
@@ -258,6 +289,123 @@ export class ExpoSqliteDrizzleClient implements AuthenticatedApiClient {
   async getSalesReport(dateRange: SalesDateRange = "30d"): Promise<SalesReportData> {
     const { db } = await this.requireSession();
     return dbGetSalesReport(db, dateRange);
+  }
+
+  async getCustomers(query?: string): Promise<CustomerItem[]> {
+    const { db } = await this.requireSession();
+    return dbListCustomers(db, query);
+  }
+
+  async getCustomerById(customerId: string): Promise<CustomerDetailResponse | null> {
+    const { db } = await this.requireSession();
+    return dbGetCustomerDetail(db, customerId);
+  }
+
+  async createCustomer(input: CreateCustomerInput): Promise<CustomerItem> {
+    const { db, session } = await this.requireSession();
+    return dbCreateCustomer(db, {
+      ...input,
+      userId: session.user.id,
+    });
+  }
+
+  async updateCustomer(
+    customerId: string,
+    input: UpdateCustomerInput,
+  ): Promise<CustomerItem> {
+    const { db, session } = await this.requireSession();
+    return dbUpdateCustomer(db, {
+      ...input,
+      customerId,
+      userId: session.user.id,
+    });
+  }
+
+  async getSuppliers(query?: string): Promise<SupplierItem[]> {
+    const { db } = await this.requireSession();
+    return dbListSuppliers(db, query);
+  }
+
+  async getSupplierById(supplierId: string): Promise<SupplierDetailResponse | null> {
+    const { db } = await this.requireSession();
+    return dbGetSupplierDetail(db, supplierId);
+  }
+
+  async createSupplier(input: CreateSupplierInput): Promise<SupplierItem> {
+    const { db, session } = await this.requireSession();
+    return dbCreateSupplier(db, {
+      ...input,
+      userId: session.user.id,
+    });
+  }
+
+  async updateSupplier(
+    supplierId: string,
+    input: UpdateSupplierInput,
+  ): Promise<SupplierItem> {
+    const { db, session } = await this.requireSession();
+    return dbUpdateSupplier(db, {
+      ...input,
+      supplierId,
+      userId: session.user.id,
+    });
+  }
+
+  async recordSupplierTransaction(
+    input: CreateSupplierTransactionInput,
+  ): Promise<SupplierTransactionSummary> {
+    const { db, session } = await this.requireSession();
+    return dbRecordSupplierTransaction(db, {
+      ...input,
+      userId: session.user.id,
+    });
+  }
+
+  async paySupplierTransactionBalance(
+    input: PaySupplierBalanceInput,
+  ): Promise<SupplierTransactionSummary> {
+    const { db, session } = await this.requireSession();
+    return dbPaySupplierTransactionBalance(db, {
+      ...input,
+      userId: session.user.id,
+    });
+  }
+
+  async getEmployees(query?: string): Promise<EmployeeItem[]> {
+    const { db } = await this.requireSession();
+    return dbListEmployees(db, query);
+  }
+
+  async getEmployeeById(
+    employeeId: string,
+  ): Promise<EmployeeDetailResponse | null> {
+    const { db } = await this.requireSession();
+    return dbGetEmployeeDetail(db, employeeId);
+  }
+
+  async createEmployee(input: CreateEmployeeInput): Promise<EmployeeItem> {
+    const { db, session } = await this.requireSession();
+    return dbCreateEmployee(db, {
+      ...input,
+      actorUserId: session.user.id,
+    });
+  }
+
+  async updateEmployee(
+    employeeId: string,
+    input: UpdateEmployeeInput,
+  ): Promise<EmployeeItem> {
+    const { db, session } = await this.requireSession();
+    return dbUpdateEmployee(db, {
+      ...input,
+      employeeId,
+      actorUserId: session.user.id,
+    });
+  }
+
+  async getDailyReport(date?: string): Promise<DailyReportData> {
+    const { db } = await this.requireSession();
+    return dbGetDailyReport(db, date);
   }
 
   async getAuditLogs(params?: AuditLogsQueryParams): Promise<AuditLogItem[]> {
