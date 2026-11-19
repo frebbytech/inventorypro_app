@@ -428,6 +428,40 @@ export const saleItemsRelations = relations(saleItems, ({ one }) => ({
   }),
 }));
 
+export const syncMeta = sqliteTable("sync_meta", {
+  key: text("key").primaryKey(),
+  value: text("value").notNull(),
+  updatedAt: text("updated_at")
+    .notNull()
+    .default(sql`(datetime('now'))`),
+});
+
+export const syncOutbox = sqliteTable(
+  "sync_outbox",
+  {
+    id: text("id").primaryKey(),
+    clientMutationId: text("client_mutation_id").notNull().unique(),
+    entityType: text("entity_type").notNull(),
+    operation: text("operation").notNull(),
+    endpoint: text("endpoint").notNull(),
+    method: text("method").notNull().default("POST"),
+    payloadJson: text("payload_json").notNull(),
+    status: text("status", {
+      enum: ["pending", "processing", "conflict", "failed"],
+    })
+      .notNull()
+      .default("pending"),
+    retryCount: integer("retry_count").notNull().default(0),
+    lastError: text("last_error"),
+    createdAt: text("created_at")
+      .notNull()
+      .default(sql`(datetime('now'))`),
+  },
+  (table) => [
+    index("sync_outbox_idx_status_created").on(table.status, table.createdAt),
+  ],
+);
+
 export type UserRecord = typeof users.$inferSelect;
 export type ProductRecord = typeof products.$inferSelect;
 export type ProductCategoryRecord = typeof productCategories.$inferSelect;
@@ -439,3 +473,5 @@ export type SupplierTransactionRecord = typeof supplierTransactions.$inferSelect
 export type SettingsRecord = typeof settings.$inferSelect;
 export type NotificationRecord = typeof notifications.$inferSelect;
 export type BroadcastMessageRecord = typeof broadcastMessages.$inferSelect;
+export type SyncMetaRecord = typeof syncMeta.$inferSelect;
+export type SyncOutboxRecord = typeof syncOutbox.$inferSelect;

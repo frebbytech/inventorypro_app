@@ -1,8 +1,10 @@
+import { redirect } from "next/navigation";
 import PageContainer from "@/components/layout/page-container";
 import { Heading } from "@/components/ui/heading";
 import { Separator } from "@/components/ui/separator";
 import { getEmployeesList } from "@/actions/employee-summary";
 import EmployeeSalesSummaryView from "@/components/summary/employee-sales/EmployeeSalesSummaryView";
+import { getAuthSession } from "@/lib/auth";
 import { SearchParams } from "nuqs/server";
 
 export default async function EmployeeListingPage({
@@ -10,6 +12,11 @@ export default async function EmployeeListingPage({
 }: {
   searchParams: SearchParams;
 }) {
+  const session = await getAuthSession();
+  if (!session?.id) {
+    redirect("/auth/sign-in?session=expired");
+  }
+
   const employeesRes = await getEmployeesList();
   const initialEmployees = employeesRes.success && employeesRes.data ? employeesRes.data : [];
 

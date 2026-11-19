@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import {
   KeyboardAvoidingView,
   Platform,
@@ -11,14 +11,20 @@ import {
 import { SafeAreaView } from "react-native-safe-area-context";
 import {
   AlertCircle,
+  Building2,
+  Cloud,
   Database,
+  KeyRound,
   Lock,
   LogIn,
   Moon,
+  Server,
+  Smartphone,
   Sun,
   User,
 } from "lucide-react-native";
 import { useAuth } from "@/api/AuthProvider";
+import { resolveApiBaseUrl } from "@/api/httpAdapter";
 import {
   Badge,
   Button,
@@ -32,13 +38,61 @@ import { useTheme } from "@/theme";
 
 export default function SignInScreen() {
   const { theme, mode, toggleMode } = useTheme();
-  const { signIn } = useAuth();
+  const {
+    workspaceMode,
+    setWorkspaceModePreference,
+    serverUrl,
+    setServerUrl,
+    signIn,
+    verifyTwoFactorSignIn,
+    resendTwoFactorCode,
+  } = useAuth();
   const { colors, spacing, radii, typography, fontFamilies } = theme;
 
-  const [identifier, setIdentifier] = useState("frebbytech");
-  const [password, setPassword] = useState("Admin123!");
+  const [serverInput, setServerInput] = useState(
+    serverUrl || resolveApiBaseUrl(),
+  );
+  const [showServerConfig, setShowServerConfig] = useState(false);
+
+  // Sign-in state
+  const [identifier, setIdentifier] = useState(
+    workspaceMode === "mobile_only" ? "frebbytech" : "",
+  );
+  const [password, setPassword] = useState(
+    workspaceMode === "mobile_only" ? "Admin123!" : "",
+  );
+  const [workspaceSlug, setWorkspaceSlug] = useState("");
+  const [showWorkspaceSlug, setShowWorkspaceSlug] = useState(false);
+
+  // 2FA challenge state
+  const [challengeToken, setChallengeToken] = useState<string | null>(null);
+  const [maskedTarget, setMaskedTarget] = useState("");
+  const [otpCode, setOtpCode] = useState("");
+
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    setServerInput(serverUrl || resolveApiBaseUrl());
+  }, [serverUrl]);
+
+  const handleSelectWorkspaceMode = async (
+    nextMode: "mobile_only" | "synced",
+  ) => {
+    setError(null);
+    setChallengeToken(null);
+    setOtpCode("");
+    await setWorkspaceModePreference(nextMode);
+    if (nextMode === "mobile_only") {
+      if (!identifier) setIdentifier("frebbytech");
+      if (!password) setPassword("Admin123!");
+    } else {
+      if (identifier === "frebbytech" && password === "Admin123!") {
+        setIdentifier("");
+        setPassword("");
+      }
+    }
+  };
 
   const handleSubmit = async (idValue = identifier, passValue = password) => {
     const trimmed = idValue.trim();
@@ -50,11 +104,58 @@ export default function SignInScreen() {
     setSubmitting(true);
     setError(null);
     try {
-      await signIn(trimmed, passValue);
+      if (workspaceMode === "synced" && serverInput.trim()) {
+        await setServerUrl(serverInput.trim());
+      }
+      const res = await signIn(trimmed, passValue, {
+        workspaceSlug: workspaceSlug.trim() || undefined,
+      });
+      if ("twoFactorRequired" in res && res.twoFactorRequired) {
+        setChallengeToken(res.challengeToken);
+        setMaskedTarget(res.maskedTarget);
+      }
     } catch (err) {
-      setError(
-        err instanceof Error ? err.message : "Unable to sign in. Check your credentials.",
-      );
+      const msg =
+        err instanceof Error
+          ? err.message
+          : "Unable to sign in. Check your credentials.";
+      if (msg.toLowerCase().includes("workspace code")) {
+        setShowWorkspaceSlug(true);
+      }
+      setError(msg);
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const handleVerifyTwoFactor = async () => {
+    if (!challengeToken) return;
+    const cleanCode = otpCode.replace(/\s+/g, "");
+    if (!/^\d{6}$/.test(cleanCode)) {
+      setError("Enter the 6-digit verification code.");
+      return;
+    }
+    setSubmitting(true);
+    setError(null);
+    try {
+      await verifyTwoFactorSignIn(challengeToken, cleanCode);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Invalid verification code.");
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const handleResendCode = async () => {
+    if (!challengeToken) return;
+    setSubmitting(true);
+    setError(null);
+    try {
+      const res = await resendTwoFactorCode(challengeToken);
+      setChallengeToken(res.challengeToken);
+      setMaskedTarget(res.maskedTarget);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to resend code.");
     } finally {
       setSubmitting(false);
     }
@@ -76,7 +177,14 @@ export default function SignInScreen() {
           ]}
         >
           <View style={styles.topActions}>
-            <Badge label="Expo SQLite · Drizzle ORM" variant="outline" />
+            <Badge
+              label={
+                workspaceMode === "synced"
+                  ? "Synced Cloud Workspace"
+                  : "Mobile-Only · SQLite"
+              }
+              variant={workspaceMode === "synced" ? "default" : "outline"}
+            />
             <Pressable
               onPress={toggleMode}
               accessibilityLabel="Toggle theme"
@@ -109,19 +217,137 @@ export default function SignInScreen() {
                 },
               ]}
             >
-              <Database size={26} color={colors.primary} />
+              {workspaceMode === "synced" ? (
+                <Cloud size={26} color={colors.primary} />
+              ) : (
+                <Database size={26} color={colors.primary} />
+              )}
             </View>
             <Text style={[typography.titleLg, { color: colors.foreground }]}>
               Inventory Pro
             </Text>
             <Text style={[typography.body, { color: colors.mutedForeground }]}>
-              Sign in to access live store stock, barcode lookup, and POS sales.
+              {workspaceMode === "synced"
+                ? "Connect to your cloud store to sync web and mobile inventory, POS sales, and alerts in real time."
+                : "Work offline on this device using local SQLite storage, or switch to Synced anytime from Account."}
             </Text>
+          </View>
+
+          {/* Workspace Mode Selector */}
+          <View
+            style={[
+              styles.modeSwitcher,
+              {
+                backgroundColor: colors.muted,
+                borderColor: colors.border,
+                borderRadius: radii.xl,
+              },
+            ]}
+          >
+            <Pressable
+              onPress={() => void handleSelectWorkspaceMode("mobile_only")}
+              style={[
+                styles.modeBtn,
+                {
+                  backgroundColor:
+                    workspaceMode === "mobile_only"
+                      ? colors.card
+                      : "transparent",
+                  borderRadius: radii.lg,
+                },
+              ]}
+            >
+              <Smartphone
+                size={15}
+                color={
+                  workspaceMode === "mobile_only"
+                    ? colors.primary
+                    : colors.mutedForeground
+                }
+              />
+              <Text
+                style={[
+                  typography.caption,
+                  {
+                    color:
+                      workspaceMode === "mobile_only"
+                        ? colors.foreground
+                        : colors.mutedForeground,
+                    fontFamily: fontFamilies.semibold,
+                  },
+                ]}
+              >
+                Mobile-Only
+              </Text>
+            </Pressable>
+
+            <Pressable
+              onPress={() => void handleSelectWorkspaceMode("synced")}
+              style={[
+                styles.modeBtn,
+                {
+                  backgroundColor:
+                    workspaceMode === "synced" ? colors.card : "transparent",
+                  borderRadius: radii.lg,
+                },
+              ]}
+            >
+              <Cloud
+                size={15}
+                color={
+                  workspaceMode === "synced"
+                    ? colors.primary
+                    : colors.mutedForeground
+                }
+              />
+              <Text
+                style={[
+                  typography.caption,
+                  {
+                    color:
+                      workspaceMode === "synced"
+                        ? colors.foreground
+                        : colors.mutedForeground,
+                    fontFamily: fontFamilies.semibold,
+                  },
+                ]}
+              >
+                Synced (Web + Mobile)
+              </Text>
+            </Pressable>
           </View>
 
           <Card>
             <CardHeader bordered>
-              <CardTitle>Staff sign in</CardTitle>
+              <View
+                style={{
+                  flexDirection: "row",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                }}
+              >
+                <CardTitle>
+                  {challengeToken
+                    ? "Two-factor verification"
+                    : "Staff sign in"}
+                </CardTitle>
+                {workspaceMode === "synced" && !challengeToken ? (
+                  <Pressable
+                    onPress={() => setShowServerConfig((v) => !v)}
+                    style={{ flexDirection: "row", alignItems: "center", gap: 4 }}
+                  >
+                    <Server size={13} color={colors.primary} />
+                    <Text
+                      style={[
+                        typography.micro,
+                        { color: colors.primary, fontFamily: fontFamilies.semibold },
+                      ]}
+                    >
+                      {showServerConfig ? "Hide Server" : "Server URL"}
+                    </Text>
+                  </Pressable>
+                ) : null}
+              </View>
             </CardHeader>
 
             <CardContent style={{ paddingTop: spacing.base, gap: spacing.md }}>
@@ -149,93 +375,221 @@ export default function SignInScreen() {
                 </View>
               ) : null}
 
-              <View style={{ gap: spacing.xs }}>
-                <Text
-                  style={[
-                    typography.caption,
-                    { color: colors.foreground, fontFamily: fontFamilies.semibold },
-                  ]}
-                >
-                  Username or Email
-                </Text>
-                <Input
-                  value={identifier}
-                  onChangeText={setIdentifier}
-                  placeholder="frebbytech or inventorypro@frebbytech.com"
-                  autoCapitalize="none"
-                  autoCorrect={false}
-                  returnKeyType="next"
-                  leftIcon={<User size={18} color={colors.mutedForeground} />}
-                />
-              </View>
+              {workspaceMode === "synced" && showServerConfig && !challengeToken ? (
+                <View style={{ gap: spacing.xs }}>
+                  <Text
+                    style={[
+                      typography.caption,
+                      { color: colors.foreground, fontFamily: fontFamilies.semibold },
+                    ]}
+                  >
+                    Web Backend URL
+                  </Text>
+                  <Input
+                    value={serverInput}
+                    onChangeText={setServerInput}
+                    placeholder="http://192.168.1.10:3000"
+                    autoCapitalize="none"
+                    autoCorrect={false}
+                    leftIcon={<Server size={16} color={colors.mutedForeground} />}
+                  />
+                </View>
+              ) : null}
 
-              <View style={{ gap: spacing.xs }}>
-                <Text
-                  style={[
-                    typography.caption,
-                    { color: colors.foreground, fontFamily: fontFamilies.semibold },
-                  ]}
-                >
-                  Password
-                </Text>
-                <Input
-                  value={password}
-                  onChangeText={setPassword}
-                  placeholder="Enter password"
-                  secureTextEntry
-                  autoCapitalize="none"
-                  autoCorrect={false}
-                  returnKeyType="done"
-                  onSubmitEditing={() => void handleSubmit()}
-                  leftIcon={<Lock size={18} color={colors.mutedForeground} />}
-                />
-              </View>
+              {challengeToken ? (
+                <>
+                  <Text style={[typography.body, { color: colors.mutedForeground }]}>
+                    Enter the 6-digit security code sent to{" "}
+                    <Text
+                      style={{
+                        color: colors.foreground,
+                        fontFamily: fontFamilies.semibold,
+                      }}
+                    >
+                      {maskedTarget || "your verified contact"}
+                    </Text>
+                    .
+                  </Text>
+                  <Input
+                    value={otpCode}
+                    onChangeText={setOtpCode}
+                    placeholder="123456"
+                    keyboardType="number-pad"
+                    maxLength={6}
+                    leftIcon={<KeyRound size={17} color={colors.mutedForeground} />}
+                  />
+                  <Button
+                    title="Verify & Sign In"
+                    size="lg"
+                    loading={submitting}
+                    onPress={() => void handleVerifyTwoFactor()}
+                  />
+                  <View style={styles.presetRow}>
+                    <Button
+                      title="Resend Code"
+                      variant="outline"
+                      size="sm"
+                      style={{ flex: 1 }}
+                      disabled={submitting}
+                      onPress={() => void handleResendCode()}
+                    />
+                    <Button
+                      title="Back"
+                      variant="ghost"
+                      size="sm"
+                      onPress={() => {
+                        setChallengeToken(null);
+                        setOtpCode("");
+                        setError(null);
+                      }}
+                    />
+                  </View>
+                </>
+              ) : (
+                <>
+                  <View style={{ gap: spacing.xs }}>
+                    <Text
+                      style={[
+                        typography.caption,
+                        { color: colors.foreground, fontFamily: fontFamilies.semibold },
+                      ]}
+                    >
+                      Username or Email
+                    </Text>
+                    <Input
+                      value={identifier}
+                      onChangeText={setIdentifier}
+                      placeholder={
+                        workspaceMode === "synced"
+                          ? "owner@yourstore.com or username"
+                          : "frebbytech or inventorypro@frebbytech.com"
+                      }
+                      autoCapitalize="none"
+                      autoCorrect={false}
+                      returnKeyType="next"
+                      leftIcon={<User size={18} color={colors.mutedForeground} />}
+                    />
+                  </View>
 
-              <Button
-                title="Sign In"
-                size="lg"
-                loading={submitting}
-                leftIcon={<LogIn size={17} color="#FFFFFF" />}
-                onPress={() => void handleSubmit()}
-              />
+                  <View style={{ gap: spacing.xs }}>
+                    <Text
+                      style={[
+                        typography.caption,
+                        { color: colors.foreground, fontFamily: fontFamilies.semibold },
+                      ]}
+                    >
+                      Password
+                    </Text>
+                    <Input
+                      value={password}
+                      onChangeText={setPassword}
+                      placeholder="Enter password"
+                      secureTextEntry
+                      autoCapitalize="none"
+                      autoCorrect={false}
+                      returnKeyType="done"
+                      onSubmitEditing={() => void handleSubmit()}
+                      leftIcon={<Lock size={18} color={colors.mutedForeground} />}
+                    />
+                  </View>
+
+                  {workspaceMode === "synced" ? (
+                    showWorkspaceSlug ? (
+                      <View style={{ gap: spacing.xs }}>
+                        <Text
+                          style={[
+                            typography.caption,
+                            {
+                              color: colors.foreground,
+                              fontFamily: fontFamilies.semibold,
+                            },
+                          ]}
+                        >
+                          Workspace Code
+                        </Text>
+                        <Input
+                          value={workspaceSlug}
+                          onChangeText={setWorkspaceSlug}
+                          placeholder="e.g. frebbytech-store"
+                          autoCapitalize="none"
+                          autoCorrect={false}
+                          leftIcon={
+                            <Building2 size={17} color={colors.mutedForeground} />
+                          }
+                        />
+                      </View>
+                    ) : (
+                      <Pressable onPress={() => setShowWorkspaceSlug(true)}>
+                        <Text
+                          style={[
+                            typography.micro,
+                            {
+                              color: colors.primary,
+                              fontFamily: fontFamilies.semibold,
+                            },
+                          ]}
+                        >
+                          + Sign in with a specific Workspace Code
+                        </Text>
+                      </Pressable>
+                    )
+                  ) : null}
+
+                  <Button
+                    title={
+                      workspaceMode === "synced"
+                        ? "Sign In & Sync"
+                        : "Sign In Offline"
+                    }
+                    size="lg"
+                    loading={submitting}
+                    leftIcon={<LogIn size={17} color="#FFFFFF" />}
+                    onPress={() => void handleSubmit()}
+                  />
+                </>
+              )}
             </CardContent>
           </Card>
 
-          {/* Seeded SQLite Accounts for immediate testing */}
-          <Card>
-            <CardHeader bordered>
-              <CardTitle>Seeded SQLite accounts</CardTitle>
-            </CardHeader>
-            <CardContent style={{ paddingTop: spacing.md, gap: spacing.sm }}>
-              <Text style={[typography.caption, { color: colors.mutedForeground }]}>
-                Tap an account below to pre-fill credentials stored in SQLite:
-              </Text>
-              <View style={styles.presetRow}>
-                <Button
-                  title="Admin (frebbytech)"
-                  variant="outline"
-                  size="sm"
-                  style={{ flex: 1 }}
-                  onPress={() => {
-                    setIdentifier("frebbytech");
-                    setPassword("Admin123!");
-                    setError(null);
-                  }}
-                />
-                <Button
-                  title="Cashier (kwame)"
-                  variant="outline"
-                  size="sm"
-                  style={{ flex: 1 }}
-                  onPress={() => {
-                    setIdentifier("kwame");
-                    setPassword("Staff123!");
-                    setError(null);
-                  }}
-                />
-              </View>
-            </CardContent>
-          </Card>
+          {/* Seeded SQLite Accounts only shown in Mobile-Only mode */}
+          {workspaceMode === "mobile_only" ? (
+            <Card>
+              <CardHeader bordered>
+                <CardTitle>Seeded SQLite accounts</CardTitle>
+              </CardHeader>
+              <CardContent style={{ paddingTop: spacing.md, gap: spacing.sm }}>
+                <Text
+                  style={[typography.caption, { color: colors.mutedForeground }]}
+                >
+                  Tap an account below to pre-fill local device credentials:
+                </Text>
+                <View style={styles.presetRow}>
+                  <Button
+                    title="Admin (frebbytech)"
+                    variant="outline"
+                    size="sm"
+                    style={{ flex: 1 }}
+                    onPress={() => {
+                      setIdentifier("frebbytech");
+                      setPassword("Admin123!");
+                      setError(null);
+                    }}
+                  />
+                  <Button
+                    title="Cashier (kwame)"
+                    variant="outline"
+                    size="sm"
+                    style={{ flex: 1 }}
+                    onPress={() => {
+                      setIdentifier("kwame");
+                      setPassword("Staff123!");
+                      setError(null);
+                    }}
+                  />
+                </View>
+              </CardContent>
+            </Card>
+          ) : null}
         </ScrollView>
       </KeyboardAvoidingView>
     </SafeAreaView>
@@ -272,6 +626,20 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     marginBottom: 4,
+  },
+  modeSwitcher: {
+    flexDirection: "row",
+    padding: 4,
+    borderWidth: 1,
+    gap: 4,
+  },
+  modeBtn: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 6,
+    paddingVertical: 10,
   },
   errorBox: {
     flexDirection: "row",

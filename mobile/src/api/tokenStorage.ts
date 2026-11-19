@@ -130,3 +130,94 @@ export async function setHasCompletedOnboarding(
     // ignore SecureStore write errors
   }
 }
+
+const WORKSPACE_MODE_KEY = "inventory_pro_workspace_mode";
+const SERVER_URL_KEY = "inventory_pro_server_url";
+const TENANT_INFO_KEY = "inventory_pro_tenant_info";
+const SYNC_CURSOR_KEY = "inventory_pro_sync_cursor";
+
+async function getKey(key: string): Promise<string | null> {
+  try {
+    if (Platform.OS === "web") {
+      return typeof window !== "undefined"
+        ? window.localStorage.getItem(key)
+        : null;
+    }
+    return await SecureStore.getItemAsync(key);
+  } catch {
+    return null;
+  }
+}
+
+async function setKey(key: string, value: string | null): Promise<void> {
+  if (Platform.OS === "web") {
+    try {
+      if (typeof window !== "undefined") {
+        if (value === null) window.localStorage.removeItem(key);
+        else window.localStorage.setItem(key, value);
+      }
+    } catch {
+      // ignore storage errors
+    }
+    return;
+  }
+  try {
+    if (value === null) await SecureStore.deleteItemAsync(key);
+    else await SecureStore.setItemAsync(key, value);
+  } catch {
+    // ignore SecureStore errors
+  }
+}
+
+export async function getStoredWorkspaceMode(): Promise<"mobile_only" | "synced"> {
+  const raw = await getKey(WORKSPACE_MODE_KEY);
+  return raw === "synced" ? "synced" : "mobile_only";
+}
+
+export async function setStoredWorkspaceMode(
+  mode: "mobile_only" | "synced",
+): Promise<void> {
+  await setKey(WORKSPACE_MODE_KEY, mode);
+}
+
+export async function getStoredServerUrl(): Promise<string | null> {
+  return getKey(SERVER_URL_KEY);
+}
+
+export async function setStoredServerUrl(url: string | null): Promise<void> {
+  await setKey(SERVER_URL_KEY, url ? url.trim().replace(/\/+$/, "") : null);
+}
+
+export interface StoredTenantInfo {
+  id: string;
+  name: string;
+  slug: string;
+}
+
+export async function getStoredTenantInfo(): Promise<StoredTenantInfo | null> {
+  const raw = await getKey(TENANT_INFO_KEY);
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw) as StoredTenantInfo;
+    return parsed?.id && parsed?.slug ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+export async function setStoredTenantInfo(
+  tenant: StoredTenantInfo | null,
+): Promise<void> {
+  await setKey(TENANT_INFO_KEY, tenant ? JSON.stringify(tenant) : null);
+}
+
+export async function getStoredSyncCursor(): Promise<number> {
+  const raw = await getKey(SYNC_CURSOR_KEY);
+  const parsed = Number(raw ?? "0");
+  return Number.isFinite(parsed) && parsed > 0 ? Math.trunc(parsed) : 0;
+}
+
+export async function setStoredSyncCursor(cursor: number): Promise<void> {
+  await setKey(SYNC_CURSOR_KEY, String(Math.max(0, Math.trunc(cursor || 0))));
+}
+

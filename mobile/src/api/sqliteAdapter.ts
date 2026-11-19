@@ -63,6 +63,7 @@ import type {
   AuditLogsQueryParams,
   AuthLoginPayload,
   AuthLoginResponse,
+  AuthLoginResult,
   AuthSessionResponse,
   BroadcastMessageItem,
   BroadcastRecipient,
@@ -115,7 +116,7 @@ import type {
 } from "@/types/domain";
 
 export interface AuthenticatedApiClient extends InventoryProApiClient {
-  login(payload: AuthLoginPayload): Promise<AuthLoginResponse>;
+  login(payload: AuthLoginPayload): Promise<AuthLoginResult>;
   getMe(): Promise<AuthSessionResponse>;
   logout(): Promise<void>;
 }

@@ -18,9 +18,12 @@ import { getSettings } from "./settings";
 import { sendBulkEmail } from "@/lib/email";
 import { sendBulkSms } from "@/lib/sms";
 import { getApiSettings } from "./api-settings";
+import { DEFAULT_TENANT_ID } from "@/lib/tenant";
+import { runWithAuthContext, type RequestSessionContext } from "@/lib/request-context";
+import { emitSyncEvent } from "@/lib/sync-bus";
 
 /**
- * Fetch all eligible recipients for a given group (Suppliers, Customers, or Employees)
+ * Fetch all eligible recipients for a given group within the current workspace
  */
 export async function getRecipientsForGroup(
   group: RecipientGroup,
@@ -28,11 +31,13 @@ export async function getRecipientsForGroup(
   try {
     const currentUser = await getCurrentUser();
     if (!currentUser?.id) throw new Error("Unauthorized");
+    const tenantId = currentUser.tenant_id || DEFAULT_TENANT_ID;
 
     let recipients: BroadcastRecipient[] = [];
 
     if (group === "suppliers") {
       const rows = await db("v_supplier_info")
+        .where("tenant_id", tenantId)
         .select(
           "supplier_id",
           "supplier_name",
@@ -60,6 +65,7 @@ export async function getRecipientsForGroup(
       });
     } else if (group === "customers") {
       const rows = await db("v_customer_info")
+        .where("tenant_id", tenantId)
         .select("customer_id", "customer_name", "email", "phonenumber")
         .orderBy("customer_name", "asc");
 
@@ -67,10 +73,6 @@ export async function getRecipientsForGroup(
         const email = r.email ? String(r.email).trim() : null;
         const phone = r.phonenumber ? String(r.phonenumber).trim() : null;
         return {
-          // Bug: was reading `r.cstomer_id` (typo) instead of `r.customer_id`,
-          // so every customer recipient got id = "undefined". If recipientIds
-          // filtering was ever used for customers, it silently matched
-          // nothing.
           id: String(r.customer_id),
           name: r.customer_name || "Unnamed Customer",
           email,
@@ -82,6 +84,7 @@ export async function getRecipientsForGroup(
       });
     } else if (group === "employees") {
       const rows = await db("users")
+        .where("tenant_id", tenantId)
         .select(
           "id",
           "username",
@@ -124,7 +127,7 @@ export async function getRecipientsForGroup(
 }
 
 /**
- * Fetch broadcast message history
+ * Fetch broadcast message history for the current workspace
  */
 export async function getBroadcastHistory(): Promise<
   Result<BroadcastMessage[]>
@@ -132,8 +135,10 @@ export async function getBroadcastHistory(): Promise<
   try {
     const currentUser = await getCurrentUser();
     if (!currentUser?.id) throw new Error("Unauthorized");
+    const tenantId = currentUser.tenant_id || DEFAULT_TENANT_ID;
 
     const history = await db("broadcast_messages")
+      .where("tenant_id", tenantId)
       .select("*")
       .orderBy("created_at", "desc");
 
@@ -144,7 +149,6 @@ export async function getBroadcastHistory(): Promise<
   }
 }
 
-
 export async function sendBroadcastMessage(
   input: SendBroadcastInput,
 ): Promise<Result<{ id: string; recipientCount: number; status: "queued" }>> {
@@ -153,6 +157,7 @@ export async function sendBroadcastMessage(
     if (!currentUser?.id) {
       return Result.fail("Unauthorized. Please log in.");
     }
+    const tenantId = currentUser.tenant_id || DEFAULT_TENANT_ID;
 
     const isAdmin = await checkRole("admin");
     if (!isAdmin) {
@@ -240,17 +245,28 @@ export async function sendBroadcastMessage(
       );
     }
 
-    // Everything above is validation the client needs synchronously.
-    // Everything below is the part that gets deferred.
-
     const broadcastId = generateId();
     const senderName =
       currentUser.firstname && currentUser.lastname
         ? `${currentUser.firstname} ${currentUser.lastname}`
         : currentUser.username || "System Admin";
 
+    const sessionSnapshot: RequestSessionContext = {
+      id: currentUser.id,
+      tenant_id: tenantId,
+      tenant_name: currentUser.tenant_name,
+      tenant_slug: currentUser.tenant_slug,
+      username: currentUser.username,
+      email: currentUser.email,
+      firstname: currentUser.firstname,
+      lastname: currentUser.lastname,
+      role: currentUser.role as "admin" | "member",
+      phonenumber: currentUser.phonenumber,
+    };
+
     await db("broadcast_messages").insert({
       id: broadcastId,
+      tenant_id: tenantId,
       sender_id: currentUser.id,
       sender_name: senderName,
       recipient_group: recipientGroup,
@@ -262,104 +278,147 @@ export async function sendBroadcastMessage(
       created_at: new Date(),
     });
 
-    // Runs after the response below has already been sent to the client.
-    after(async () => {
-      let deliveredCount = 0;
-      let failedCount = 0;
-      const failures: { id: string; error: string }[] = [];
+    await emitSyncEvent({
+      tenantId,
+      entityType: "message",
+      entityId: broadcastId,
+      action: "upsert",
+      payload: { status: "queued" },
+      actorUserId: currentUser.id,
+    });
 
-      try {
-        if (channel === "in_app") {
-          const notificationRows = eligibleRecipients.map((employee) => ({
-            id: generateId(),
-            user_id: employee.id,
-            type: "employee",
-            title: subject || "New Admin Broadcast",
-            message: content,
-            is_read: false,
-            reference_type: "broadcast",
-            reference_id: broadcastId,
-            created_at: new Date(),
-          }));
-          await db("notifications").insert(notificationRows);
-          deliveredCount = eligibleRecipients.length;
-        } else if (channel === "email") {
-          const emailById = new Map(
-            eligibleRecipients.map((r) => [r.email as string, r.id]),
-          );
-          const emails = eligibleRecipients.map((r) => r.email as string);
-          const bulkRes = await sendBulkEmail(emails, subject as string, {
-            text: content,
-          });
-          for (const r of bulkRes.results) {
-            const id = emailById.get(r.to) ?? r.to;
-            if (r.success) deliveredCount++;
-            else {
-              failedCount++;
-              failures.push({ id, error: r.error || "Unknown email error" });
+    const dispatchWork = async () => {
+      await runWithAuthContext(sessionSnapshot, async () => {
+        let deliveredCount = 0;
+        let failedCount = 0;
+        const failures: { id: string; error: string }[] = [];
+
+        try {
+          if (channel === "in_app") {
+            const notificationRows = eligibleRecipients.map((employee) => ({
+              id: generateId(),
+              tenant_id: tenantId,
+              user_id: employee.id,
+              type: "employee",
+              title: subject || "New Admin Broadcast",
+              message: content,
+              is_read: false,
+              reference_type: "broadcast",
+              reference_id: broadcastId,
+              created_at: new Date(),
+            }));
+            await db("notifications").insert(notificationRows);
+            deliveredCount = eligibleRecipients.length;
+            await emitSyncEvent({
+              tenantId,
+              entityType: "notification",
+              entityId: broadcastId,
+              action: "refresh",
+              actorUserId: sessionSnapshot.id,
+            });
+          } else if (channel === "email") {
+            const emailById = new Map(
+              eligibleRecipients.map((r) => [r.email as string, r.id]),
+            );
+            const emails = eligibleRecipients.map((r) => r.email as string);
+            const bulkRes = await sendBulkEmail(emails, subject as string, {
+              text: content,
+            });
+            for (const r of bulkRes.results) {
+              const id = emailById.get(r.to) ?? r.to;
+              if (r.success) deliveredCount++;
+              else {
+                failedCount++;
+                failures.push({ id, error: r.error || "Unknown email error" });
+              }
+            }
+          } else if (channel === "sms") {
+            const phones = eligibleRecipients
+              .map((r) => r.phonenumber)
+              .filter((p): p is string => Boolean(p));
+            const smsRes = await sendBulkSms(
+              phones,
+              content,
+              apiSettings.data?.arkessel_sender_id || "InvPro",
+            );
+            if (smsRes.success) {
+              deliveredCount = eligibleRecipients.length;
+            } else {
+              failedCount = eligibleRecipients.length;
+              failures.push({
+                id: "batch",
+                error: smsRes.error || "Unknown SMS provider error",
+              });
             }
           }
-        } else if (channel === "sms") {
-          const phones = eligibleRecipients
-            .map((r) => r.phonenumber)
-            .filter((p): p is string => Boolean(p));
-          const smsRes = await sendBulkSms(
-            phones,
-            content,
-            apiSettings.data?.arkessel_sender_id || "InvPro",
+
+          const status =
+            deliveredCount === 0
+              ? "failed"
+              : failedCount > 0
+                ? "partial"
+                : "sent";
+
+          await db("broadcast_messages")
+            .where({ id: broadcastId, tenant_id: tenantId })
+            .update({ status, updated_at: new Date() });
+
+          await createActivityLog({
+            activity_type: "broadcast_sent",
+            title: `Sent ${channel.toUpperCase()} broadcast to ${recipientGroup}`,
+            description: `Subject: "${subject || "N/A"}" • Delivered to ${deliveredCount}/${eligibleRecipients.length} recipients`,
+            metadata: {
+              broadcast_id: broadcastId,
+              channel,
+              recipient_group: recipientGroup,
+              deliveredCount,
+              failedCount,
+              failures: failures.slice(0, 20),
+            },
+          }).catch(() => {});
+
+          await emitSyncEvent({
+            tenantId,
+            entityType: "message",
+            entityId: broadcastId,
+            action: "upsert",
+            payload: { status },
+            actorUserId: sessionSnapshot.id,
+          });
+        } catch (err: any) {
+          console.error(
+            `Broadcast ${broadcastId} dispatch failed in after():`,
+            err,
           );
-          if (smsRes.success) {
-            deliveredCount = eligibleRecipients.length;
-          } else {
-            failedCount = eligibleRecipients.length;
-            failures.push({
-              id: "batch",
-              error: smsRes.error || "Unknown SMS provider error",
-            });
-          }
+          await db("broadcast_messages")
+            .where({ id: broadcastId, tenant_id: tenantId })
+            .update({ status: "failed", updated_at: new Date() })
+            .catch(() => {});
+          await emitSyncEvent({
+            tenantId,
+            entityType: "message",
+            entityId: broadcastId,
+            action: "upsert",
+            payload: { status: "failed" },
+            actorUserId: sessionSnapshot.id,
+          });
         }
 
-        const status =
-          deliveredCount === 0
-            ? "failed"
-            : failedCount > 0
-              ? "partial"
-              : "sent";
+        try {
+          revalidatePath("/admin/messages");
+          revalidatePath("/admin/settings");
+        } catch {
+          // Ignore when invoked outside Next.js render context (e.g. mobile API route)
+        }
+      });
+    };
 
-        await db("broadcast_messages")
-          .where("id", broadcastId)
-          .update({ status, updated_at: new Date() });
-
-        await createActivityLog({
-          activity_type: "broadcast_sent",
-          title: `Sent ${channel.toUpperCase()} broadcast to ${recipientGroup}`,
-          description: `Subject: "${subject || "N/A"}" • Delivered to ${deliveredCount}/${eligibleRecipients.length} recipients`,
-          metadata: {
-            broadcast_id: broadcastId,
-            channel,
-            recipient_group: recipientGroup,
-            deliveredCount,
-            failedCount,
-            failures: failures.slice(0, 20),
-          },
-        });
-      } catch (err: any) {
-        console.error(
-          `Broadcast ${broadcastId} dispatch failed in after():`,
-          err,
-        );
-        await db("broadcast_messages")
-          .where("id", broadcastId)
-          .update({ status: "failed", updated_at: new Date() })
-          .catch(() => {});
-      }
-
-      // revalidatePath here, not before returning — the page shouldn't
-      // revalidate to a "queued" row and then need a second refresh once
-      // dispatch actually finishes.
-      revalidatePath("/admin/messages");
-      revalidatePath("/admin/settings");
-    });
+    try {
+      after(dispatchWork);
+    } catch {
+      // Fallback for non-Next.js request execution (e.g. direct API route invocation without after support)
+      void dispatchWork();
+    }
 
     return Result.ok({
       id: broadcastId,

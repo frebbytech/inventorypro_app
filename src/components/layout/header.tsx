@@ -20,9 +20,14 @@ import Link from "next/link";
 import { GlobalSearch } from "../custom/global-search";
 import PowerButton from "./power";
 import { FullscreenToggler } from "./fullscreen-toggler";
+import { getAuthSession } from "@/lib/auth";
+import { LiveSyncBadge } from "./LiveSyncBadge";
 
 export default async function Header() {
-  const isAdmin = await checkRole("admin");
+  const [isAdmin, session] = await Promise.all([
+    checkRole("admin"),
+    getAuthSession(),
+  ]);
 
   const activeNavItems = isAdmin ? navItems : userNavItems;
 
@@ -58,8 +63,12 @@ export default async function Header() {
           <GlobalSearch canQuickAdd={canQuickAdd} />
         </div>
 
-        {/* Right Side: Quick Add Actions conditional logic */}
+        {/* Right Side: Live sync status + Quick Add Actions */}
         <div className="flex items-center justify-end gap-2 col-start-3">
+          <LiveSyncBadge
+            tenantSlug={session?.tenant_slug}
+            tenantName={session?.tenant_name}
+          />
           {canQuickAdd && (
             <DropdownMenu>
               <DropdownMenuTrigger asChild>

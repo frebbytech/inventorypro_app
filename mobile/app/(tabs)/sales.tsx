@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   FlatList,
   Pressable,
@@ -61,7 +61,7 @@ const RANGE_FILTERS: { value: SalesDateRange; label: string }[] = [
 export default function SalesScreen() {
   const { theme } = useTheme();
   const api = useApiClient();
-  const { store } = useAuth();
+  const { store, syncVersion } = useAuth();
   const router = useRouter();
   const { colors, spacing, radii, typography, fontFamilies } = theme;
   const currency = store?.currency || "GHS";
@@ -102,11 +102,20 @@ export default function SalesScreen() {
     return () => clearTimeout(timer);
   }, [loadSales]);
 
+  const loadSalesRef = useRef(loadSales);
+  loadSalesRef.current = loadSales;
+
   useFocusEffect(
     useCallback(() => {
       void loadSales(sales.length > 0);
     }, [loadSales]),
   );
+
+  useEffect(() => {
+    if (syncVersion > 0) {
+      void loadSalesRef.current(true);
+    }
+  }, [syncVersion]);
 
   const summaryStats = useMemo(() => {
     let completedTotal = 0;

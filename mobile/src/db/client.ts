@@ -269,6 +269,28 @@ function ensureTablesSync(sqlite: SQLite.SQLiteDatabase): void {
     );
 
     CREATE INDEX IF NOT EXISTS broadcast_messages_idx_created ON broadcast_messages(created_at);
+
+    CREATE TABLE IF NOT EXISTS sync_meta (
+      key TEXT PRIMARY KEY,
+      value TEXT NOT NULL,
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
+    CREATE TABLE IF NOT EXISTS sync_outbox (
+      id TEXT PRIMARY KEY,
+      client_mutation_id TEXT NOT NULL UNIQUE,
+      entity_type TEXT NOT NULL,
+      operation TEXT NOT NULL,
+      endpoint TEXT NOT NULL,
+      method TEXT NOT NULL DEFAULT 'POST',
+      payload_json TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'processing', 'conflict', 'failed')),
+      retry_count INTEGER NOT NULL DEFAULT 0,
+      last_error TEXT DEFAULT NULL,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
+    CREATE INDEX IF NOT EXISTS sync_outbox_idx_status_created ON sync_outbox(status, created_at);
   `);
 }
 

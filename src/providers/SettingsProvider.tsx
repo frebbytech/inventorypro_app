@@ -10,6 +10,7 @@ import React, {
   useState,
 } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { usePathname } from "next/navigation";
 import { useTheme } from "next-themes";
 import { getSettings } from "@/actions/settings";
 import { hexToHslChannels } from "@/utils/color";
@@ -185,6 +186,10 @@ interface SettingsProviderProps {
 }
 
 export function SettingsProvider({ children, userId }: SettingsProviderProps) {
+  const pathname = usePathname();
+  const isSuperAdminRoute = Boolean(pathname?.startsWith("/super-admin"));
+  const isAuthRoute = Boolean(pathname?.startsWith("/auth"));
+  const skipTenantSettings = isSuperAdminRoute || isAuthRoute;
   const { setTheme: setNextTheme, resolvedTheme, theme } = useTheme();
   const queryClient = useQueryClient();
 
@@ -206,6 +211,7 @@ export function SettingsProvider({ children, userId }: SettingsProviderProps) {
   const { data, isLoading, refetch } = useQuery({
     queryKey,
     queryFn: fetchSettings,
+    enabled: !skipTenantSettings,
     initialData: () => readCache(storageKey) ?? undefined,
     initialDataUpdatedAt: 0,
     staleTime: STALE_TIME,
@@ -319,8 +325,8 @@ export function SettingsProvider({ children, userId }: SettingsProviderProps) {
     ],
   );
 
-  if (!mounted) return null;
-  if (isLoading && !settings) return <SettingsLoader />;
+  if (!isSuperAdminRoute && !mounted) return null;
+  if (!skipTenantSettings && isLoading && !settings) return <SettingsLoader />;
 
   return (
     <SettingsContext.Provider value={value}>

@@ -53,7 +53,7 @@ export function GlobalSearch({ canQuickAdd }: GlobalSearchProps) {
       // Case-insensitive so Caps Lock or Shift+K still opens it, and
       // `repeat` stops a held key from toggling the dialog rapidly.
       if (
-        e.key.toLowerCase() === "k" &&
+        e.key?.toLowerCase() === "k" &&
         (e.metaKey || e.ctrlKey) &&
         !e.repeat
       ) {

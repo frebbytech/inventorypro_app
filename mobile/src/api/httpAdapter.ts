@@ -7,6 +7,7 @@ import type {
   AuditLogsQueryParams,
   AuthLoginPayload,
   AuthLoginResponse,
+  AuthLoginResult,
   AuthSessionResponse,
   BroadcastMessageItem,
   BroadcastRecipient,
@@ -47,6 +48,10 @@ import type {
   SupplierDetailResponse,
   SupplierItem,
   SupplierTransactionSummary,
+  SyncBootstrapResponse,
+  SyncDeltaResponse,
+  SyncMergePayload,
+  SyncMergeResponse,
   TodayDashboardData,
   UpdateBusinessSettingsInput,
   UpdateCategoryInput,
@@ -95,39 +100,58 @@ export class ApiError extends Error {
 
 export interface HttpApiClientConfig {
   baseUrl?: string;
+  getBaseUrl?: () => string;
   getAccessToken: () => string | null;
   onUnauthorized?: () => void;
 }
 
 /**
- * Optional external HTTP client for connecting to a remote InventoryPro backend
- * when `EXPO_PUBLIC_API_BASE_URL` is configured.
+ * HTTP client for connecting to the InventoryPro multi-tenant Next.js backend.
  */
 export class HttpApiClient implements AuthenticatedApiClient {
-  readonly adapterName = "Remote HTTP API";
+  readonly adapterName = "Synced Cloud API";
   readonly isDemo = false;
 
-  private readonly baseUrl: string;
+  constructor(private readonly config: HttpApiClientConfig) {}
 
-  constructor(private readonly config: HttpApiClientConfig) {
-    this.baseUrl = (config.baseUrl ?? resolveApiBaseUrl()).replace(/\/+$/, "");
+  getResolvedBaseUrl(): string {
+    const raw =
+      this.config.getBaseUrl?.() ?? this.config.baseUrl ?? resolveApiBaseUrl();
+    return raw.trim().replace(/\/+$/, "");
+  }
+
+  async rawRequest<T>(
+    path: string,
+    init?: RequestInit & {
+      allowNotFound?: boolean;
+      skipAuthCheck?: boolean;
+      clientMutationId?: string;
+    },
+  ): Promise<T> {
+    return this.request<T>(path, init);
   }
 
   private async request<T>(
     path: string,
-    init?: RequestInit & { allowNotFound?: boolean; skipAuthCheck?: boolean },
+    init?: RequestInit & {
+      allowNotFound?: boolean;
+      skipAuthCheck?: boolean;
+      clientMutationId?: string;
+    },
   ): Promise<T> {
     const token = this.config.getAccessToken();
-    const { allowNotFound, skipAuthCheck, ...fetchInit } = init ?? {};
+    const { allowNotFound, skipAuthCheck, clientMutationId, ...fetchInit } =
+      init ?? {};
 
     const headers: Record<string, string> = {
       Accept: "application/json",
       ...(fetchInit.body ? { "Content-Type": "application/json" } : {}),
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      ...(clientMutationId ? { "X-Client-Mutation-Id": clientMutationId } : {}),
       ...((fetchInit.headers as Record<string, string> | undefined) ?? {}),
     };
 
-    const res = await fetch(`${this.baseUrl}${path}`, {
+    const res = await fetch(`${this.getResolvedBaseUrl()}${path}`, {
       ...fetchInit,
       headers,
     });
@@ -161,10 +185,36 @@ export class HttpApiClient implements AuthenticatedApiClient {
     return payload as T;
   }
 
-  login(payload: AuthLoginPayload): Promise<AuthLoginResponse> {
-    return this.request<AuthLoginResponse>("/api/mobile/v1/auth/login", {
+  login(payload: AuthLoginPayload): Promise<AuthLoginResult> {
+    return this.request<AuthLoginResult>("/api/mobile/v1/auth/login", {
       method: "POST",
       body: JSON.stringify(payload),
+      skipAuthCheck: true,
+    });
+  }
+
+  verifyTwoFactor(payload: {
+    challengeToken: string;
+    code: string;
+    deviceName?: string;
+    deviceType?: string;
+    operatingSystem?: string;
+  }): Promise<AuthLoginResponse> {
+    return this.request<AuthLoginResponse>("/api/mobile/v1/auth/2fa/verify", {
+      method: "POST",
+      body: JSON.stringify(payload),
+      skipAuthCheck: true,
+    });
+  }
+
+  resendTwoFactor(challengeToken: string): Promise<{
+    challengeToken: string;
+    method: string;
+    maskedTarget: string;
+  }> {
+    return this.request("/api/mobile/v1/auth/2fa/resend", {
+      method: "POST",
+      body: JSON.stringify({ challengeToken }),
       skipAuthCheck: true,
     });
   }
@@ -177,6 +227,27 @@ export class HttpApiClient implements AuthenticatedApiClient {
     await this.request<{ ok: boolean }>("/api/mobile/v1/auth/logout", {
       method: "POST",
       skipAuthCheck: true,
+    });
+  }
+
+  syncBootstrap(): Promise<SyncBootstrapResponse> {
+    return this.request<SyncBootstrapResponse>("/api/mobile/v1/sync/bootstrap");
+  }
+
+  syncDelta(cursor: number): Promise<SyncDeltaResponse> {
+    return this.request<SyncDeltaResponse>(
+      `/api/mobile/v1/sync/delta?cursor=${Math.max(0, Math.trunc(cursor || 0))}`,
+    );
+  }
+
+  syncMerge(
+    payload: SyncMergePayload,
+    clientMutationId?: string,
+  ): Promise<SyncMergeResponse> {
+    return this.request<SyncMergeResponse>("/api/mobile/v1/sync/merge", {
+      method: "POST",
+      body: JSON.stringify(payload),
+      clientMutationId,
     });
   }
 
@@ -193,22 +264,28 @@ export class HttpApiClient implements AuthenticatedApiClient {
     return this.request<CategoryItem[]>(`/api/mobile/v1/categories/manage${suffix}`);
   }
 
-  createCategory(input: CreateCategoryInput): Promise<CategoryItem> {
+  createCategory(
+    input: CreateCategoryInput,
+    clientMutationId?: string,
+  ): Promise<CategoryItem> {
     return this.request<CategoryItem>("/api/mobile/v1/categories", {
       method: "POST",
       body: JSON.stringify(input),
+      clientMutationId,
     });
   }
 
   updateCategory(
     categoryId: string,
     input: UpdateCategoryInput,
+    clientMutationId?: string,
   ): Promise<CategoryItem> {
     return this.request<CategoryItem>(
       `/api/mobile/v1/categories/${encodeURIComponent(categoryId)}`,
       {
         method: "PATCH",
         body: JSON.stringify(input),
+        clientMutationId,
       },
     );
   }
@@ -234,22 +311,28 @@ export class HttpApiClient implements AuthenticatedApiClient {
     );
   }
 
-  createProduct(input: CreateProductInput): Promise<ProductItem> {
+  createProduct(
+    input: CreateProductInput,
+    clientMutationId?: string,
+  ): Promise<ProductItem> {
     return this.request<ProductItem>("/api/mobile/v1/products", {
       method: "POST",
       body: JSON.stringify(input),
+      clientMutationId,
     });
   }
 
   updateProduct(
     productId: string,
     input: UpdateProductInput,
+    clientMutationId?: string,
   ): Promise<ProductItem> {
     return this.request<ProductItem>(
       `/api/mobile/v1/products/${encodeURIComponent(productId)}`,
       {
         method: "PATCH",
         body: JSON.stringify(input),
+        clientMutationId,
       },
     );
   }
@@ -266,12 +349,14 @@ export class HttpApiClient implements AuthenticatedApiClient {
   adjustProductStock(
     productId: string,
     input: AdjustStockInput,
+    clientMutationId?: string,
   ): Promise<ProductItem> {
     return this.request<ProductItem>(
       `/api/mobile/v1/products/${encodeURIComponent(productId)}/stock`,
       {
         method: "PATCH",
         body: JSON.stringify(input),
+        clientMutationId,
       },
     );
   }
@@ -294,10 +379,14 @@ export class HttpApiClient implements AuthenticatedApiClient {
     );
   }
 
-  recordRestock(input: CreateRestockInput): Promise<RestockLogItem> {
+  recordRestock(
+    input: CreateRestockInput,
+    clientMutationId?: string,
+  ): Promise<RestockLogItem> {
     return this.request<RestockLogItem>("/api/mobile/v1/inventory/restocks", {
       method: "POST",
       body: JSON.stringify(input),
+      clientMutationId,
     });
   }
 
@@ -324,22 +413,28 @@ export class HttpApiClient implements AuthenticatedApiClient {
     );
   }
 
-  createSale(input: CreateSaleInput): Promise<SaleReceiptDetail> {
+  createSale(
+    input: CreateSaleInput,
+    clientMutationId?: string,
+  ): Promise<SaleReceiptDetail> {
     return this.request<SaleReceiptDetail>("/api/mobile/v1/sales", {
       method: "POST",
       body: JSON.stringify(input),
+      clientMutationId,
     });
   }
 
   refundSale(
     saleId: string,
     input?: RefundSaleInput,
+    clientMutationId?: string,
   ): Promise<SaleReceiptDetail> {
     return this.request<SaleReceiptDetail>(
       `/api/mobile/v1/sales/${encodeURIComponent(saleId)}/refund`,
       {
         method: "POST",
         body: JSON.stringify(input ?? {}),
+        clientMutationId,
       },
     );
   }
@@ -362,22 +457,28 @@ export class HttpApiClient implements AuthenticatedApiClient {
     );
   }
 
-  createCustomer(input: CreateCustomerInput): Promise<CustomerItem> {
+  createCustomer(
+    input: CreateCustomerInput,
+    clientMutationId?: string,
+  ): Promise<CustomerItem> {
     return this.request<CustomerItem>("/api/mobile/v1/customers", {
       method: "POST",
       body: JSON.stringify(input),
+      clientMutationId,
     });
   }
 
   updateCustomer(
     customerId: string,
     input: UpdateCustomerInput,
+    clientMutationId?: string,
   ): Promise<CustomerItem> {
     return this.request<CustomerItem>(
       `/api/mobile/v1/customers/${encodeURIComponent(customerId)}`,
       {
         method: "PATCH",
         body: JSON.stringify(input),
+        clientMutationId,
       },
     );
   }
@@ -394,22 +495,28 @@ export class HttpApiClient implements AuthenticatedApiClient {
     );
   }
 
-  createSupplier(input: CreateSupplierInput): Promise<SupplierItem> {
+  createSupplier(
+    input: CreateSupplierInput,
+    clientMutationId?: string,
+  ): Promise<SupplierItem> {
     return this.request<SupplierItem>("/api/mobile/v1/suppliers", {
       method: "POST",
       body: JSON.stringify(input),
+      clientMutationId,
     });
   }
 
   updateSupplier(
     supplierId: string,
     input: UpdateSupplierInput,
+    clientMutationId?: string,
   ): Promise<SupplierItem> {
     return this.request<SupplierItem>(
       `/api/mobile/v1/suppliers/${encodeURIComponent(supplierId)}`,
       {
         method: "PATCH",
         body: JSON.stringify(input),
+        clientMutationId,
       },
     );
   }

@@ -2,34 +2,23 @@
 "use server";
 
 import db from "@/db/knex";
-import {
-  Customer,
-  CustomerInfoView,
-  InsertCustomer,
-  Result,
-} from "@/types/globals";
+import { CustomerInfoView, InsertCustomer, Result } from "@/types/globals";
 import { revalidatePath } from "next/cache";
 import { createAuditLog } from "./audit-logs";
 import { createActivityLog } from "./activity-logs";
 import { generateId } from "@/utils/generator";
 import { getCurrentUser } from "./_actions";
 import { checkRole } from "@/utils/roles";
+import { DEFAULT_TENANT_ID } from "@/lib/tenant";
+import { emitSyncEvent } from "@/lib/sync-bus";
 
-// ──────────────────────────────────────────────────────────────
-// Read functions
-// ──────────────────────────────────────────────────────────────
-
-/**
- * Get all customers – returns the view with user details.
- * (Admin sees all; regular users see only their own customers.)
- */
 export async function getCustomers(): Promise<Result<CustomerInfoView[]>> {
   try {
     const currentUser = await getCurrentUser();
-    if (!currentUser?.id) throw new Error("Unauthorized");
+    if (!currentUser?.id) return Result.fail("Unauthorized");
+    const tenantId = currentUser.tenant_id || DEFAULT_TENANT_ID;
 
-
-    const query = db("v_customer_info")
+    const customers = await db("v_customer_info")
       .select(
         "customer_id as id",
         "customer_name as name",
@@ -40,32 +29,24 @@ export async function getCustomers(): Promise<Result<CustomerInfoView[]>> {
         "created_at",
         "updated_at",
       )
+      .where("tenant_id", tenantId)
       .orderBy("created_at", "desc");
 
-    // Uncomment if you want to restrict to own customers:
-    // if (!checkRole("admin")) {
-    //   query.where("user_id", userId);
-    // }
-
-    const customers = await query;
     return Result.ok(customers);
   } catch (error: any) {
     console.error("Failed to fetch customers:", error);
-    return Result.fail("Failed to fetch customers:");
-    // return {
-    //   error: true,
-    //   message: error?.message || "Failed to fetch customers",
-    // };
+    return Result.fail(error?.message || "Failed to fetch customers");
   }
 }
 
-/**
- * Get a single customer by ID.
- */
 export async function getCustomer(
   id: string,
 ): Promise<Result<CustomerInfoView>> {
   try {
+    const currentUser = await getCurrentUser();
+    if (!currentUser?.id) return Result.fail("Unauthorized");
+    const tenantId = currentUser.tenant_id || DEFAULT_TENANT_ID;
+
     const customer = await db("v_customer_info")
       .select(
         "customer_id as id",
@@ -77,7 +58,7 @@ export async function getCustomer(
         "created_at",
         "updated_at",
       )
-      .where("customer_id", id)
+      .where({ customer_id: id, tenant_id: tenantId })
       .first();
 
     if (!customer) {
@@ -91,36 +72,28 @@ export async function getCustomer(
   }
 }
 
-// ──────────────────────────────────────────────────────────────
-// Create / Update / Delete
-// ──────────────────────────────────────────────────────────────
-
-/**
- * Create a new customer – sets user_id from the authenticated user.
- */
 export async function createCustomer(
   customerData: InsertCustomer,
 ): Promise<Result<{ id: string }>> {
   try {
     const currentUser = await getCurrentUser();
     if (!currentUser?.id) return Result.fail("Unauthorized");
+    const tenantId = currentUser.tenant_id || DEFAULT_TENANT_ID;
 
-    // Validate required fields
-    if (!customerData.name) {
+    if (!customerData.name?.trim()) {
       return Result.fail("Customer name is required");
     }
 
-    // Insert the customer with the current user's ID
     const newId = generateId();
     await db("customers").insert({
       id: newId,
-      user_id: currentUser?.id,
-      name: customerData.name,
-      address: customerData.address || null,
-      phonenumber: customerData.phonenumber || null,
+      tenant_id: tenantId,
+      user_id: currentUser.id,
+      name: customerData.name.trim(),
+      address: customerData.address?.trim() || null,
+      phonenumber: customerData.phonenumber?.trim() || null,
     });
 
-    // Audit log
     await createAuditLog({
       entity_type: "customer",
       entity_id: newId,
@@ -132,7 +105,6 @@ export async function createCustomer(
       },
     });
 
-    // Activity log
     await createActivityLog({
       activity_type: "customer_created",
       title: `Customer ${customerData.name} created`,
@@ -141,20 +113,21 @@ export async function createCustomer(
     });
 
     revalidatePath("/admin/customer");
+    await emitSyncEvent({
+      tenantId,
+      entityType: "customer",
+      entityId: newId,
+      action: "upsert",
+      actorUserId: currentUser.id,
+    });
+
     return Result.ok({ id: newId });
   } catch (error: any) {
     console.error("Failed to create customer:", error);
-    return Result.fail("Failed to create customer:");
-    // return {
-    //   error: true,
-    //   message: error?.message || "Failed to create customer",
-    // };
+    return Result.fail(error?.message || "Failed to create customer");
   }
 }
 
-/**
- * Update an existing customer – must have an `id` in the update data.
- */
 export async function updateCustomer(
   customerData: Partial<InsertCustomer> & { id: string },
 ): Promise<Result<{ id: string }>> {
@@ -162,21 +135,18 @@ export async function updateCustomer(
     const currentUser = await getCurrentUser();
     const userId = currentUser?.id;
     if (!userId) return Result.fail("Unauthorized");
+    const tenantId = currentUser.tenant_id || DEFAULT_TENANT_ID;
 
-    // Fetch current customer to compare and for audit
-    const current = await db("customers").where("id", customerData.id).first();
+    const current = await db("customers")
+      .where({ id: customerData.id, tenant_id: tenantId })
+      .first();
     if (!current) {
       return Result.fail("Customer not found");
     }
 
-    // Optional: check ownership (only admin or the owning user can update)
-    // if (!checkRole("admin") && current.user_id !== userId) {
-    //   return Result.sage: "Not authorized to update this customer");
-    // }
-
-    // Build update object
     const updateFields: any = {};
-    if (customerData.name !== undefined) updateFields.name = customerData.name;
+    if (customerData.name !== undefined)
+      updateFields.name = customerData.name.trim();
     if (customerData.address !== undefined)
       updateFields.address = customerData.address;
     if (customerData.phonenumber !== undefined)
@@ -186,15 +156,16 @@ export async function updateCustomer(
       return Result.fail("No fields to update");
     }
 
+    updateFields.updated_at = new Date().toISOString();
+
     const updatedCount = await db("customers")
-      .where("id", customerData.id)
+      .where({ id: customerData.id, tenant_id: tenantId })
       .update(updateFields);
 
     if (updatedCount === 0) {
       return Result.fail("Customer not found or no changes made");
     }
 
-    // Audit log – include old and new values
     await createAuditLog({
       entity_type: "customer",
       entity_id: customerData.id,
@@ -211,7 +182,6 @@ export async function updateCustomer(
       },
     });
 
-    // Activity log
     await createActivityLog({
       activity_type: "customer_updated",
       title: `Customer ${current.name} updated`,
@@ -221,47 +191,49 @@ export async function updateCustomer(
 
     revalidatePath(`/admin/customer/${customerData.id}`);
     revalidatePath("/admin/customer");
+    await emitSyncEvent({
+      tenantId,
+      entityType: "customer",
+      entityId: customerData.id,
+      action: "upsert",
+      actorUserId: userId,
+    });
+
     return Result.ok({ id: customerData.id });
   } catch (error: any) {
     console.error("Failed to update customer:", error);
     return Result.fail(error?.message || "Failed to update customer");
-    // return {
-    //   error: true,
-    //   message: error?.message || "Failed to update customer",
-    // };
   }
 }
 
-/**
- * Delete a customer by ID.
- */
 export async function removeCustomer(
   id: string,
 ): Promise<Result<{ id: string }>> {
-  // Optional: check ownership
   const isAdmin = await checkRole("admin");
-
   if (!isAdmin) {
     return Result.fail("Not authorized to delete this customer");
   }
 
-  const currentUser = await getCurrentUser();
-  const userId = currentUser?.id;
   try {
-    if (!userId) throw new Error("Unauthorized");
+    const currentUser = await getCurrentUser();
+    const userId = currentUser?.id;
+    if (!userId) return Result.fail("Unauthorized");
+    const tenantId = currentUser.tenant_id || DEFAULT_TENANT_ID;
 
-    // Fetch customer for audit and ownership check
-    const customer = await db("customers").where("id", id).first();
+    const customer = await db("customers")
+      .where({ id, tenant_id: tenantId })
+      .first();
     if (!customer) {
       return Result.fail("Customer not found");
     }
 
-    const deletedCount = await db("customers").where("id", id).del();
+    const deletedCount = await db("customers")
+      .where({ id, tenant_id: tenantId })
+      .del();
     if (deletedCount === 0) {
       return Result.fail("Customer not found");
     }
 
-    // Audit log
     await createAuditLog({
       entity_type: "customer",
       entity_id: id,
@@ -274,7 +246,6 @@ export async function removeCustomer(
       },
     });
 
-    // Activity log
     await createActivityLog({
       activity_type: "customer_deleted",
       title: `Customer ${customer.name} deleted`,
@@ -283,43 +254,47 @@ export async function removeCustomer(
     });
 
     revalidatePath("/admin/customer");
+    await emitSyncEvent({
+      tenantId,
+      entityType: "customer",
+      entityId: id,
+      action: "delete",
+      actorUserId: userId,
+    });
+
     return Result.ok({ id });
   } catch (error: any) {
     console.error("Failed to delete customer:", error);
-    return Result.fail("Failed to delete customer:");
-    // return {
-    //   error: true,
-    //   message: error?.message || "Failed to delete customer",
-    // };
+    return Result.fail(error?.message || "Failed to delete customer");
   }
 }
-
-// ──────────────────────────────────────────────────────────────
-// Bulk delete (optional)
-// ──────────────────────────────────────────────────────────────
 
 export async function removeCustomers(
   ids: string[],
 ): Promise<Result<{ count: string | number }>> {
+  const isAdmin = await checkRole("admin");
+  if (!isAdmin) {
+    return Result.fail("Not authorized");
+  }
+
   try {
     const currentUser = await getCurrentUser();
     const userId = currentUser?.id;
-    if (!userId) throw new Error("Unauthorized");
+    if (!userId) return Result.fail("Unauthorized");
+    const tenantId = currentUser.tenant_id || DEFAULT_TENANT_ID;
 
-    // Optional: admin only
-    // if (!checkRole("admin")) {
-    //   return Result.sage: "Not authorized");
-    // }
-
-    // Fetch all to log
-    const customers = await db("customers").whereIn("id", ids);
+    const customers = await db("customers")
+      .where("tenant_id", tenantId)
+      .whereIn("id", ids);
     if (customers.length === 0) {
       return Result.fail("No customers found");
     }
 
-    const deleted = await db("customers").whereIn("id", ids).del();
+    const deleted = await db("customers")
+      .where("tenant_id", tenantId)
+      .whereIn("id", ids)
+      .del();
 
-    // Audit log – one entry summarising the bulk delete
     await createAuditLog({
       entity_type: "customers",
       entity_id: ids.join(","),
@@ -327,7 +302,6 @@ export async function removeCustomers(
       old_values: { ids },
     });
 
-    // Activity log – one entry
     await createActivityLog({
       activity_type: "customers_deleted_bulk",
       title: `Bulk deletion of ${ids.length} customers`,
@@ -336,13 +310,17 @@ export async function removeCustomers(
     });
 
     revalidatePath("/admin/customer");
+    await emitSyncEvent({
+      tenantId,
+      entityType: "customer",
+      entityId: ids.join(","),
+      action: "refresh",
+      actorUserId: userId,
+    });
+
     return Result.ok({ count: deleted });
   } catch (error: any) {
     console.error("Failed to delete customers:", error);
-    return Result.fail("Failed to delete customers:");
-    // return {
-    //   error: true,
-    //   message: error?.message || "Failed to delete customers",
-    // };
+    return Result.fail(error?.message || "Failed to delete customers");
   }
 }

@@ -72,10 +72,10 @@ export default function EmployeePerformanceTable({
       const q = search.toLowerCase();
       result = result.filter(
         (r) =>
-          r.employeeName.toLowerCase().includes(q) ||
-          r.username.toLowerCase().includes(q) ||
-          r.email.toLowerCase().includes(q) ||
-          r.role.toLowerCase().includes(q)
+          (r.employeeName ?? "").toLowerCase().includes(q) ||
+          (r.username ?? "").toLowerCase().includes(q) ||
+          (r.email ?? "").toLowerCase().includes(q) ||
+          (r.role ?? "").toLowerCase().includes(q)
       );
     }
 

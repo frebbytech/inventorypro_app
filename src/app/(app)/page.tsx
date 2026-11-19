@@ -47,7 +47,7 @@ export default async function Page() {
   const user = await getCurrentUser();
 
   if (!user?.id) {
-    redirect("/auth/sign-in");
+    redirect("/auth/sign-in?session=expired");
   }
 
   const isAdmin = await checkRole("admin");

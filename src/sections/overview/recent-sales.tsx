@@ -23,7 +23,8 @@ const PAYMENT_LABELS: Record<string, string> = {
   cheque: "Cheque",
 };
 
-const capitalize = (text: string) => text.charAt(0).toUpperCase() + text.slice(1).toLowerCase();
+const capitalize = (text?: string | null) =>
+  text ? text.charAt(0).toUpperCase() + text.slice(1).toLowerCase() : "";
 
 /** Returns null for a missing or invalid date, instead of letting date-fns throw. */
 function formatSaleDate(value: Date | string) {

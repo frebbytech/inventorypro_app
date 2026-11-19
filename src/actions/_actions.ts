@@ -2,13 +2,20 @@
 "use server";
 
 import db from "@/db/knex";
-import { User, Result, DeleteDataProps } from "@/types/globals";
+import { User, Result, DeleteDataProps, TwoFactorMethod } from "@/types/globals";
 import { checkRole } from "@/utils/roles";
 import { revalidatePath } from "next/cache";
 import { createAuditLog } from "./audit-logs";
 import { createActivityLog } from "./activity-logs";
 import { generateId } from "@/utils/generator";
 import {
+  DEFAULT_TENANT_ID,
+  DEFAULT_TENANT_NAME,
+  DEFAULT_TENANT_SLUG,
+} from "@/lib/tenant";
+import { emitSyncEvent } from "@/lib/sync-bus";
+import {
+  buildDefaultSettingsRow,
   getAuthSession,
   hashPassword,
   verifyPassword,
@@ -17,7 +24,26 @@ import {
   getAuthSessionInfo,
   removeAuthCookie,
   ensureAuthSchema,
+  registerWorkspaceAccount,
 } from "@/lib/auth";
+import {
+  createTwoFactorChallengeToken,
+  ensureSecuritySchema,
+  issueAndSendTwoFactorCode,
+} from "@/lib/security";
+
+const REMOVABLE_TENANT_TABLES = new Set([
+  "products",
+  "product_categories",
+  "customers",
+  "suppliers",
+  "sales",
+  "inventory",
+  "supplier_transactions",
+  "notifications",
+  "audit_logs",
+  "activity_logs",
+]);
 
 // ──────────────────────────────────────────────────────────────
 // Helpers
@@ -25,70 +51,156 @@ import {
 
 export async function getUserFromDb(id: string) {
   await ensureAuthSchema();
-  return db("users")
+  return db("users as u")
+    .leftJoin("tenants as t", "u.tenant_id", "t.id")
     .select(
-      "id",
-      "firstname",
-      "lastname",
-      "username",
-      db.raw("firstname || ' ' || lastname as fullname"),
-      "phonenumber",
-      "email",
-      "role",
-      "failed_login_attempts",
-      "locked_until",
-      "created_at",
-      "updated_at",
-      "last_login_at as lastSignedIn",
+      "u.id",
+      "u.tenant_id",
+      "t.name as tenant_name",
+      "t.slug as tenant_slug",
+      "u.firstname",
+      "u.lastname",
+      "u.username",
+      db.raw("u.firstname || ' ' || u.lastname as fullname"),
+      "u.phonenumber",
+      "u.email",
+      "u.role",
+      "u.failed_login_attempts",
+      "u.locked_until",
+      "u.created_at",
+      "u.updated_at",
+      "u.last_login_at as lastSignedIn",
     )
-    .where("id", id)
+    .where("u.id", id)
     .first();
 }
 
 export async function getCurrentUser() {
   const session = await getAuthSession();
   if (!session?.id) {
-    // await removeAuthCookie();
     return null;
   }
 
-  return db("users")
+  const user = await db("users as u")
+    .leftJoin("tenants as t", "u.tenant_id", "t.id")
     .select(
-      "id",
-      "username",
-      "firstname",
-      "lastname",
-      db.raw("firstname || ' ' || lastname as fullname"),
-      "email",
-      "phonenumber",
-      "role",
-      "created_at",
-      "updated_at",
-      "last_login_at as lastSignedIn",
+      "u.id",
+      "u.tenant_id",
+      "t.name as tenant_name",
+      "t.slug as tenant_slug",
+      "u.username",
+      "u.firstname",
+      "u.lastname",
+      db.raw("u.firstname || ' ' || u.lastname as fullname"),
+      "u.email",
+      "u.phonenumber",
+      "u.role",
+      "u.created_at",
+      "u.updated_at",
+      "u.last_login_at as lastSignedIn",
     )
-    .where("id", session.id)
+    .where("u.id", session.id)
     .first();
+
+  if (!user) return null;
+
+  return {
+    ...user,
+    tenant_id: user.tenant_id || session.tenant_id || DEFAULT_TENANT_ID,
+    tenant_name: user.tenant_name || session.tenant_name || DEFAULT_TENANT_NAME,
+    tenant_slug: user.tenant_slug || session.tenant_slug || DEFAULT_TENANT_SLUG,
+  };
 }
 
 // ──────────────────────────────────────────────────────────────
-// Auth Actions (Login / Logout)
+// Auth Actions (Login / Register Workspace / Logout)
 // ──────────────────────────────────────────────────────────────
 
 export async function loginUser(formData: {
   usernameOrEmail: string;
   password: string;
-}): Promise<Result<{ id: string; role: string; username: string }>> {
+  workspaceSlug?: string;
+}): Promise<
+  Result<{
+    id: string;
+    role: string;
+    username: string;
+    tenant_id?: string;
+    tenant_slug?: string;
+    tenant_name?: string;
+    requiresTwoFactor?: boolean;
+    challengeToken?: string;
+    method?: TwoFactorMethod;
+    maskedTarget?: string;
+  }>
+> {
   await ensureAuthSchema();
+  await ensureSecuritySchema();
 
   try {
-    const user = await db("users")
-      .where("username", formData.usernameOrEmail)
-      .orWhere("email", formData.usernameOrEmail)
-      .first();
-    // console.log(user)
-    if (!user) {
+    const identifier = formData.usernameOrEmail.trim();
+    const workspaceSlug = formData.workspaceSlug?.trim().toLowerCase();
+
+    if (!identifier || !formData.password) {
+      return Result.fail("Username/email and password are required");
+    }
+
+    let query = db("users as u")
+      .leftJoin("tenants as t", "u.tenant_id", "t.id")
+      .select(
+        "u.*",
+        "t.name as tenant_name",
+        "t.slug as tenant_slug",
+        "t.status as tenant_status",
+      )
+      .where((qb) => {
+        qb.whereRaw("LOWER(u.username) = ?", [identifier.toLowerCase()]).orWhereRaw(
+          "LOWER(u.email) = ?",
+          [identifier.toLowerCase()],
+        );
+      });
+
+    if (workspaceSlug) {
+      query = query.andWhereRaw("LOWER(t.slug) = ?", [workspaceSlug]);
+    }
+
+    const candidates = await query;
+
+    if (!candidates || candidates.length === 0) {
       return Result.fail("Invalid username or password");
     }
+
+    let user = candidates[0];
+    if (candidates.length > 1) {
+      const matched: any[] = [];
+      for (const candidate of candidates) {
+        if (
+          candidate.password_hash &&
+          (await verifyPassword(formData.password, candidate.password_hash))
+        ) {
+          matched.push(candidate);
+        }
+      }
+      if (matched.length === 1) {
+        user = matched[0];
+      } else if (matched.length > 1) {
+        return Result.fail(
+          "Multiple workspaces use this username. Please enter your Workspace Code or sign in with your email address.",
+        );
+      } else {
+        return Result.fail("Invalid username or password");
+      }
+    }
+
+    if (user.tenant_status === "suspended") {
+      return Result.fail(
+        "This store workspace is currently suspended. Contact your Super Admin.",
+      );
+    }
+
+    const tenantId = user.tenant_id || DEFAULT_TENANT_ID;
+    const tenantSlug = user.tenant_slug || DEFAULT_TENANT_SLUG;
+    const tenantName = user.tenant_name || DEFAULT_TENANT_NAME;
 
     // Check account lockout status
     if (user.locked_until) {
@@ -104,7 +216,6 @@ export async function loginUser(formData: {
           `Account is temporarily locked due to 5 consecutive failed login attempts. Please try again in ${remainingMinutes} minute${remainingMinutes > 1 ? "s" : ""}.`,
         );
       } else {
-        // Lockout expired -> reset count and clear lock
         await db("users").where("id", user.id).update({
           failed_login_attempts: 0,
           locked_until: null,
@@ -118,8 +229,6 @@ export async function loginUser(formData: {
     if (user.password_hash) {
       isValid = await verifyPassword(formData.password, user.password_hash);
     } else {
-      // Legacy or newly seeded user without hash
-      // If user has no password_hash set, auto-set password and log in
       const defaultHash = await hashPassword(formData.password);
       await db("users")
         .where("id", user.id)
@@ -132,7 +241,6 @@ export async function loginUser(formData: {
       const MAX_ATTEMPTS = 5;
 
       if (newAttempts >= MAX_ATTEMPTS) {
-        // Lock account for 15 minutes after 5 failed attempts
         const lockDurationMinutes = 15;
         const lockUntil = new Date(
           Date.now() + lockDurationMinutes * 60 * 1000,
@@ -147,7 +255,7 @@ export async function loginUser(formData: {
           activity_type: "user_account_locked",
           title: `Account locked for ${user.username}`,
           description: `Account locked for ${lockDurationMinutes} minutes after ${MAX_ATTEMPTS} failed login attempts`,
-          metadata: { user_id: user.id },
+          metadata: { user_id: user.id, tenant_id: tenantId },
         }).catch(() => {});
 
         return Result.fail(
@@ -165,34 +273,69 @@ export async function loginUser(formData: {
       }
     }
 
-    // Login successful -> Reset failed login attempts and clear lockout
+    // Login credentials verified -> Reset failed login attempts and clear lockout
     await db("users").where("id", user.id).update({
       failed_login_attempts: 0,
       locked_until: null,
     });
 
+    // Enforce Two-Factor Authentication if enabled for this account
+    if (Boolean(user.two_factor_enabled)) {
+      const dispatch = await issueAndSendTwoFactorCode({
+        ...user,
+        tenant_id: tenantId,
+      });
+      if (!dispatch.success || !dispatch.codeId) {
+        return Result.fail(
+          dispatch.error ||
+            "Two-factor authentication is required, but verification code delivery failed.",
+        );
+      }
+
+      const challengeToken = await createTwoFactorChallengeToken({
+        userId: user.id,
+        tenantId,
+        codeId: dispatch.codeId,
+        method: dispatch.method,
+      });
+
+      return Result.ok({
+        id: user.id,
+        role: user.role || "member",
+        username: user.username,
+        tenant_id: tenantId,
+        tenant_slug: tenantSlug,
+        tenant_name: tenantName,
+        requiresTwoFactor: true,
+        challengeToken,
+        method: dispatch.method,
+        maskedTarget: dispatch.maskedTarget || "",
+      });
+    }
+
     const token = await createJWT({
       userId: user.id,
+      tenantId,
+      tenantSlug,
       username: user.username,
       role: user.role || "member",
     });
 
     await setAuthCookie(token);
 
-    // Update last login timestamp
     await db("users")
       .where("id", user.id)
       .update({ last_login_at: new Date().toISOString() });
 
-    // Save session in sessions table
     await db("user_sessions")
       .insert({
         id: generateId(),
+        tenant_id: tenantId,
         user_id: user.id,
         token,
-        expires_at: new Date(
-          Date.now() + 1 * 24 * 60 * 60 * 1000,
-        ).toISOString(),
+        is_active: 1,
+        last_activity_at: new Date().toISOString(),
+        expires_at: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(),
       })
       .catch(() => {});
 
@@ -200,18 +343,45 @@ export async function loginUser(formData: {
       activity_type: "user_login",
       title: `User ${user.username} signed in`,
       description: "User logged into system successfully",
-      metadata: { user_id: user.id },
+      metadata: { user_id: user.id, tenant_id: tenantId },
     }).catch(() => {});
 
     return Result.ok({
       id: user.id,
       role: user.role || "member",
       username: user.username,
+      tenant_id: tenantId,
+      tenant_slug: tenantSlug,
+      tenant_name: tenantName,
     });
   } catch (error: any) {
     console.error("Login failed:", error);
     return Result.fail(error?.message || "Authentication failed");
   }
+}
+
+export async function registerWorkspaceAction(_input: {
+  storeName: string;
+  username: string;
+  email: string;
+  password: string;
+  firstname?: string;
+  lastname?: string;
+  phonenumber?: string;
+  currency?: string;
+}): Promise<
+  Result<{
+    id: string;
+    role: string;
+    username: string;
+    tenant_id: string;
+    tenant_slug: string;
+    tenant_name: string;
+  }>
+> {
+  return Result.fail(
+    "Workspace self-registration is disabled. Contact your Super Admin to provision a new store tenant.",
+  );
 }
 
 export async function logoutUser(): Promise<Result<{ success: boolean }>> {
@@ -224,9 +394,6 @@ export async function logoutUser(): Promise<Result<{ success: boolean }>> {
   }
 }
 
-/**
- * Check session status and remaining validity
- */
 export async function getSessionStatus(): Promise<
   Result<{
     authenticated: boolean;
@@ -249,9 +416,6 @@ export async function getSessionStatus(): Promise<
   }
 }
 
-/**
- * Extend current session by issuing a new JWT and updating cookie and DB session
- */
 export async function extendSession(): Promise<
   Result<{
     success: boolean;
@@ -266,18 +430,21 @@ export async function extendSession(): Promise<
 
     const newToken = await createJWT({
       userId: session.id,
+      tenantId: session.tenant_id,
+      tenantSlug: session.tenant_slug,
       username: session.username,
       role: session.role,
     });
 
     await setAuthCookie(newToken);
 
-    const newExpiresAt = Date.now() + 1 * 24 * 60 * 60 * 1000;
+    const newExpiresAt = Date.now() + 7 * 24 * 60 * 60 * 1000;
 
-    await db("sessions")
-      .where("user_id", session.id)
+    await db("user_sessions")
+      .where({ user_id: session.id, tenant_id: session.tenant_id, is_active: 1 })
       .update({
         token: newToken,
+        last_activity_at: new Date().toISOString(),
         expires_at: new Date(newExpiresAt).toISOString(),
       })
       .catch(() => {});
@@ -300,24 +467,25 @@ export async function extendSession(): Promise<
 }
 
 // ──────────────────────────────────────────────────────────────
-// Read functions
+// Read functions (strictly tenant-scoped)
 // ──────────────────────────────────────────────────────────────
 
-/**
- * Get all users – admin only.
- */
 export async function getUsers(): Promise<Result<User[]>> {
   const isAdmin = await checkRole("admin");
   if (!isAdmin) {
     return Result.fail("Not authorized");
   }
 
-  const curentUser = await getCurrentUser();
+  const currentUser = await getCurrentUser();
+  if (!currentUser?.tenant_id) {
+    return Result.fail("Unauthorized");
+  }
 
   try {
     const users: User[] = await db("users")
       .select(
         "id",
+        "tenant_id",
         "firstname",
         "lastname",
         "username",
@@ -330,7 +498,8 @@ export async function getUsers(): Promise<Result<User[]>> {
         "created_at",
         "updated_at",
       )
-      .whereNot("id", curentUser?.id || "")
+      .where("tenant_id", currentUser.tenant_id)
+      .whereNot("id", currentUser.id)
       .orderBy("created_at", "desc");
 
     return Result.ok(users);
@@ -340,9 +509,6 @@ export async function getUsers(): Promise<Result<User[]>> {
   }
 }
 
-/**
- * Unlock a locked user account - admin only.
- */
 export async function unlockUser(
   id: string,
 ): Promise<Result<{ success: true }>> {
@@ -351,16 +517,23 @@ export async function unlockUser(
     return Result.fail("Not authorized");
   }
 
+  const currentUser = await getCurrentUser();
+  if (!currentUser?.tenant_id) {
+    return Result.fail("Unauthorized");
+  }
+
   try {
     const user = await getUserFromDb(id);
-    if (!user) {
+    if (!user || user.tenant_id !== currentUser.tenant_id) {
       return Result.fail("User not found");
     }
 
-    await db("users").where("id", id).update({
-      failed_login_attempts: 0,
-      locked_until: null,
-    });
+    await db("users")
+      .where({ id, tenant_id: currentUser.tenant_id })
+      .update({
+        failed_login_attempts: 0,
+        locked_until: null,
+      });
 
     await createAuditLog({
       entity_type: "user",
@@ -381,6 +554,14 @@ export async function unlockUser(
     });
 
     revalidatePath("/admin/employee");
+    await emitSyncEvent({
+      tenantId: currentUser.tenant_id,
+      entityType: "employee",
+      entityId: id,
+      action: "upsert",
+      actorUserId: currentUser.id,
+    });
+
     return Result.ok({ success: true });
   } catch (error: any) {
     console.error("Failed to unlock user:", error);
@@ -388,13 +569,18 @@ export async function unlockUser(
   }
 }
 
-/**
- * Get a single user by ID.
- */
 export async function getUser(userId: string): Promise<Result<any>> {
   try {
+    const currentUser = await getCurrentUser();
     const user = await getUserFromDb(userId);
     if (!user) {
+      return Result.fail("User not found");
+    }
+    if (
+      currentUser?.tenant_id &&
+      user.tenant_id &&
+      user.tenant_id !== currentUser.tenant_id
+    ) {
       return Result.fail("User not found");
     }
 
@@ -406,12 +592,9 @@ export async function getUser(userId: string): Promise<Result<any>> {
 }
 
 // ──────────────────────────────────────────────────────────────
-// Create / Update / Delete
+// Create / Update / Delete (strictly tenant-scoped)
 // ──────────────────────────────────────────────────────────────
 
-/**
- * Create a new user – admin only.
- */
 export async function createUser(formData: {
   username: string;
   email: string;
@@ -422,19 +605,37 @@ export async function createUser(formData: {
   role: "admin" | "member";
 }): Promise<Result<{ id: string }>> {
   const isAdmin = await checkRole("admin");
-
   if (!isAdmin) {
     return Result.fail("Not authorized");
   }
 
+  const currentUser = await getCurrentUser();
+  if (!currentUser?.id || !currentUser?.tenant_id) {
+    return Result.fail("Unauthorized");
+  }
+
+  const tenantId = currentUser.tenant_id;
+
   try {
+    const cleanUsername = formData.username.trim();
+    const cleanEmail = formData.email.trim().toLowerCase();
+
     const existing = await db("users")
-      .where("username", formData.username)
-      .orWhere("email", formData.email)
-      .first();
+      .where((qb) => {
+        qb.where((inner) => {
+          inner
+            .where("tenant_id", tenantId)
+            .whereRaw("LOWER(username) = ?", [cleanUsername.toLowerCase()]);
+        }).orWhereRaw("LOWER(email) = ?", [cleanEmail]);
+      })
+      .first("id", "email");
 
     if (existing) {
-      return Result.fail("Username or email already exists");
+      return Result.fail(
+        String(existing.email || "").toLowerCase() === cleanEmail
+          ? "Email address already exists"
+          : "Username already exists in this workspace",
+      );
     }
 
     const localId = generateId();
@@ -442,31 +643,29 @@ export async function createUser(formData: {
 
     await db("users").insert({
       id: localId,
-      username: formData.username,
-      email: formData.email,
-      firstname: formData.firstname,
-      lastname: formData.lastname,
-      phonenumber: formData.phonenumber,
+      tenant_id: tenantId,
+      username: cleanUsername,
+      email: cleanEmail,
+      firstname: formData.firstname.trim(),
+      lastname: formData.lastname.trim(),
+      phonenumber: formData.phonenumber.trim(),
       role: formData.role,
       password_hash: pwdHash,
     });
 
-    const currentUser = await getCurrentUser();
+    const tenantSettings = await db("settings")
+      .where("tenant_id", tenantId)
+      .first();
 
-    if (currentUser?.id) {
-      const settings = await db("settings")
-        .select("*")
-        .where("user_id", currentUser.id)
-        .first();
-
+    if (!tenantSettings) {
       await db("settings")
-        .insert({
-          ...settings,
-          id: generateId(),
-          user_id: localId,
-          created_at: new Date().toISOString(),
-          updated_at: new Date().toISOString(),
-        })
+        .insert(
+          buildDefaultSettingsRow({
+            userId: localId,
+            tenantId,
+            businessName: currentUser.tenant_name || DEFAULT_TENANT_NAME,
+          }),
+        )
         .catch(() => {});
     }
 
@@ -475,8 +674,8 @@ export async function createUser(formData: {
       entity_id: localId,
       action: "create",
       new_values: {
-        username: formData.username,
-        email: formData.email,
+        username: cleanUsername,
+        email: cleanEmail,
         role: formData.role,
         firstname: formData.firstname,
         lastname: formData.lastname,
@@ -486,12 +685,20 @@ export async function createUser(formData: {
 
     await createActivityLog({
       activity_type: "user_created",
-      title: `User ${formData.username} created`,
+      title: `User ${cleanUsername} created`,
       description: `Admin created user with role ${formData.role}`,
       metadata: { user_id: localId },
     });
 
     revalidatePath("/admin/employee");
+    await emitSyncEvent({
+      tenantId,
+      entityType: "employee",
+      entityId: localId,
+      action: "upsert",
+      actorUserId: currentUser.id,
+    });
+
     return Result.ok({ id: localId });
   } catch (error: any) {
     console.error("Failed to create user:", error);
@@ -499,9 +706,6 @@ export async function createUser(formData: {
   }
 }
 
-/**
- * Update an existing user – admin only.
- */
 export async function updateUser(formData: {
   id: string;
   username?: string;
@@ -516,26 +720,58 @@ export async function updateUser(formData: {
     return Result.fail("Not authorized");
   }
 
+  const currentUser = await getCurrentUser();
+  if (!currentUser?.tenant_id) {
+    return Result.fail("Unauthorized");
+  }
+
+  const tenantId = currentUser.tenant_id;
+
   try {
     const fetchedUser = await getUserFromDb(formData.id);
-    if (!fetchedUser) {
+    if (!fetchedUser || fetchedUser.tenant_id !== tenantId) {
       return Result.fail("User not found");
     }
 
     const updateData: any = {};
-    if (formData.username !== undefined)
-      updateData.username = formData.username;
-    if (formData.email !== undefined) updateData.email = formData.email;
+    if (formData.username !== undefined) {
+      const nextUsername = formData.username.trim();
+      const dupUsername = await db("users")
+        .where("tenant_id", tenantId)
+        .whereRaw("LOWER(username) = ?", [nextUsername.toLowerCase()])
+        .whereNot("id", formData.id)
+        .first("id");
+      if (dupUsername) {
+        return Result.fail("Username already exists in this workspace");
+      }
+      updateData.username = nextUsername;
+    }
+
+    if (formData.email !== undefined) {
+      const nextEmail = formData.email.trim().toLowerCase();
+      const dupEmail = await db("users")
+        .whereRaw("LOWER(email) = ?", [nextEmail])
+        .whereNot("id", formData.id)
+        .first("id");
+      if (dupEmail) {
+        return Result.fail("Email already exists");
+      }
+      updateData.email = nextEmail;
+    }
+
     if (formData.firstname !== undefined)
-      updateData.firstname = formData.firstname;
+      updateData.firstname = formData.firstname.trim();
     if (formData.lastname !== undefined)
-      updateData.lastname = formData.lastname;
+      updateData.lastname = formData.lastname.trim();
     if (formData.role !== undefined) updateData.role = formData.role;
     if (formData.phonenumber !== undefined)
-      updateData.phonenumber = formData.phonenumber;
+      updateData.phonenumber = formData.phonenumber.trim();
 
     if (Object.keys(updateData).length > 0) {
-      await db("users").where("id", formData.id).update(updateData);
+      updateData.updated_at = new Date().toISOString();
+      await db("users")
+        .where({ id: formData.id, tenant_id: tenantId })
+        .update(updateData);
     }
 
     await createAuditLog({
@@ -567,6 +803,14 @@ export async function updateUser(formData: {
 
     revalidatePath(`/admin/employee/${formData.id}`);
     revalidatePath("/admin/employee");
+    await emitSyncEvent({
+      tenantId,
+      entityType: "employee",
+      entityId: formData.id,
+      action: "upsert",
+      actorUserId: currentUser.id,
+    });
+
     return Result.ok({ success: true });
   } catch (error: any) {
     console.error("Failed to update user:", error);
@@ -574,9 +818,6 @@ export async function updateUser(formData: {
   }
 }
 
-/**
- * Change user role – admin only.
- */
 export async function setRole(
   id: string,
   role: "admin" | "member",
@@ -586,13 +827,20 @@ export async function setRole(
     return Result.fail("Not authorized");
   }
 
+  const currentUser = await getCurrentUser();
+  if (!currentUser?.tenant_id) {
+    return Result.fail("Unauthorized");
+  }
+
   try {
     const user = await getUserFromDb(id);
-    if (!user) {
+    if (!user || user.tenant_id !== currentUser.tenant_id) {
       return Result.fail("User not found");
     }
 
-    await db("users").where("id", id).update({ role });
+    await db("users")
+      .where({ id, tenant_id: currentUser.tenant_id })
+      .update({ role, updated_at: new Date().toISOString() });
 
     await createAuditLog({
       entity_type: "user",
@@ -610,6 +858,14 @@ export async function setRole(
     });
 
     revalidatePath("/admin/employee");
+    await emitSyncEvent({
+      tenantId: currentUser.tenant_id,
+      entityType: "employee",
+      entityId: id,
+      action: "upsert",
+      actorUserId: currentUser.id,
+    });
+
     return Result.ok({ success: true });
   } catch (error: any) {
     console.error("Failed to set role:", error);
@@ -617,9 +873,6 @@ export async function setRole(
   }
 }
 
-/**
- * Delete a user – admin only.
- */
 export async function removeUser(
   id: string,
 ): Promise<Result<{ success: true }>> {
@@ -628,17 +881,28 @@ export async function removeUser(
     return Result.fail("Not authorized");
   }
 
+  const currentUser = await getCurrentUser();
+  if (!currentUser?.tenant_id) {
+    return Result.fail("Unauthorized");
+  }
+
+  if (id === currentUser.id) {
+    return Result.fail("You cannot delete your own active account.");
+  }
+
   try {
     const user = await getUserFromDb(id);
-    if (!user) {
+    if (!user || user.tenant_id !== currentUser.tenant_id) {
       return Result.fail("User not found");
     }
 
     await db("user_sessions")
-      .where("user_id", id)
+      .where({ user_id: id, tenant_id: currentUser.tenant_id })
       .del()
       .catch(() => {});
-    await db("users").where("id", id).del();
+    await db("users")
+      .where({ id, tenant_id: currentUser.tenant_id })
+      .del();
 
     await createAuditLog({
       entity_type: "user",
@@ -661,6 +925,14 @@ export async function removeUser(
     });
 
     revalidatePath("/admin/employee");
+    await emitSyncEvent({
+      tenantId: currentUser.tenant_id,
+      entityType: "employee",
+      entityId: id,
+      action: "delete",
+      actorUserId: currentUser.id,
+    });
+
     return Result.ok({ success: true });
   } catch (error: any) {
     console.error("Failed to delete user:", error);
@@ -668,9 +940,6 @@ export async function removeUser(
   }
 }
 
-/**
- * Update a user's password – admin only.
- */
 export async function updatePassword(
   id: string,
   newPassword: string,
@@ -680,14 +949,21 @@ export async function updatePassword(
     return Result.fail("Not authorized");
   }
 
+  const currentUser = await getCurrentUser();
+  if (!currentUser?.tenant_id) {
+    return Result.fail("Unauthorized");
+  }
+
   try {
     const user = await getUserFromDb(id);
-    if (!user) {
+    if (!user || user.tenant_id !== currentUser.tenant_id) {
       return Result.fail("User not found");
     }
 
     const pwdHash = await hashPassword(newPassword);
-    await db("users").where("id", id).update({ password_hash: pwdHash });
+    await db("users")
+      .where({ id, tenant_id: currentUser.tenant_id })
+      .update({ password_hash: pwdHash, updated_at: new Date().toISOString() });
 
     await createAuditLog({
       entity_type: "user",
@@ -711,9 +987,6 @@ export async function updatePassword(
   }
 }
 
-/**
- * Bulk delete data from any table – admin only.
- */
 export async function removeData({
   ids,
   table,
@@ -723,8 +996,20 @@ export async function removeData({
     return Result.fail("Not authorized");
   }
 
+  const currentUser = await getCurrentUser();
+  if (!currentUser?.tenant_id) {
+    return Result.fail("Unauthorized");
+  }
+
+  if (!REMOVABLE_TENANT_TABLES.has(table)) {
+    return Result.fail("Bulk deletion is not permitted on this table.");
+  }
+
   try {
-    const result = await db(table).whereIn("id", ids).del();
+    const result = await db(table)
+      .where("tenant_id", currentUser.tenant_id)
+      .whereIn("id", ids)
+      .del();
 
     await createAuditLog({
       entity_type: table,
@@ -734,6 +1019,14 @@ export async function removeData({
     });
 
     revalidatePath(`/admin/${table}`);
+    await emitSyncEvent({
+      tenantId: currentUser.tenant_id,
+      entityType: table === "product_categories" ? "category" : (table.replace(/s$/, "") as any),
+      entityId: ids.map(String).join(","),
+      action: "refresh",
+      actorUserId: currentUser.id,
+    });
+
     return Result.ok({ deletedCount: result });
   } catch (error: any) {
     console.error(`Failed to delete from ${table}:`, error);

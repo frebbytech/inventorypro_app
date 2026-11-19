@@ -6,14 +6,14 @@ import db from "@/db/knex";
 import { DailySalesReport, Result } from "@/types/globals";
 import { generateId } from "@/utils/generator";
 import { currencyFormatter } from "@/config/formatter";
-import { getCurrentUser } from "./_actions";
-import { getUser } from "@/actions/_actions";
+import { getCurrentUser, getUser } from "./_actions";
 import { getSettings, getSettingsById } from "./settings";
 import { createNotification } from "./notifications";
 import { createActivityLog } from "./activity-logs";
 import { revalidatePath } from "next/cache";
 import { sendSingleSms } from "@/lib/sms";
 import { sendSingleEmail } from "@/lib/email";
+import { DEFAULT_TENANT_ID } from "@/lib/tenant";
 const BUSINESS_TIMEZONE = process.env.BUSINESS_TIMEZONE || "Africa/Accra";
 
 /**
@@ -28,24 +28,31 @@ function getTodayDateString(d?: Date): string {
 }
 
 /**
- * Generate (or calculate) Daily Sales Report metrics for a target date (defaults to today)
+ * Generate (or calculate) Daily Sales Report metrics for a target date and tenant
  */
 export async function generateDailySalesReport(
   targetDateStr?: string,
+  tenantIdOverride?: string,
+  createdByOverride?: string,
 ): Promise<Result<DailySalesReport>> {
   try {
-    // await ensureFullDatabaseSchema();
     const dateStr = targetDateStr || getTodayDateString();
+    const currentUser = await getCurrentUser().catch(() => null);
+    const tenantId =
+      tenantIdOverride || currentUser?.tenant_id || DEFAULT_TENANT_ID;
 
-    const currentUser = await getCurrentUser();
+    if (!tenantIdOverride && !currentUser?.id) {
+      return Result.fail("Unauthorized");
+    }
 
-    // 1. Fetch sales for the target date
+    // 1. Fetch sales for the target date within this tenant
     const salesForDate = await db("v_sale_summary")
       .select("*")
-      .whereRaw("DATE(sale_date) = ?", [dateStr]);
+      .where("tenant_id", tenantId)
+      .andWhereRaw("DATE(sale_date) = ?", [dateStr]);
 
     let totalSalesAmount = 0;
-    let totalTransactions = salesForDate.length;
+    const totalTransactions = salesForDate.length;
     let completedTransactions = 0;
     let cancelledTransactions = 0;
 
@@ -71,7 +78,6 @@ export async function generateDailySalesReport(
       const amount = Number(sale.total_amount) || 0;
       totalSalesAmount += amount;
 
-      // Payment Breakdown
       const mode = (sale.payment_mode || "cash").toLowerCase();
       if (mode.includes("card")) paymentModes.card += amount;
       else if (mode.includes("transfer")) paymentModes.transfer += amount;
@@ -83,7 +89,6 @@ export async function generateDailySalesReport(
         paymentModes.mobile_money += amount;
       else paymentModes.cash += amount;
 
-      // Cashier Performance
       const cashierName = sale.user_name || sale.user_username || "Staff";
       if (!cashierMap[cashierName]) {
         cashierMap[cashierName] = { name: cashierName, sales: 0, count: 0 };
@@ -95,7 +100,8 @@ export async function generateDailySalesReport(
     // 2. Fetch sale items to calculate cost price, profit, and top products
     const itemsForDate = await db("v_sale_items_detail")
       .select("*")
-      .whereRaw("DATE(sale_date) = ?", [dateStr]);
+      .where("tenant_id", tenantId)
+      .andWhereRaw("DATE(sale_date) = ?", [dateStr]);
 
     let totalCost = 0;
     let totalItemsSold = 0;
@@ -124,22 +130,22 @@ export async function generateDailySalesReport(
 
     const grossProfit = totalSalesAmount - totalCost;
 
-    // Top 5 Products by Revenue
     const topProducts = Object.values(productSalesMap)
       .sort((a, b) => b.revenue - a.revenue)
       .slice(0, 5);
 
     const cashierSummary = Object.values(cashierMap);
 
-    // 3. Upsert into daily_sales_reports table
+    // 3. Upsert into daily_sales_reports table scoped by tenant_id
     const existingReport = await db("daily_sales_reports")
-      .where("report_date", dateStr)
+      .where({ report_date: dateStr, tenant_id: tenantId })
       .first();
 
     const reportId = existingReport?.id || generateId();
 
     const reportData = {
       id: reportId,
+      tenant_id: tenantId,
       report_date: dateStr,
       generated_at: db.fn.now(),
       total_sales_amount: Number(totalSalesAmount.toFixed(2)),
@@ -154,20 +160,20 @@ export async function generateDailySalesReport(
       cashier_summary: JSON.stringify(cashierSummary),
       status:
         existingReport?.status === "dispatched" ? "dispatched" : "generated",
-      created_by: currentUser?.id || "system",
+      created_by: createdByOverride || currentUser?.id || "system",
       updated_at: db.fn.now(),
     };
 
     if (existingReport) {
       await db("daily_sales_reports")
-        .where("id", existingReport.id)
+        .where({ id: existingReport.id, tenant_id: tenantId })
         .update(reportData);
     } else {
       await db("daily_sales_reports").insert(reportData);
     }
 
     const reportRecord: DailySalesReport = (await db("daily_sales_reports")
-      .where("id", reportId)
+      .where({ id: reportId, tenant_id: tenantId })
       .first()) as DailySalesReport;
 
     return Result.ok(reportRecord);
@@ -180,7 +186,7 @@ export async function generateDailySalesReport(
 }
 
 /**
- * Send Daily Sales Report to admin via configured channels (In-App, Email, SMS)
+ * Send Daily Sales Report to workspace admins via configured channels
  */
 export async function sendDailySalesReport(options?: {
   dateStr?: string;
@@ -190,9 +196,6 @@ export async function sendDailySalesReport(options?: {
     const dateStr = options?.dateStr || getTodayDateString();
     const force = options?.force ?? false;
 
-    // Auth guard — this is a "use server" action, callable directly by any
-    // client, not just the cron route from before. `force` was declared in
-    // the original signature but never actually read anywhere.
     const currentUser = await getCurrentUser();
     if (
       !currentUser ||
@@ -200,11 +203,8 @@ export async function sendDailySalesReport(options?: {
     ) {
       return Result.fail("Unauthorized: admin access required");
     }
+    const tenantId = currentUser.tenant_id || DEFAULT_TENANT_ID;
 
-    // Independent lookups run together. `existingReport` is checked before
-    // paying for `generateDailySalesReport`'s aggregation — most calls to
-    // this action (via retries, manual "resend" buttons, etc.) will find
-    // today's report already dispatched and can return immediately.
     const [settingsRes, adminUsers, existingReport] = await Promise.all([
       getSettings(),
       db("users")
@@ -216,8 +216,11 @@ export async function sendDailySalesReport(options?: {
           "firstname",
           "lastname",
         )
+        .where("tenant_id", tenantId)
         .whereIn("role", ["admin", "super_admin", "manager"]),
-      db("daily_sales_reports").where("report_date", dateStr).first(),
+      db("daily_sales_reports")
+        .where({ report_date: dateStr, tenant_id: tenantId })
+        .first(),
     ]);
 
     const settings = settingsRes.data;
@@ -239,7 +242,11 @@ export async function sendDailySalesReport(options?: {
       });
     }
 
-    const reportRes = await generateDailySalesReport(dateStr);
+    const reportRes = await generateDailySalesReport(
+      dateStr,
+      tenantId,
+      currentUser.id,
+    );
     if (!reportRes.success || !reportRes.data) {
       return Result.fail(
         reportRes.message || "Could not generate report for dispatch",
@@ -253,9 +260,6 @@ export async function sendDailySalesReport(options?: {
       settings?.eod_admin_phone ||
       currentUser?.phonenumber ||
       adminUsers[0]?.phonenumber;
-    // No hardcoded fallback contact. If nothing is configured, the channel
-    // is skipped below with an explicit, logged reason instead of silently
-    // mailing/texting real sales figures to a contact baked into the source.
 
     let configuredChannels: string[] = ["in_app", "email", "sms"];
     if (settings?.eod_channels) {
@@ -278,6 +282,7 @@ export async function sendDailySalesReport(options?: {
       db("broadcast_messages")
         .insert({
           id: generateId(),
+          tenant_id: tenantId,
           sender_id: currentUser?.id || "system",
           sender_name: "Automated Sales Reporter",
           recipient_group: "admin",
@@ -295,16 +300,6 @@ export async function sendDailySalesReport(options?: {
           ),
         );
 
-    // console.log("okay")
-
-    // Each channel:
-    //  - is skipped (not resent) if a previous attempt already succeeded,
-    //    so a retry after a partial failure doesn't duplicate work that
-    //    already landed
-    //  - runs independently, so one channel failing doesn't throw the
-    //    whole function or block the others
-    //  - reports its own real outcome, instead of the original's
-    //    write-"sent"-before-attempting pattern
     const channelJobs: Promise<[string, any]>[] = [];
 
     if (configuredChannels.includes("in_app")) {
@@ -321,6 +316,7 @@ export async function sendDailySalesReport(options?: {
                 .filter((a) => a.id)
                 .map((admin) =>
                   createNotification({
+                    tenant_id: tenantId,
                     user_id: admin.id,
                     type: "report",
                     title,
@@ -354,9 +350,6 @@ export async function sendDailySalesReport(options?: {
       if (previousLogs.email?.sent) {
         channelJobs.push(Promise.resolve(["email", previousLogs.email]));
       } else if (!targetEmail) {
-        console.warn(
-          `EOD report ${dateStr}: no target email configured, skipping`,
-        );
         channelJobs.push(
           Promise.resolve([
             "email",
@@ -375,7 +368,6 @@ export async function sendDailySalesReport(options?: {
             try {
               await sendSingleEmail(targetEmail, subject, { text });
               await logBroadcast("email", subject, text, "sent");
-          
               return ["email", { sent: true, targetEmail }];
             } catch (err: any) {
               console.error(
@@ -400,9 +392,6 @@ export async function sendDailySalesReport(options?: {
       if (previousLogs.sms?.sent) {
         channelJobs.push(Promise.resolve(["sms", previousLogs.sms]));
       } else if (!targetPhone) {
-        console.warn(
-          `EOD report ${dateStr}: no target phone configured, skipping`,
-        );
         channelJobs.push(
           Promise.resolve([
             "sms",
@@ -438,16 +427,12 @@ export async function sendDailySalesReport(options?: {
     };
     for (const [name, result] of settled) dispatchResults[name] = result;
 
-    // "dispatched" only once every attempted (non-skipped) channel actually
-    // succeeded; otherwise "partial", so the next check-and-send pass
-    // (see checkAndSendEODReportAuto) retries — and, thanks to the
-    // previousLogs guards above, retries only the channels that failed.
     const allAttemptedSent = settled
       .filter(([, r]) => !r.skipped)
       .every(([, r]) => r.sent);
 
     await db("daily_sales_reports")
-      .where("id", report.id)
+      .where({ id: report.id, tenant_id: tenantId })
       .update({
         status: allAttemptedSent ? "dispatched" : "partial",
         dispatch_logs: JSON.stringify(dispatchResults),
@@ -459,14 +444,18 @@ export async function sendDailySalesReport(options?: {
       title: `Daily Sales Report sent for ${dateStr}`,
       description: `Dispatched via ${configuredChannels.join(", ")} | Revenue: ${formattedTotal}`,
       metadata: { report_id: report.id, dispatchResults },
-    });
+    }).catch(() => {});
 
-    revalidatePath("/admin/reports/daily");
-    revalidatePath("/admin/summary");
-    revalidatePath("/admin/settings");
+    try {
+      revalidatePath("/admin/reports/daily");
+      revalidatePath("/admin/summary");
+      revalidatePath("/admin/settings");
+    } catch {
+      // Ignore outside Next.js render context
+    }
 
     const updatedReport = (await db("daily_sales_reports")
-      .where("id", report.id)
+      .where({ id: report.id, tenant_id: tenantId })
       .first()) as DailySalesReport;
 
     return Result.ok({
@@ -478,19 +467,18 @@ export async function sendDailySalesReport(options?: {
     return Result.fail(error?.message || "Failed to send daily sales report");
   }
 }
+
 export async function sendDailySalesReportAuto(options?: {
   dateStr?: string;
   force?: boolean;
   userId: string;
+  tenantId?: string;
 }): Promise<Result<{ report: DailySalesReport; dispatchSummary: any }>> {
   try {
     const dateStr = options?.dateStr || getTodayDateString();
     const force = options?.force ?? false;
     const userId = options?.userId;
 
-    // Auth guard — this is a "use server" action, callable directly by any
-    // client, not just the cron route from before. `force` was declared in
-    // the original signature but never actually read anywhere.
     const user = await getUser(userId || "");
     const currentUser = user.data;
     if (
@@ -499,11 +487,9 @@ export async function sendDailySalesReportAuto(options?: {
     ) {
       return Result.fail("Unauthorized: admin access required");
     }
+    const tenantId =
+      options?.tenantId || currentUser.tenant_id || DEFAULT_TENANT_ID;
 
-    // Independent lookups run together. `existingReport` is checked before
-    // paying for `generateDailySalesReport`'s aggregation — most calls to
-    // this action (via retries, manual "resend" buttons, etc.) will find
-    // today's report already dispatched and can return immediately.
     const [settingsRes, adminUsers, existingReport] = await Promise.all([
       getSettingsById(userId || ""),
       db("users")
@@ -515,11 +501,12 @@ export async function sendDailySalesReportAuto(options?: {
           "firstname",
           "lastname",
         )
+        .where("tenant_id", tenantId)
         .whereIn("role", ["admin", "super_admin", "manager"])
-        .andWhere({
-          id: userId,
-        }),
-      db("daily_sales_reports").where("report_date", dateStr).first(),
+        .andWhere({ id: userId }),
+      db("daily_sales_reports")
+        .where({ report_date: dateStr, tenant_id: tenantId })
+        .first(),
     ]);
 
     const settings = settingsRes.data;
@@ -541,7 +528,11 @@ export async function sendDailySalesReportAuto(options?: {
       });
     }
 
-    const reportRes = await generateDailySalesReport(dateStr);
+    const reportRes = await generateDailySalesReport(
+      dateStr,
+      tenantId,
+      currentUser.id,
+    );
     if (!reportRes.success || !reportRes.data) {
       return Result.fail(
         reportRes.message || "Could not generate report for dispatch",
@@ -555,9 +546,6 @@ export async function sendDailySalesReportAuto(options?: {
       settings?.eod_admin_phone ||
       currentUser?.phonenumber ||
       adminUsers[0]?.phonenumber;
-    // No hardcoded fallback contact. If nothing is configured, the channel
-    // is skipped below with an explicit, logged reason instead of silently
-    // mailing/texting real sales figures to a contact baked into the source.
 
     let configuredChannels: string[] = ["in_app", "email", "sms"];
     if (settings?.eod_channels) {
@@ -580,6 +568,7 @@ export async function sendDailySalesReportAuto(options?: {
       db("broadcast_messages")
         .insert({
           id: generateId(),
+          tenant_id: tenantId,
           sender_id: currentUser?.id || "system",
           sender_name: "Automated Sales Reporter",
           recipient_group: "admin",
@@ -597,15 +586,6 @@ export async function sendDailySalesReportAuto(options?: {
           ),
         );
 
-
-    // Each channel:
-    //  - is skipped (not resent) if a previous attempt already succeeded,
-    //    so a retry after a partial failure doesn't duplicate work that
-    //    already landed
-    //  - runs independently, so one channel failing doesn't throw the
-    //    whole function or block the others
-    //  - reports its own real outcome, instead of the original's
-    //    write-"sent"-before-attempting pattern
     const channelJobs: Promise<[string, any]>[] = [];
 
     if (configuredChannels.includes("in_app")) {
@@ -622,6 +602,7 @@ export async function sendDailySalesReportAuto(options?: {
                 .filter((a) => a.id)
                 .map((admin) =>
                   createNotification({
+                    tenant_id: tenantId,
                     user_id: admin.id,
                     type: "report",
                     title,
@@ -655,9 +636,6 @@ export async function sendDailySalesReportAuto(options?: {
       if (previousLogs.email?.sent) {
         channelJobs.push(Promise.resolve(["email", previousLogs.email]));
       } else if (!targetEmail) {
-        console.warn(
-          `EOD report ${dateStr}: no target email configured, skipping`,
-        );
         channelJobs.push(
           Promise.resolve([
             "email",
@@ -676,8 +654,6 @@ export async function sendDailySalesReportAuto(options?: {
             try {
               await sendSingleEmail(targetEmail, subject, { text });
               await logBroadcast("email", subject, text, "sent");
-             
-             
               return ["email", { sent: true, targetEmail }];
             } catch (err: any) {
               console.error(
@@ -702,9 +678,6 @@ export async function sendDailySalesReportAuto(options?: {
       if (previousLogs.sms?.sent) {
         channelJobs.push(Promise.resolve(["sms", previousLogs.sms]));
       } else if (!targetPhone) {
-        console.warn(
-          `EOD report ${dateStr}: no target phone configured, skipping`,
-        );
         channelJobs.push(
           Promise.resolve([
             "sms",
@@ -740,16 +713,12 @@ export async function sendDailySalesReportAuto(options?: {
     };
     for (const [name, result] of settled) dispatchResults[name] = result;
 
-    // "dispatched" only once every attempted (non-skipped) channel actually
-    // succeeded; otherwise "partial", so the next check-and-send pass
-    // (see checkAndSendEODReportAuto) retries — and, thanks to the
-    // previousLogs guards above, retries only the channels that failed.
     const allAttemptedSent = settled
       .filter(([, r]) => !r.skipped)
       .every(([, r]) => r.sent);
 
     await db("daily_sales_reports")
-      .where("id", report.id)
+      .where({ id: report.id, tenant_id: tenantId })
       .update({
         status: allAttemptedSent ? "dispatched" : "partial",
         dispatch_logs: JSON.stringify(dispatchResults),
@@ -757,7 +726,7 @@ export async function sendDailySalesReportAuto(options?: {
       });
 
     const updatedReport = (await db("daily_sales_reports")
-      .where("id", report.id)
+      .where({ id: report.id, tenant_id: tenantId })
       .first()) as DailySalesReport;
 
     return Result.ok({
@@ -771,14 +740,18 @@ export async function sendDailySalesReportAuto(options?: {
 }
 
 /**
- * Fetch list of all historical daily sales reports
+ * Fetch list of all historical daily sales reports for the current tenant
  */
 export async function getDailySalesReports(
   limit: number = 30,
 ): Promise<Result<DailySalesReport[]>> {
   try {
-    // await ensureFullDatabaseSchema();
+    const currentUser = await getCurrentUser();
+    if (!currentUser?.id) return Result.fail("Unauthorized");
+    const tenantId = currentUser.tenant_id || DEFAULT_TENANT_ID;
+
     const reports = await db("daily_sales_reports")
+      .where("tenant_id", tenantId)
       .select("*")
       .orderBy("report_date", "desc")
       .limit(limit);
@@ -791,20 +764,23 @@ export async function getDailySalesReports(
 }
 
 /**
- * Get a single daily sales report by ID or date
+ * Get a single daily sales report by ID or date within the current tenant
  */
 export async function getDailySalesReportById(
   idOrDate: string,
 ): Promise<Result<DailySalesReport>> {
   try {
-    // await ensureFullDatabaseSchema();
+    const currentUser = await getCurrentUser();
+    if (!currentUser?.id) return Result.fail("Unauthorized");
+    const tenantId = currentUser.tenant_id || DEFAULT_TENANT_ID;
+
     const report = await db("daily_sales_reports")
-      .where("id", idOrDate)
-      .orWhere("report_date", idOrDate)
+      .where("tenant_id", tenantId)
+      .andWhere((qb) => qb.where("id", idOrDate).orWhere("report_date", idOrDate))
       .first();
 
     if (!report) {
-      return await generateDailySalesReport(idOrDate);
+      return await generateDailySalesReport(idOrDate, tenantId, currentUser.id);
     }
 
     return Result.ok(report as DailySalesReport);
@@ -827,15 +803,20 @@ function getBusinessLocalTime(timeZone: string, date: Date) {
   };
 }
 
-// yyyy-MM-dd in the business's own timezone, not the server's.
 function getBusinessLocalDateString(timeZone: string, date: Date): string {
-  return new Intl.DateTimeFormat("en-CA", { timeZone }).format(date); // en-CA => "yyyy-MM-dd"
+  return new Intl.DateTimeFormat("en-CA", { timeZone }).format(date);
 }
 
 export async function checkAndSendEODReportAuto(): Promise<
   Result<{ triggered: boolean; message: string }>
 > {
   try {
+    const currentUser = await getCurrentUser();
+    if (!currentUser?.id) {
+      return Result.fail("Unauthorized");
+    }
+    const tenantId = currentUser.tenant_id || DEFAULT_TENANT_ID;
+
     const settingsRes = await getSettings();
     const settings = settingsRes.data;
 
@@ -851,7 +832,7 @@ export async function checkAndSendEODReportAuto(): Promise<
     const todayDateStr = getBusinessLocalDateString(timeZone, now);
 
     const existingReport = await db("daily_sales_reports")
-      .where("report_date", todayDateStr)
+      .where({ report_date: todayDateStr, tenant_id: tenantId })
       .first();
 
     if (existingReport && existingReport.status === "dispatched") {
@@ -879,13 +860,12 @@ export async function checkAndSendEODReportAuto(): Promise<
       });
     }
 
-    // ── Atomic claim ──
-    // Only one concurrent caller can successfully insert this row for a
-    // given report_date; everyone else hits the unique-constraint error
-    // and backs off instead of racing into a duplicate dispatch.
     try {
       await db("eod_dispatch_locks").insert({
+        id: generateId(),
+        tenant_id: tenantId,
         report_date: todayDateStr,
+        status: "processing",
         claimed_at: db.fn.now(),
       });
     } catch {
@@ -898,19 +878,22 @@ export async function checkAndSendEODReportAuto(): Promise<
     try {
       const sendRes = await sendDailySalesReport({ dateStr: todayDateStr });
       if (sendRes.success) {
+        await db("eod_dispatch_locks")
+          .where({ report_date: todayDateStr, tenant_id: tenantId })
+          .update({ status: "completed", claimed_at: db.fn.now() })
+          .catch(() => {});
         return Result.ok({
           triggered: true,
           message: `Daily Sales Report automatically generated and dispatched for ${todayDateStr}!`,
         });
       }
-      // Dispatch failed — release the claim so the next cron tick can retry.
       await db("eod_dispatch_locks")
-        .where("report_date", todayDateStr)
+        .where({ report_date: todayDateStr, tenant_id: tenantId })
         .delete();
       return Result.fail(sendRes.message || "Dispatch failed");
     } catch (err) {
       await db("eod_dispatch_locks")
-        .where("report_date", todayDateStr)
+        .where({ report_date: todayDateStr, tenant_id: tenantId })
         .delete();
       throw err;
     }

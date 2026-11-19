@@ -12,6 +12,23 @@ export type StockStatusFilter = "all" | "in_stock" | "low_stock" | "out_of_stock
 
 export const LOW_STOCK_THRESHOLD = 5;
 
+export type WorkspaceMode = "mobile_only" | "synced";
+
+export type SyncStatus =
+  | "local_only"
+  | "connecting"
+  | "live"
+  | "reconnecting"
+  | "offline"
+  | "syncing"
+  | "conflict";
+
+export interface TenantInfo {
+  id: string;
+  name: string;
+  slug: string;
+}
+
 export interface SessionUser {
   id: string;
   username: string;
@@ -21,6 +38,9 @@ export interface SessionUser {
   phonenumber?: string;
   role: "admin" | "member";
   lastLoginAt?: string | null;
+  tenantId?: string;
+  tenantName?: string;
+  tenantSlug?: string;
 }
 
 export interface StoreProfile {
@@ -45,7 +65,24 @@ export interface UpdateBusinessSettingsInput {
 export interface AuthLoginPayload {
   identifier: string;
   password: string;
+  workspaceSlug?: string;
   deviceName?: string;
+  deviceType?: string;
+  operatingSystem?: string;
+}
+
+export interface RegisterWorkspacePayload {
+  storeName: string;
+  username: string;
+  email: string;
+  password: string;
+  firstname?: string;
+  lastname?: string;
+  phonenumber?: string;
+  currency?: string;
+  deviceName?: string;
+  deviceType?: string;
+  operatingSystem?: string;
 }
 
 export interface AuthLoginResponse {
@@ -53,11 +90,23 @@ export interface AuthLoginResponse {
   expiresAt: string;
   user: SessionUser;
   store: StoreProfile;
+  tenant?: TenantInfo;
+  twoFactorRequired?: false;
 }
+
+export interface AuthTwoFactorChallengeResponse {
+  twoFactorRequired: true;
+  challengeToken: string;
+  method: string;
+  maskedTarget: string;
+}
+
+export type AuthLoginResult = AuthLoginResponse | AuthTwoFactorChallengeResponse;
 
 export interface AuthSessionResponse {
   user: SessionUser;
   store: StoreProfile;
+  tenant?: TenantInfo;
 }
 
 export interface AdjustStockInput {
@@ -599,6 +648,210 @@ export interface UpdateMyProfileInput {
 export interface ChangePasswordInput {
   currentPassword: string;
   newPassword: string;
+}
+
+export type SyncEntityType =
+  | "product"
+  | "category"
+  | "sale"
+  | "customer"
+  | "supplier"
+  | "supplier_tx"
+  | "employee"
+  | "settings"
+  | "notification"
+  | "message";
+
+export type SyncActionType = "upsert" | "delete" | "stock_delta" | "refresh";
+
+export interface SyncEventDto {
+  cursor: number;
+  tenantId: string;
+  entityType: SyncEntityType | string;
+  entityId: string;
+  action: SyncActionType | string;
+  payload: Record<string, unknown> | null;
+  actorUserId?: string | null;
+  createdAt: string;
+}
+
+export interface SyncBootstrapCategory {
+  id: string;
+  name: string;
+  description: string;
+  isActive: boolean;
+  updatedAt: string;
+}
+
+export interface SyncBootstrapCustomer {
+  id: string;
+  name: string;
+  email?: string;
+  phonenumber?: string;
+  address?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface SyncBootstrapSupplier {
+  id: string;
+  name: string;
+  companyName: string;
+  email?: string;
+  phonenumber?: string;
+  address?: string;
+  isActive: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface SyncBootstrapSale {
+  id: string;
+  receiptNo: string;
+  customerId: string;
+  customerName: string;
+  customerPhone?: string;
+  cashierName: string;
+  saleDate: string;
+  subtotal: number;
+  taxRate: number;
+  taxAmount: number;
+  discountAmount: number;
+  totalAmount: number;
+  amountPaid: number;
+  paymentMode: PaymentMode;
+  status: SaleStatus;
+  notes?: string;
+}
+
+export interface SyncBootstrapSaleItem {
+  id: string;
+  saleId: string;
+  productId: string;
+  productName: string;
+  quantity: number;
+  unitPrice: number;
+  subtotal: number;
+}
+
+export interface SyncBootstrapResponse {
+  latestCursor: number;
+  syncedAt: string;
+  tenant: TenantInfo;
+  user: SessionUser;
+  store: StoreProfile;
+  categories: SyncBootstrapCategory[];
+  products: ProductItem[];
+  customers: SyncBootstrapCustomer[];
+  suppliers: SyncBootstrapSupplier[];
+  restocks: RestockLogItem[];
+  sales: SyncBootstrapSale[];
+  saleItems: SyncBootstrapSaleItem[];
+}
+
+export interface SyncDeltaResponse {
+  events: SyncEventDto[];
+  latestCursor: number;
+  oldestAvailableCursor: number;
+  resetRequired: boolean;
+}
+
+export interface SyncMergeSalePayload {
+  id?: string;
+  receiptNo: string;
+  customerId?: string;
+  customerName: string;
+  customerPhone?: string;
+  saleDate: string;
+  subtotal: number;
+  taxRate: number;
+  taxAmount: number;
+  discountAmount: number;
+  totalAmount: number;
+  amountPaid: number;
+  paymentMode: PaymentMode;
+  status: SaleStatus;
+  notes?: string;
+  items: Array<{
+    productId: string;
+    productName?: string;
+    quantity: number;
+    unitPrice: number;
+  }>;
+}
+
+export interface SyncMergePayload {
+  categories: Array<{
+    id?: string;
+    name: string;
+    description?: string;
+    isActive?: boolean;
+  }>;
+  customers: Array<{
+    id?: string;
+    name: string;
+    email?: string;
+    phonenumber?: string;
+    address?: string;
+  }>;
+  suppliers: Array<{
+    id?: string;
+    name: string;
+    companyName?: string;
+    email?: string;
+    phonenumber?: string;
+    address?: string;
+    isActive?: boolean;
+  }>;
+  products: Array<{
+    id?: string;
+    categoryId?: string;
+    categoryName?: string;
+    name: string;
+    description?: string;
+    barcode?: string;
+    costPrice: number;
+    unitPrice: number;
+    stockQuantity: number;
+    lowStockThreshold?: number;
+    active?: boolean;
+  }>;
+  restocks: Array<{
+    id?: string;
+    productId: string;
+    productName?: string;
+    quantity: number;
+    restockDate?: string;
+    createdAt?: string;
+  }>;
+  sales: SyncMergeSalePayload[];
+}
+
+export interface SyncMergeResponse {
+  ok: boolean;
+  merged: {
+    categories: number;
+    customers: number;
+    suppliers: number;
+    products: number;
+    restocks: number;
+    sales: number;
+  };
+  latestCursor: number;
+}
+
+export interface SyncOutboxItem {
+  id: string;
+  clientMutationId: string;
+  entityType: string;
+  operation: string;
+  endpoint: string;
+  method: string;
+  payloadJson: string;
+  status: "pending" | "processing" | "conflict" | "failed";
+  retryCount: number;
+  lastError: string | null;
+  createdAt: string;
 }
 
 

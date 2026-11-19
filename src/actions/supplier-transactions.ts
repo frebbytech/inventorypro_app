@@ -2,7 +2,6 @@
 "use server";
 
 import db from "@/db/knex";
-// import { ensureFullDatabaseSchema } from "@/lib/db-init";
 import {
   InsertSupplierTransaction,
   Result,
@@ -15,24 +14,29 @@ import { createActivityLog } from "./activity-logs";
 import { createAuditLog } from "./audit-logs";
 import { getCurrentUser } from "./_actions";
 import { generateId } from "@/utils/generator";
+import { DEFAULT_TENANT_ID } from "@/lib/tenant";
+import {
+  emitSyncEvent,
+  insertSyncEvent,
+  publishSyncEvent,
+  type SyncEventRecord,
+} from "@/lib/sync-bus";
 
-/**
- * Get supplier transactions (optionally filtered by supplierId)
- */
 export async function getSupplierTransactions(
   supplierId?: string,
 ): Promise<Result<SupplierTransactionView[]>> {
   try {
-    // await ensureFullDatabaseSchema();
     const currentUser = await getCurrentUser();
-    if (!currentUser?.id) throw new Error("Unauthorized");
+    if (!currentUser?.id) return Result.fail("Unauthorized");
+    const tenantId = currentUser.tenant_id || DEFAULT_TENANT_ID;
 
     let query = db("v_supplier_transactions")
       .select("*")
+      .where("tenant_id", tenantId)
       .orderBy("transaction_date", "desc");
 
     if (supplierId) {
-      query = query.where("supplier_id", supplierId);
+      query = query.andWhere("supplier_id", supplierId);
     }
 
     const transactions = await query;
@@ -45,16 +49,16 @@ export async function getSupplierTransactions(
   }
 }
 
-/**
- * Get detailed information for a single supplier transaction including items
- */
 export async function getSupplierTransactionDetails(
   id: string,
 ): Promise<Result<SupplierTransactionDetailView>> {
   try {
-    // await ensureFullDatabaseSchema();
+    const currentUser = await getCurrentUser();
+    if (!currentUser?.id) return Result.fail("Unauthorized");
+    const tenantId = currentUser.tenant_id || DEFAULT_TENANT_ID;
+
     const transaction = await db("v_supplier_transactions")
-      .where("id", id)
+      .where({ id, tenant_id: tenantId })
       .first();
 
     if (!transaction) {
@@ -64,7 +68,7 @@ export async function getSupplierTransactionDetails(
     const items: SupplierTransactionItem[] = await db(
       "supplier_transaction_items",
     )
-      .where("supplier_transaction_id", id)
+      .where({ supplier_transaction_id: id, tenant_id: tenantId })
       .orderBy("created_at", "asc");
 
     return Result.ok({
@@ -79,16 +83,13 @@ export async function getSupplierTransactionDetails(
   }
 }
 
-/**
- * Create a new supplier transaction with item details
- */
 export async function createSupplierTransaction(
   data: InsertSupplierTransaction,
 ): Promise<Result<{ id: string; transaction_no: string }>> {
   try {
-    // await ensureFullDatabaseSchema();
     const currentUser = await getCurrentUser();
-    if (!currentUser?.id) throw new Error("Unauthorized");
+    if (!currentUser?.id) return Result.fail("Unauthorized");
+    const tenantId = currentUser.tenant_id || DEFAULT_TENANT_ID;
 
     if (!data.supplier_id) {
       return Result.fail("Supplier selection is required.");
@@ -100,12 +101,18 @@ export async function createSupplierTransaction(
       );
     }
 
+    const supplier = await db("suppliers")
+      .where({ id: data.supplier_id, tenant_id: tenantId })
+      .first("id");
+    if (!supplier) {
+      return Result.fail("Supplier not found.");
+    }
+
     const transactionId = generateId("stx");
     const transactionNo = `SUP-TXN-${Date.now().toString().slice(-6)}-${Math.floor(
       100 + Math.random() * 900,
     )}`;
 
-    // Calculate totals
     const calculatedTotal = data.items.reduce((acc, item) => {
       const lineTotal =
         item.total_price || (item.quantity || 1) * (item.unit_price || 0);
@@ -123,62 +130,103 @@ export async function createSupplierTransaction(
     const transactionDate = data.transaction_date
       ? new Date(data.transaction_date).toISOString()
       : new Date().toISOString();
+    const nowIso = new Date().toISOString();
 
-    // Insert transaction master record
-    await db("supplier_transactions").insert({
-      id: transactionId,
-      transaction_no: transactionNo,
-      supplier_id: data.supplier_id,
-      delivered_by: data.delivered_by || null,
-      transaction_date: transactionDate,
-      total_amount: totalAmount,
-      amount_paid: amountPaid,
-      balance: balance,
-      payment_mode: data.payment_mode || "cash",
-      status: data.status || "completed",
-      notes: data.notes || null,
-      user_id: currentUser.id,
-      created_at: db.fn.now(),
-      updated_at: db.fn.now(),
-    });
+    const eventsToPublish: SyncEventRecord[] = [];
+    const trx = await db.transaction();
 
-    // Insert item details
-    for (const item of data.items) {
-      const itemId = generateId("sti");
-      const lineTotal =
-        item.total_price || (item.quantity || 1) * (item.unit_price || 0);
-
-      await db("supplier_transaction_items").insert({
-        id: itemId,
-        supplier_transaction_id: transactionId,
-        product_id: item.product_id || null,
-        product_name: item.product_name,
-        category_name: item.category_name || null,
-        product_type: item.product_type || "boxes",
-        quantity: item.quantity || 1,
-        unit_price: item.unit_price || 0,
-        total_price: lineTotal,
-        created_at: db.fn.now(),
-        updated_at: db.fn.now(),
+    try {
+      await trx("supplier_transactions").insert({
+        id: transactionId,
+        tenant_id: tenantId,
+        transaction_no: transactionNo,
+        supplier_id: data.supplier_id,
+        delivered_by: data.delivered_by || null,
+        transaction_date: transactionDate,
+        total_amount: totalAmount,
+        amount_paid: amountPaid,
+        balance,
+        payment_mode: data.payment_mode || "cash",
+        status: data.status || "completed",
+        notes: data.notes || null,
+        user_id: currentUser.id,
+        created_at: nowIso,
+        updated_at: nowIso,
       });
 
-      // Optional: If product_id matches an existing product in stock, increment stock quantity
-      if (item.product_id) {
-        try {
-          await db("products")
-            .where("id", item.product_id)
-            .increment("stock_quantity", item.quantity || 1);
-        } catch (e) {
-          console.warn(
-            "Failed to update stock quantity for product:",
-            item.product_id,
-            e,
-          );
+      for (const item of data.items) {
+        const itemId = generateId("sti");
+        const qty = Number(item.quantity) || 1;
+        const lineTotal = item.total_price || qty * (item.unit_price || 0);
+
+        await trx("supplier_transaction_items").insert({
+          id: itemId,
+          tenant_id: tenantId,
+          supplier_transaction_id: transactionId,
+          product_id: item.product_id || null,
+          product_name: item.product_name,
+          category_name: item.category_name || null,
+          product_type: item.product_type || "boxes",
+          quantity: qty,
+          unit_price: item.unit_price || 0,
+          total_price: lineTotal,
+          created_at: nowIso,
+          updated_at: nowIso,
+        });
+
+        if (item.product_id) {
+          const updated = await trx("products")
+            .where({ id: item.product_id, tenant_id: tenantId })
+            .update({
+              stock_quantity: db.raw("stock_quantity + ?", [qty]),
+              version: db.raw("COALESCE(version, 1) + 1"),
+              updated_at: nowIso,
+            });
+
+          if (updated === 1) {
+            const refreshed = await trx("products")
+              .select("stock_quantity", "version")
+              .where({ id: item.product_id, tenant_id: tenantId })
+              .first();
+
+            eventsToPublish.push(
+              await insertSyncEvent(trx, {
+                tenantId,
+                entityType: "product",
+                entityId: item.product_id,
+                action: "stock_delta",
+                payload: {
+                  delta: qty,
+                  stock_quantity: Number(refreshed?.stock_quantity ?? 0),
+                  version: Number(refreshed?.version ?? 1),
+                },
+                actorUserId: currentUser.id,
+              }),
+            );
+          }
         }
       }
+
+      eventsToPublish.push(
+        await insertSyncEvent(trx, {
+          tenantId,
+          entityType: "supplier_transaction",
+          entityId: transactionId,
+          action: "upsert",
+          actorUserId: currentUser.id,
+        }),
+      );
+
+      await trx.commit();
+    } catch (err) {
+      await trx.rollback();
+      throw err;
     }
 
-    // Activity & Audit logging
+    for (const evt of eventsToPublish) {
+      publishSyncEvent(evt);
+    }
+
     await createActivityLog({
       activity_type: "supplier_transaction_created",
       title: "Recorded Supplier Transaction",
@@ -187,7 +235,6 @@ export async function createSupplierTransaction(
     });
 
     await createAuditLog({
-      // user_id: currentUser.id,
       action: "update",
       entity_type: "supplier_transaction",
       entity_id: transactionId,
@@ -206,7 +253,6 @@ export async function createSupplierTransaction(
     return Result.ok({
       id: transactionId,
       transaction_no: transactionNo,
-      message: "Supplier transaction recorded successfully.",
     });
   } catch (error: any) {
     console.error("Failed to create supplier transaction:", error);
@@ -216,29 +262,39 @@ export async function createSupplierTransaction(
   }
 }
 
-/**
- * Delete a supplier transaction
- */
 export async function deleteSupplierTransaction(
   id: string,
 ): Promise<Result<boolean>> {
   try {
-    // await ensureFullDatabaseSchema();
     const currentUser = await getCurrentUser();
-    if (!currentUser?.id) throw new Error("Unauthorized");
+    if (!currentUser?.id) return Result.fail("Unauthorized");
+    const tenantId = currentUser.tenant_id || DEFAULT_TENANT_ID;
 
-    const existing = await db("supplier_transactions").where("id", id).first();
+    const existing = await db("supplier_transactions")
+      .where({ id, tenant_id: tenantId })
+      .first();
     if (!existing) {
       return Result.fail("Transaction not found");
     }
 
-    await db("supplier_transaction_items")
-      .where("supplier_transaction_id", id)
-      .del();
-    await db("supplier_transactions").where("id", id).del();
+    await db.transaction(async (trx) => {
+      await trx("supplier_transaction_items")
+        .where({ supplier_transaction_id: id, tenant_id: tenantId })
+        .del();
+      await trx("supplier_transactions")
+        .where({ id, tenant_id: tenantId })
+        .del();
+    });
 
     revalidatePath("/admin/supplier");
     revalidatePath("/admin/supplier/transactions");
+    await emitSyncEvent({
+      tenantId,
+      entityType: "supplier_transaction",
+      entityId: id,
+      action: "delete",
+      actorUserId: currentUser.id,
+    });
 
     return Result.ok(true);
   } catch (error: any) {
@@ -249,9 +305,6 @@ export async function deleteSupplierTransaction(
   }
 }
 
-/**
- * Get aggregated supplier statistics
- */
 export async function getSupplierStats(supplierId: string): Promise<
   Result<{
     totalPurchases: number;
@@ -261,10 +314,12 @@ export async function getSupplierStats(supplierId: string): Promise<
   }>
 > {
   try {
-    // await ensureFullDatabaseSchema();
+    const currentUser = await getCurrentUser();
+    if (!currentUser?.id) return Result.fail("Unauthorized");
+    const tenantId = currentUser.tenant_id || DEFAULT_TENANT_ID;
 
     const txns = await db("supplier_transactions")
-      .where("supplier_id", supplierId)
+      .where({ supplier_id: supplierId, tenant_id: tenantId })
       .orderBy("transaction_date", "desc");
 
     const totalPurchases = txns.length;
@@ -274,14 +329,15 @@ export async function getSupplierStats(supplierId: string): Promise<
     );
     const lastOrderDate = txns.length > 0 ? txns[0].transaction_date : null;
 
-    // Count unique items supplied
-    const itemsCountRes = await db("supplier_transaction_items")
-      .whereIn(
-        "supplier_transaction_id",
-        txns.map((t) => t.id),
-      )
-      .sum("quantity as totalQty")
-      .first();
+    const txnIds = txns.map((t) => t.id);
+    const itemsCountRes =
+      txnIds.length > 0
+        ? await db("supplier_transaction_items")
+            .where("tenant_id", tenantId)
+            .whereIn("supplier_transaction_id", txnIds)
+            .sum("quantity as totalQty")
+            .first()
+        : { totalQty: 0 };
 
     const productsSupplied = Number(itemsCountRes?.totalQty) || 0;
 

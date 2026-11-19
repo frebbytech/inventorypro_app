@@ -83,8 +83,8 @@ export default function TransactionDetailsModal({
     ? format(new Date(transaction.saleDate), "PPP 'at' p")
     : "N/A";
 
-  const getStatusBadge = (status: string) => {
-    switch (status.toLowerCase()) {
+  const getStatusBadge = (status?: string | null) => {
+    switch ((status ?? "").toLowerCase()) {
       case "completed":
         return <Badge className="bg-emerald-500/15 text-emerald-700 dark:text-emerald-400 border-emerald-500/30">Completed</Badge>;
       case "refunded":

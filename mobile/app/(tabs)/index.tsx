@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
   RefreshControl,
   ScrollView,
@@ -23,7 +23,7 @@ import { LOW_STOCK_THRESHOLD, type TodayDashboardData } from "@/types/domain";
 export default function TodayScreen() {
   const { theme } = useTheme();
   const api = useApiClient();
-  const { store } = useAuth();
+  const { store, syncVersion } = useAuth();
   const router = useRouter();
   const { colors, spacing, typography, radii } = theme;
   const threshold = store?.stockAlertThreshold || LOW_STOCK_THRESHOLD;
@@ -54,11 +54,20 @@ export default function TodayScreen() {
     [api],
   );
 
+  const loadDashboardRef = useRef(loadDashboard);
+  loadDashboardRef.current = loadDashboard;
+
   useFocusEffect(
     useCallback(() => {
       void loadDashboard(Boolean(data));
     }, [loadDashboard]),
   );
+
+  useEffect(() => {
+    if (syncVersion > 0) {
+      void loadDashboardRef.current(true);
+    }
+  }, [syncVersion]);
 
   if (loading && !data) {
     return (

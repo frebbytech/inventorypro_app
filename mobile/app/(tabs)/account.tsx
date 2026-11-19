@@ -1,11 +1,22 @@
 import React, { useState } from "react";
-import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
+import {
+  Alert,
+  Pressable,
+  ScrollView,
+  Share,
+  StyleSheet,
+  Text,
+  View,
+} from "react-native";
 import { useRouter } from "expo-router";
 import { SafeAreaView } from "react-native-safe-area-context";
 import {
+  AlertTriangle,
   BarChart3,
+  Building2,
   ChevronRight,
   Clock,
+  Cloud,
   FileSpreadsheet,
   History,
   Layers,
@@ -13,8 +24,11 @@ import {
   Mail,
   PackagePlus,
   Phone,
+  RefreshCw,
   Settings,
+  Share2,
   Shield,
+  Smartphone,
   Truck,
   UserCog,
   Users,
@@ -22,16 +36,40 @@ import {
 import { useAuth } from "@/api/AuthProvider";
 import { DemoBanner } from "@/components/DemoBanner";
 import { SignOutConfirmDialog } from "@/components/SignOutConfirmDialog";
-import { Badge, Button, Card, CardContent } from "@/components/ui";
+import { SyncTransitionModal } from "@/components/SyncTransitionModal";
+import {
+  Badge,
+  Button,
+  Card,
+  CardContent,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui";
 import { useTheme } from "@/theme";
 import { formatDateTime } from "@/utils/formatters";
 
 export default function AccountScreen() {
   const { theme } = useTheme();
-  const { user, store } = useAuth();
+  const {
+    user,
+    store,
+    workspaceMode,
+    tenant,
+    syncStatus,
+    pendingOutboxCount,
+    conflictOutboxCount,
+    lastSyncedAt,
+    syncError,
+    triggerSyncNow,
+    discardSyncConflicts,
+    switchBackToMobileOnly,
+  } = useAuth();
   const router = useRouter();
   const { colors, spacing, typography, radii, fontFamilies } = theme;
+
   const [logoutOpen, setLogoutOpen] = useState(false);
+  const [transitionOpen, setTransitionOpen] = useState(false);
+  const [syncingNow, setSyncingNow] = useState(false);
 
   const fullName = user
     ? [user.firstname, user.lastname].filter(Boolean).join(" ").trim() ||
@@ -49,6 +87,44 @@ export default function AccountScreen() {
 
   const roleLabel =
     user?.role === "admin" ? "Administrator" : "Team Member";
+
+  const handleManualSync = async () => {
+    setSyncingNow(true);
+    try {
+      await triggerSyncNow();
+    } finally {
+      setSyncingNow(false);
+    }
+  };
+
+  const handleShareWorkspaceCode = async () => {
+    if (!tenant?.slug) return;
+    try {
+      await Share.share({
+        message: `InventoryPro Workspace Code for ${tenant.name}: ${tenant.slug}`,
+      });
+    } catch {
+      // ignore cancelled share sheet
+    }
+  };
+
+  const handleConfirmSwitchToMobileOnly = () => {
+    const warning =
+      pendingOutboxCount > 0
+        ? `You have ${pendingOutboxCount} pending offline change(s). We'll attempt to sync them first before switching back to Mobile-Only mode.`
+        : "Switch back to local Mobile-Only storage? You will sign out of the cloud workspace on this device.";
+
+    Alert.alert("Switch to Mobile-Only Mode", warning, [
+      { text: "Cancel", style: "cancel" },
+      {
+        text: "Switch Mode",
+        style: "destructive",
+        onPress: () => {
+          void switchBackToMobileOnly();
+        },
+      },
+    ]);
+  };
 
   const menuItems: ReadonlyArray<{
     title: string;
@@ -121,6 +197,19 @@ export default function AccountScreen() {
     },
   ];
 
+  const syncStatusLabel =
+    workspaceMode === "mobile_only"
+      ? "Local SQLite Only"
+      : syncStatus === "live"
+        ? "Live Connected"
+        : syncStatus === "syncing"
+          ? "Syncing..."
+          : syncStatus === "reconnecting"
+            ? "Reconnecting..."
+            : syncStatus === "conflict"
+              ? "Conflict Detected"
+              : "Offline";
+
   return (
     <SafeAreaView
       edges={["top"]}
@@ -128,7 +217,13 @@ export default function AccountScreen() {
     >
       <DemoBanner
         title="Account"
-        subtitle={user ? `@${user.username}` : "Profile & workspace"}
+        subtitle={
+          tenant
+            ? `${tenant.name} · @${user?.username || "staff"}`
+            : user
+              ? `@${user.username}`
+              : "Profile & workspace"
+        }
       />
 
       <ScrollView
@@ -138,6 +233,217 @@ export default function AccountScreen() {
           paddingBottom: spacing["3xl"],
         }}
       >
+        {/* Workspace & Live Sync Card */}
+        <Card>
+          <CardHeader bordered>
+            <View style={styles.workspaceCardHeader}>
+              <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+                {workspaceMode === "synced" ? (
+                  <Cloud size={18} color={colors.primary} />
+                ) : (
+                  <Smartphone size={18} color={colors.primary} />
+                )}
+                <CardTitle>Workspace & Live Sync</CardTitle>
+              </View>
+              <Badge
+                label={syncStatusLabel}
+                variant={
+                  workspaceMode === "synced" && syncStatus === "live"
+                    ? "default"
+                    : "outline"
+                }
+              />
+            </View>
+          </CardHeader>
+
+          <CardContent style={{ paddingTop: spacing.md, gap: spacing.md }}>
+            {workspaceMode === "mobile_only" ? (
+              <>
+                <Text style={[typography.body, { color: colors.mutedForeground }]}>
+                  You are running in{" "}
+                  <Text
+                    style={{
+                      color: colors.foreground,
+                      fontFamily: fontFamilies.semibold,
+                    }}
+                  >
+                    Mobile-Only Mode
+                  </Text>
+                  . All products, stock, and sales live on this device. Enable Live
+                  Sync anytime to collaborate with the Web App or additional mobile
+                  devices.
+                </Text>
+                <Button
+                  title="Switch to Synced (Web + Mobile)"
+                  size="md"
+                  leftIcon={<Cloud size={16} color="#FFFFFF" />}
+                  onPress={() => setTransitionOpen(true)}
+                />
+              </>
+            ) : (
+              <>
+                <View style={styles.metaList}>
+                  <View style={styles.metaRow}>
+                    <Building2 size={15} color={colors.mutedForeground} />
+                    <Text
+                      style={[
+                        typography.caption,
+                        { color: colors.mutedForeground, width: 92 },
+                      ]}
+                    >
+                      Workspace
+                    </Text>
+                    <Text
+                      numberOfLines={1}
+                      style={[
+                        typography.bodyMedium,
+                        { color: colors.foreground, flex: 1 },
+                      ]}
+                    >
+                      {tenant?.name || store?.storeName || "Cloud Store"}
+                    </Text>
+                  </View>
+
+                  {tenant?.slug ? (
+                    <View style={styles.metaRow}>
+                      <Share2 size={15} color={colors.mutedForeground} />
+                      <Text
+                        style={[
+                          typography.caption,
+                          { color: colors.mutedForeground, width: 92 },
+                        ]}
+                      >
+                        Store Code
+                      </Text>
+                      <Pressable
+                        onPress={() => void handleShareWorkspaceCode()}
+                        style={{ flex: 1, flexDirection: "row", alignItems: "center", gap: 6 }}
+                      >
+                        <Text
+                          numberOfLines={1}
+                          style={[
+                            typography.bodySemibold,
+                            { color: colors.primary },
+                          ]}
+                        >
+                          {tenant.slug}
+                        </Text>
+                        <Text
+                          style={[
+                            typography.micro,
+                            { color: colors.mutedForeground },
+                          ]}
+                        >
+                          (Share)
+                        </Text>
+                      </Pressable>
+                    </View>
+                  ) : null}
+
+                  <View style={styles.metaRow}>
+                    <Clock size={15} color={colors.mutedForeground} />
+                    <Text
+                      style={[
+                        typography.caption,
+                        { color: colors.mutedForeground, width: 92 },
+                      ]}
+                    >
+                      Last synced
+                    </Text>
+                    <Text
+                      numberOfLines={1}
+                      style={[
+                        typography.bodyMedium,
+                        { color: colors.foreground, flex: 1 },
+                      ]}
+                    >
+                      {lastSyncedAt ? formatDateTime(lastSyncedAt) : "Just now"}
+                    </Text>
+                  </View>
+                </View>
+
+                {pendingOutboxCount > 0 ? (
+                  <View
+                    style={[
+                      styles.noticeBanner,
+                      {
+                        backgroundColor: colors.muted,
+                        borderColor: colors.border,
+                        borderRadius: radii.lg,
+                        padding: spacing.sm,
+                      },
+                    ]}
+                  >
+                    <RefreshCw size={14} color={colors.primary} />
+                    <Text
+                      style={[
+                        typography.caption,
+                        { color: colors.foreground, flex: 1 },
+                      ]}
+                    >
+                      {pendingOutboxCount} offline change
+                      {pendingOutboxCount === 1 ? "" : "s"} queued to upload
+                    </Text>
+                  </View>
+                ) : null}
+
+                {conflictOutboxCount > 0 || syncError ? (
+                  <View
+                    style={[
+                      styles.noticeBanner,
+                      {
+                        backgroundColor: colors.dangerTint,
+                        borderColor: colors.dangerBorder,
+                        borderRadius: radii.lg,
+                        padding: spacing.sm,
+                      },
+                    ]}
+                  >
+                    <AlertTriangle size={14} color={colors.dangerText} />
+                    <Text
+                      style={[
+                        typography.caption,
+                        { color: colors.dangerText, flex: 1 },
+                      ]}
+                    >
+                      {syncError ||
+                        `${conflictOutboxCount} sync conflict(s) rejected by server stock rules.`}
+                    </Text>
+                  </View>
+                ) : null}
+
+                <View style={styles.syncActionsRow}>
+                  <Button
+                    title={syncingNow ? "Syncing..." : "Sync Now"}
+                    variant="outline"
+                    size="sm"
+                    loading={syncingNow}
+                    style={{ flex: 1 }}
+                    leftIcon={<RefreshCw size={14} color={colors.foreground} />}
+                    onPress={() => void handleManualSync()}
+                  />
+                  {conflictOutboxCount > 0 ? (
+                    <Button
+                      title="Use Cloud State"
+                      variant="destructive"
+                      size="sm"
+                      style={{ flex: 1 }}
+                      onPress={() => void discardSyncConflicts()}
+                    />
+                  ) : (
+                    <Button
+                      title="Mobile-Only"
+                      variant="ghost"
+                      size="sm"
+                      onPress={handleConfirmSwitchToMobileOnly}
+                    />
+                  )}
+                </View>
+              </>
+            )}
+          </CardContent>
+        </Card>
+
         {/* Profile Card */}
         <Card>
           <CardContent style={{ paddingTop: spacing.lg, gap: spacing.base }}>
@@ -350,6 +656,11 @@ export default function AccountScreen() {
         />
       </ScrollView>
 
+      <SyncTransitionModal
+        visible={transitionOpen}
+        onClose={() => setTransitionOpen(false)}
+      />
+
       <SignOutConfirmDialog
         visible={logoutOpen}
         onClose={() => setLogoutOpen(false)}
@@ -361,6 +672,23 @@ export default function AccountScreen() {
 const styles = StyleSheet.create({
   safe: {
     flex: 1,
+  },
+  workspaceCardHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 8,
+  },
+  noticeBanner: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    borderWidth: 1,
+  },
+  syncActionsRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
   },
   profileHeader: {
     flexDirection: "row",

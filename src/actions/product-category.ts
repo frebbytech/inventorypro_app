@@ -9,25 +9,30 @@ import { createAuditLog } from "./audit-logs";
 import { createActivityLog } from "./activity-logs";
 import { generateId } from "@/utils/generator";
 import { getCurrentUser } from "./_actions";
+import { DEFAULT_TENANT_ID } from "@/lib/tenant";
+import { emitSyncEvent } from "@/lib/sync-bus";
 
 // ──────────────────────────────────────────────────────────────
-// Read functions
+// Read functions (tenant-scoped)
 // ──────────────────────────────────────────────────────────────
 
-/**
- * Get all product categories – ordered by newest first.
- */
 export async function getCategories(): Promise<Result<Category[]>> {
   try {
+    const currentUser = await getCurrentUser();
+    if (!currentUser?.id) return Result.fail("Unauthorized");
+
+    const tenantId = currentUser.tenant_id || DEFAULT_TENANT_ID;
     const categories: Category[] = await db("product_categories")
       .select(
         "id",
+        "tenant_id",
         "user_id",
         "name",
         "description",
         "created_at",
         "updated_at",
       )
+      .where("tenant_id", tenantId)
       .orderBy("created_at", "desc");
 
     return Result.ok(categories);
@@ -37,21 +42,23 @@ export async function getCategories(): Promise<Result<Category[]>> {
   }
 }
 
-/**
- * Get a single product category by ID.
- */
 export async function getCategory(id: string): Promise<Result<Category>> {
   try {
+    const currentUser = await getCurrentUser();
+    if (!currentUser?.id) return Result.fail("Unauthorized");
+
+    const tenantId = currentUser.tenant_id || DEFAULT_TENANT_ID;
     const category = await db("product_categories")
       .select(
         "id",
+        "tenant_id",
         "user_id",
         "name",
         "description",
         "created_at",
         "updated_at",
       )
-      .where("id", id)
+      .where({ id, tenant_id: tenantId })
       .first();
 
     if (!category) {
@@ -66,16 +73,13 @@ export async function getCategory(id: string): Promise<Result<Category>> {
 }
 
 // ──────────────────────────────────────────────────────────────
-// Create / Update / Delete
+// Create / Update / Delete (tenant-scoped)
 // ──────────────────────────────────────────────────────────────
 
-/**
- * Create a new product category – admin only.
- */
 export async function createCategory(
   categoryData: InsertCategory,
 ): Promise<Result<{ id: string }>> {
-const isAdmin = await checkRole("admin");
+  const isAdmin = await checkRole("admin");
   if (!isAdmin) {
     return Result.fail("Not authorized");
   }
@@ -83,17 +87,17 @@ const isAdmin = await checkRole("admin");
   try {
     const currentUser = await getCurrentUser();
     const userId = currentUser?.id;
-    if (!userId) throw new Error("Unauthorized");
+    if (!userId) return Result.fail("Unauthorized");
+    const tenantId = currentUser.tenant_id || DEFAULT_TENANT_ID;
 
-    // Validate required fields
-    if (!categoryData.name || categoryData.name.trim().length === 0) {
+    const trimmedName = categoryData.name?.trim() || "";
+    if (!trimmedName) {
       return Result.fail("Category name is required");
     }
 
-    // Optional: ensure unique category name per user (or globally)
     const existing = await db("product_categories")
-      .where("name", categoryData.name.trim())
-      .andWhere("user_id", currentUser?.id)
+      .where("tenant_id", tenantId)
+      .whereRaw("LOWER(name) = ?", [trimmedName.toLowerCase()])
       .first();
 
     if (existing) {
@@ -103,32 +107,39 @@ const isAdmin = await checkRole("admin");
     const newId = generateId();
     await db("product_categories").insert({
       id: newId,
-      user_id: currentUser?.id,
-      name: categoryData.name.trim(),
+      tenant_id: tenantId,
+      user_id: userId,
+      name: trimmedName,
       description: categoryData.description?.trim() || null,
     });
 
-    // Audit log
     await createAuditLog({
       entity_type: "product_category",
       entity_id: newId,
       action: "create",
       new_values: {
-        name: categoryData.name.trim(),
+        name: trimmedName,
         description: categoryData.description?.trim() || null,
       },
     });
 
-    // Activity log
     await createActivityLog({
       activity_type: "category_created",
-      title: `Category ${categoryData.name.trim()} created`,
+      title: `Category ${trimmedName} created`,
       description: "New product category added",
       metadata: { category_id: newId },
     });
 
     revalidatePath("/admin/product-category");
-    revalidatePath("/admin/product"); // products depend on categories
+    revalidatePath("/admin/product");
+    await emitSyncEvent({
+      tenantId,
+      entityType: "category",
+      entityId: newId,
+      action: "upsert",
+      actorUserId: userId,
+    });
+
     return Result.ok({ id: newId });
   } catch (error: any) {
     console.error("Failed to create category:", error);
@@ -136,13 +147,10 @@ const isAdmin = await checkRole("admin");
   }
 }
 
-/**
- * Update an existing product category – admin only.
- */
 export async function updateCategory(
   categoryData: Partial<InsertCategory> & { id: string },
 ): Promise<Result<{ success: true }>> {
-const isAdmin = await checkRole("admin");
+  const isAdmin = await checkRole("admin");
   if (!isAdmin) {
     return Result.fail("Not authorized");
   }
@@ -150,18 +158,17 @@ const isAdmin = await checkRole("admin");
   try {
     const currentUser = await getCurrentUser();
     const userId = currentUser?.id;
-    if (!userId) throw new Error("Unauthorized");
+    if (!userId) return Result.fail("Unauthorized");
+    const tenantId = currentUser.tenant_id || DEFAULT_TENANT_ID;
 
-    // Fetch current category for audit
     const current = await db("product_categories")
-      .where("id", categoryData.id)
+      .where({ id: categoryData.id, tenant_id: tenantId })
       .first();
 
     if (!current) {
       return Result.fail("Category not found");
     }
 
-    // Build update object – only allowed fields
     const updateFields: any = {};
     if (categoryData.name !== undefined) {
       const trimmedName = categoryData.name.trim();
@@ -169,11 +176,10 @@ const isAdmin = await checkRole("admin");
         return Result.fail("Category name cannot be empty");
       }
 
-      // Check name uniqueness (excluding itself)
       const duplicate = await db("product_categories")
-        .where("name", trimmedName)
-        .andWhere("user_id", userId)
-        .andWhere("id", "!=", categoryData.id)
+        .where("tenant_id", tenantId)
+        .whereRaw("LOWER(name) = ?", [trimmedName.toLowerCase()])
+        .whereNot("id", categoryData.id)
         .first();
 
       if (duplicate) {
@@ -191,15 +197,16 @@ const isAdmin = await checkRole("admin");
       return Result.fail("No fields to update");
     }
 
+    updateFields.updated_at = new Date().toISOString();
+
     const updatedCount = await db("product_categories")
-      .where("id", categoryData.id)
+      .where({ id: categoryData.id, tenant_id: tenantId })
       .update(updateFields);
 
     if (updatedCount === 0) {
       return Result.fail("Category not found or no changes made");
     }
 
-    // Audit log
     await createAuditLog({
       entity_type: "product_category",
       entity_id: categoryData.id,
@@ -214,7 +221,6 @@ const isAdmin = await checkRole("admin");
       },
     });
 
-    // Activity log
     await createActivityLog({
       activity_type: "category_updated",
       title: `Category ${current.name} updated`,
@@ -224,7 +230,15 @@ const isAdmin = await checkRole("admin");
 
     revalidatePath(`/admin/product-category/${categoryData.id}`);
     revalidatePath("/admin/product-category");
-    revalidatePath("/admin/product"); // products depend on categories
+    revalidatePath("/admin/product");
+    await emitSyncEvent({
+      tenantId,
+      entityType: "category",
+      entityId: categoryData.id,
+      action: "upsert",
+      actorUserId: userId,
+    });
+
     return Result.ok({ success: true });
   } catch (error: any) {
     console.error("Failed to update category:", error);
@@ -232,27 +246,28 @@ const isAdmin = await checkRole("admin");
   }
 }
 
-/**
- * Delete a product category – admin only.
- * Note: This will fail if products are still linked to this category.
- */
 export async function removeCategory(
   id: string,
 ): Promise<Result<{ success: true }>> {
- const isAdmin = await checkRole("admin");
+  const isAdmin = await checkRole("admin");
   if (!isAdmin) {
     return Result.fail("Not authorized");
   }
 
   try {
-    const category = await db("product_categories").where("id", id).first();
+    const currentUser = await getCurrentUser();
+    if (!currentUser?.id) return Result.fail("Unauthorized");
+    const tenantId = currentUser.tenant_id || DEFAULT_TENANT_ID;
+
+    const category = await db("product_categories")
+      .where({ id, tenant_id: tenantId })
+      .first();
     if (!category) {
       return Result.fail("Category not found");
     }
 
-    // Optional: prevent deletion if products are still using this category
     const linkedProducts = await db("products")
-      .where("category_id", id)
+      .where({ category_id: id, tenant_id: tenantId })
       .first();
 
     if (linkedProducts) {
@@ -261,12 +276,13 @@ export async function removeCategory(
       );
     }
 
-    const deletedCount = await db("product_categories").where("id", id).del();
+    const deletedCount = await db("product_categories")
+      .where({ id, tenant_id: tenantId })
+      .del();
     if (deletedCount === 0) {
       return Result.fail("Category not found");
     }
 
-    // Audit log
     await createAuditLog({
       entity_type: "product_category",
       entity_id: id,
@@ -277,7 +293,6 @@ export async function removeCategory(
       },
     });
 
-    // Activity log
     await createActivityLog({
       activity_type: "category_deleted",
       title: `Category ${category.name} deleted`,
@@ -287,6 +302,14 @@ export async function removeCategory(
 
     revalidatePath("/admin/product-category");
     revalidatePath("/admin/product");
+    await emitSyncEvent({
+      tenantId,
+      entityType: "category",
+      entityId: id,
+      action: "delete",
+      actorUserId: currentUser.id,
+    });
+
     return Result.ok({ success: true });
   } catch (error: any) {
     console.error("Failed to delete category:", error);
@@ -294,31 +317,38 @@ export async function removeCategory(
   }
 }
 
-// ──────────────────────────────────────────────────────────────
-// Bulk delete – admin only
-// ──────────────────────────────────────────────────────────────
-
 export async function removeCategories(
   ids: string[],
 ): Promise<Result<{ deletedCount: number }>> {
-const isAdmin = await checkRole("admin");
+  const isAdmin = await checkRole("admin");
   if (!isAdmin) {
     return Result.fail("Not authorized");
   }
 
   try {
-    const categories = await db("product_categories").whereIn("id", ids);
+    const currentUser = await getCurrentUser();
+    if (!currentUser?.id) return Result.fail("Unauthorized");
+    const tenantId = currentUser.tenant_id || DEFAULT_TENANT_ID;
+
+    const categories = await db("product_categories")
+      .where("tenant_id", tenantId)
+      .whereIn("id", ids);
     if (categories.length === 0) {
       return Result.fail("No categories found");
     }
 
-    // Prevent deletion if any category is still linked to products
-    const linked = await db("products").whereIn("category_id", ids).first();
+    const linked = await db("products")
+      .where("tenant_id", tenantId)
+      .whereIn("category_id", ids)
+      .first();
     if (linked) {
       return Result.fail("One or more categories are still used by products");
     }
 
-    const deleted = await db("product_categories").whereIn("id", ids).del();
+    const deleted = await db("product_categories")
+      .where("tenant_id", tenantId)
+      .whereIn("id", ids)
+      .del();
 
     await createAuditLog({
       entity_type: "product_categories",
@@ -336,6 +366,14 @@ const isAdmin = await checkRole("admin");
 
     revalidatePath("/admin/product-category");
     revalidatePath("/admin/product");
+    await emitSyncEvent({
+      tenantId,
+      entityType: "category",
+      entityId: ids.join(","),
+      action: "refresh",
+      actorUserId: currentUser.id,
+    });
+
     return Result.ok({ deletedCount: deleted });
   } catch (error: any) {
     console.error("Failed to delete categories:", error);
@@ -343,16 +381,15 @@ const isAdmin = await checkRole("admin");
   }
 }
 
-
-
-
-/**
- * Bulk create product categories – admin only.
- */
-
 export async function bulkCreateCategories(
   categoriesData: Array<{ name: string; description?: string | null }>,
-): Promise<Result<{ createdCount: number; existingCount: number; categories: Array<{ id: string; name: string }> }>> {
+): Promise<
+  Result<{
+    createdCount: number;
+    existingCount: number;
+    categories: Array<{ id: string; name: string }>;
+  }>
+> {
   const isAdmin = await checkRole("admin");
   if (!isAdmin) {
     return Result.fail("Not authorized");
@@ -361,13 +398,13 @@ export async function bulkCreateCategories(
   try {
     const currentUser = await getCurrentUser();
     const userId = currentUser?.id;
-    if (!userId) throw new Error("Unauthorized");
+    if (!userId) return Result.fail("Unauthorized");
+    const tenantId = currentUser.tenant_id || DEFAULT_TENANT_ID;
 
     if (!Array.isArray(categoriesData) || categoriesData.length === 0) {
       return Result.fail("No categories provided for import");
     }
 
-    // Filter valid categories and deduplicate by name in input
     const seenNames = new Set<string>();
     const validInputs: Array<{ name: string; description?: string | null }> = [];
 
@@ -388,9 +425,8 @@ export async function bulkCreateCategories(
       return Result.fail("No valid categories with names found");
     }
 
-    // Fetch existing categories for user
     const existingRecords = await db("product_categories")
-      .where("user_id", userId)
+      .where("tenant_id", tenantId)
       .select("id", "name");
 
     const existingMap = new Map<string, { id: string; name: string }>();
@@ -400,6 +436,7 @@ export async function bulkCreateCategories(
 
     const newToInsert: Array<{
       id: string;
+      tenant_id: string;
       user_id: string;
       name: string;
       description: string | null;
@@ -418,6 +455,7 @@ export async function bulkCreateCategories(
         const id = generateId();
         const record = {
           id,
+          tenant_id: tenantId,
           user_id: userId,
           name: item.name,
           description: item.description || null,
@@ -429,7 +467,6 @@ export async function bulkCreateCategories(
     }
 
     if (newToInsert.length > 0) {
-      // Transaction ONLY does DB writes — nothing that might need a second connection.
       await db.transaction(async (trx) => {
         const chunkSize = 50;
         for (let i = 0; i < newToInsert.length; i += chunkSize) {
@@ -438,25 +475,14 @@ export async function bulkCreateCategories(
         }
       });
 
-      // Logging happens AFTER the transaction is committed and the connection
-      // is released — avoids the pool-deadlock that was causing your timeout.
-      // If createAuditLog/createActivityLog accept a userId param, pass it
-      // explicitly so they don't re-query getCurrentUser() at all.
-      // await Promise.all([
-      //   createAuditLog({
-      //     entity_type: "product_category",
-      //     entity_id: newToInsert.map((c) => c.id).join(","),
-      //     action: "create",
-      //     new_values: { count: newToInsert.length },
-      //     userId, // avoid re-fetching session if the function supports this
-      //   }),
-      //   createActivityLog({
-      //     activity_type: "categories_bulk_imported",
-      //     title: `Bulk imported ${newToInsert.length} categories`,
-      //     description: `Imported ${newToInsert.length} categories via Spreadsheet/CSV`,
-      //     metadata: { count: newToInsert.length },
-      //   }),
-      // ]);
+      await emitSyncEvent({
+        tenantId,
+        entityType: "category",
+        entityId: "bulk",
+        action: "refresh",
+        payload: { count: newToInsert.length },
+        actorUserId: userId,
+      });
     }
 
     revalidatePath("/admin/product-category");
@@ -472,132 +498,3 @@ export async function bulkCreateCategories(
     return Result.fail(error?.message || "Failed to bulk create categories");
   }
 }
-
-
-// export async function bulkCreateCategories(
-//   categoriesData: Array<{ name: string; description?: string | null }>,
-// ): Promise<Result<{ createdCount: number; existingCount: number; categories: Array<{ id: string; name: string }> }>> {
-//   const isAdmin = await checkRole("admin");
-//   if (!isAdmin) {
-//     return Result.fail("Not authorized");
-//   }
-
-//   try {
-//     const currentUser = await getCurrentUser();
-
-// console.log(currentUser)
-
-
-//     const userId = currentUser?.id;
-//     if (!userId) throw new Error("Unauthorized");
-
-//     if (!Array.isArray(categoriesData) || categoriesData.length === 0) {
-//       return Result.fail("No categories provided for import");
-//     }
-
-//     // Filter valid categories and deduplicate by name in input
-//     const seenNames = new Set<string>();
-//     const validInputs: Array<{ name: string; description?: string | null }> = [];
-
-//     for (const item of categoriesData) {
-//       const trimmedName = item.name?.trim();
-//       if (!trimmedName) continue;
-//       const lower = trimmedName.toLowerCase();
-//       if (!seenNames.has(lower)) {
-//         seenNames.add(lower);
-//         validInputs.push({
-//           name: trimmedName,
-//           description: item.description?.trim() || null,
-//         });
-//       }
-//     }
-
-//     if (validInputs.length === 0) {
-//       return Result.fail("No valid categories with names found");
-//     }
-
-//     // Fetch existing categories for user
-//     const existingRecords = await db("product_categories")
-//       .where("user_id", userId)
-//       .select("id", "name");
-
-//     const existingMap = new Map<string, { id: string; name: string }>();
-//     existingRecords.forEach((rec) => {
-//       existingMap.set(rec.name.toLowerCase(), { id: rec.id, name: rec.name });
-//     });
-
-//     const newToInsert: Array<{
-//       id: string;
-//       user_id: string;
-//       name: string;
-//       description: string | null;
-//     }> = [];
-
-//     const finalResultCategories: Array<{ id: string; name: string }> = [];
-//     let existingCount = 0;
-
-//     for (const item of validInputs) {
-//       const lower = item.name.toLowerCase();
-//       if (existingMap.has(lower)) {
-//         existingCount++;
-//         finalResultCategories.push(existingMap.get(lower)!);
-//       } else {
-//         const id = generateId();
-//         newToInsert.push({
-//           id,
-//           user_id: userId,
-//           name: item.name,
-//           description: item.description || null,
-//         });
-//         existingMap.set(lower, { id, name: item.name });
-//         finalResultCategories.push({ id, name: item.name });
-//       }
-//     }
-
-//     if (newToInsert.length > 0) {
-
-
-//       await db.transaction(async (trx) => {
-
-
-//         // SQLite chunk insert
-//         const chunkSize = 50;
-//         for (let i = 0; i < newToInsert.length; i += chunkSize) {
-//           const chunk = newToInsert.slice(i, i + chunkSize);
-//           await trx("product_categories").insert(chunk);
-//         }
-
-//         await createAuditLog({
-//           entity_type: "product_category",
-//           entity_id: newToInsert.map((c) => c.id).join(","),
-//           action: "create",
-//           new_values: { count: newToInsert.length },
-//         });
-
-
-
-//         await createActivityLog({
-//           activity_type: "categories_bulk_imported",
-//           title: `Bulk imported ${newToInsert.length} categories`,
-//           description: `Imported ${newToInsert.length} categories via Spreadsheet/CSV`,
-//           metadata: { count: newToInsert.length },
-//         });
-//       });
-
-//       console.log("dome")
-//     }
-
-//     revalidatePath("/admin/product-category");
-//     revalidatePath("/admin/product");
-//     // revalidatePath("/admin/inventory");
-
-//     return Result.ok({
-//       createdCount: newToInsert.length,
-//       existingCount,
-//       categories: finalResultCategories,
-//     });
-//   } catch (error: any) {
-//     console.error("Failed to bulk create categories:", error);
-//     return Result.fail(error?.message || "Failed to bulk create categories");
-//   }
-// }

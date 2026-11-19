@@ -55,28 +55,53 @@ import { Knex } from "knex";
 import path from "path";
 import Client_Libsql from "@libsql/knex-libsql";
 
+function isMalformedOrExpiredJwt(token: string): boolean {
+  if (!token.startsWith("eyJ")) return false;
+  const parts = token.split(".");
+  if (parts.length !== 3 || !parts[0] || !parts[1] || !parts[2]) {
+    return true;
+  }
+  try {
+    const payload = JSON.parse(
+      Buffer.from(parts[1], "base64url").toString("utf8"),
+    );
+    if (typeof payload?.exp === "number" && payload.exp * 1000 < Date.now()) {
+      return true;
+    }
+    return false;
+  } catch {
+    return true;
+  }
+}
+
 export const resolveDatabasePath = (): string => {
-  const rawUrl = process.env.DATABASE_URL || "";
+  const rawUrl =
+    process.env.DATABASE_URL || process.env.TURSO_DATABASE_URL || "";
 
-  const authToken = process.env.DATABASE_AUTH_TOKEN || "";
+  const authToken = (
+    process.env.DATABASE_AUTH_TOKEN ||
+    process.env.TURSO_AUTH_TOKEN ||
+    ""
+  ).trim();
 
+  const localFallbackUrl = `file:${path.resolve("./inventory_pro.db")}`;
   let finalUrl = rawUrl.trim();
 
   // If no custom URL/path is provided, default to local project SQLite/LibSQL database
   if (!finalUrl) {
-    const localDbPath = path.resolve("./inventory_pro.db");
-    return `file:${localDbPath}`;
+    return localFallbackUrl;
   }
 
   // Check if it's already a valid protocol scheme
-  const isProtocolUri =
+  const isRemoteScheme =
     finalUrl.startsWith("libsql://") ||
     finalUrl.startsWith("https://") ||
     finalUrl.startsWith("http://") ||
     finalUrl.startsWith("wss://") ||
-    finalUrl.startsWith("ws://") ||
-    finalUrl.startsWith("file:") ||
-    finalUrl === ":memory:";
+    finalUrl.startsWith("ws://");
+
+  const isProtocolUri =
+    isRemoteScheme || finalUrl.startsWith("file:") || finalUrl === ":memory:";
 
   if (!isProtocolUri) {
     // Normalize relative or absolute system filesystem paths to file: URI
@@ -84,8 +109,33 @@ export const resolveDatabasePath = (): string => {
     finalUrl = `file:${resolvedPath}`;
   }
 
+  // Remote Turso/libSQL endpoints require a valid auth token; without one every query returns HTTP 400/401.
+  // Fall back to the local SQLite database if a remote URL has a missing, truncated, or expired token.
+  const isLocalHost =
+    /^(https?|wss?|libsql):\/\/(localhost|127\.0\.0\.1|\[::1\])(:|\/|$)/i.test(
+      finalUrl,
+    );
+  const inlineMatch = finalUrl.match(/[?&]authToken=([^&]+)/);
+  const inlineToken = inlineMatch ? decodeURIComponent(inlineMatch[1]) : "";
+  const effectiveToken = inlineToken || authToken;
+
+  if (isRemoteScheme && !isLocalHost) {
+    if (!effectiveToken) {
+      console.warn(
+        "[db] Remote DATABASE_URL is configured without DATABASE_AUTH_TOKEN; falling back to local ./inventory_pro.db.",
+      );
+      return localFallbackUrl;
+    }
+    if (isMalformedOrExpiredJwt(effectiveToken)) {
+      console.warn(
+        "[db] DATABASE_AUTH_TOKEN appears truncated, malformed, or expired; falling back to local ./inventory_pro.db.",
+      );
+      return localFallbackUrl;
+    }
+  }
+
   // Inject authToken if provided and not already present in the connection string
-  if (authToken && !finalUrl.includes("authToken=")) {
+  if (authToken && !inlineMatch) {
     const separator = finalUrl.includes("?") ? "&" : "?";
     finalUrl = `${finalUrl}${separator}authToken=${encodeURIComponent(authToken)}`;
   }

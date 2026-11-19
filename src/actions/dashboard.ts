@@ -13,6 +13,7 @@ import {
 } from "date-fns";
 import T from "lodash/fp/T";
 import { getCurrentUser } from "./_actions";
+import { DEFAULT_TENANT_ID } from "@/lib/tenant";
 import { checkRole } from "@/utils/roles";
 
 export interface AdminKpiMetrics {
@@ -175,12 +176,13 @@ export async function getDashboardStats(): Promise<
 
     const currentUser = await getCurrentUser();
     if (!currentUser?.id) return Result.fail("Not Authorized");
+    const tenantId = currentUser.tenant_id || DEFAULT_TENANT_ID;
 
     // Revenue and orders for today
-
     const today = format(new Date(), "yyyy-MM-dd");
     const todayStats = await db("v_sale_summary")
-      .where("status", "completed")
+      .where("tenant_id", tenantId)
+      .andWhere("status", "completed")
       .andWhereRaw("DATE(sale_date) = ?", today)
       .first(
         db.raw(
@@ -193,14 +195,16 @@ export async function getDashboardStats(): Promise<
     const aov = Number(todayStats?.aov) || 0;
 
     const lowStockCount = await db("products")
-      .where("stock_quantity", "<", 5)
+      .where("tenant_id", tenantId)
+      .andWhere("stock_quantity", "<", 5)
       .count("id as count")
       .first()
-      .then((r: any) => Number(r?.count) || 0); // 👈 Explicitly bypass with any
+      .then((r: any) => Number(r?.count) || 0);
 
     // Unread notifications for the current user
     const unreadNotifications = await db("notifications")
-      .where("user_id", currentUser?.id)
+      .where("tenant_id", tenantId)
+      .andWhere("user_id", currentUser?.id)
       .andWhere("is_read", false)
       .count("id as count")
       .first()
@@ -225,8 +229,16 @@ export async function getDashboardStats(): Promise<
 
 export async function getSalesOverTime(
   days: number = 7,
+  tenantIdOverride?: string,
 ): Promise<Result<{ date: string; revenue: number; orders: number }[]>> {
   try {
+    let tenantId = tenantIdOverride;
+    if (!tenantId) {
+      const currentUser = await getCurrentUser();
+      if (!currentUser?.id) return Result.fail("Not Authorized");
+      tenantId = currentUser.tenant_id || DEFAULT_TENANT_ID;
+    }
+
     const now = new Date();
     const startDate = startOfDay(subDays(now, days - 1));
     const endDate = endOfDay(now);
@@ -237,7 +249,7 @@ export async function getSalesOverTime(
       .select(db.raw("date(sale_date) as date_str"))
       .sum({ revenue: "total_amount" })
       .count({ orders: "sale_id" })
-      .where({ status: "completed" })
+      .where({ status: "completed", tenant_id: tenantId })
       .whereBetween("sale_date", [
         startDate.toISOString(),
         endDate.toISOString(),
@@ -291,6 +303,10 @@ export async function getTopProducts(
   Result<{ id: string; name: string; revenue: number; quantity: number }[]>
 > {
   try {
+    const currentUser = await getCurrentUser();
+    if (!currentUser?.id) return Result.fail("Not Authorized");
+    const tenantId = currentUser.tenant_id || DEFAULT_TENANT_ID;
+
     const results = await db("sale_items as si")
       .join("products as p", "si.product_id", "p.id")
       .join("sales as s", "si.sales_id", "s.id")
@@ -301,6 +317,8 @@ export async function getTopProducts(
         db.raw("SUM(si.quantity) as quantity"),
       )
       .where("s.status", "completed")
+      .andWhere("s.tenant_id", tenantId)
+      .andWhere("p.tenant_id", tenantId)
       .groupBy("p.id", "p.name")
       .orderByRaw("revenue DESC")
       .limit(limit);
@@ -326,6 +344,10 @@ export async function getRevenueByCategory(): Promise<
   Result<{ category: string; revenue: number }[]>
 > {
   try {
+    const currentUser = await getCurrentUser();
+    if (!currentUser?.id) return Result.fail("Not Authorized");
+    const tenantId = currentUser.tenant_id || DEFAULT_TENANT_ID;
+
     const results = await db("sale_items as si")
       .join("products as p", "si.product_id", "p.id")
       .join("product_categories as c", "p.category_id", "c.id")
@@ -335,6 +357,8 @@ export async function getRevenueByCategory(): Promise<
         db.raw("SUM(si.quantity * si.unit_price) as revenue"),
       )
       .where("s.status", "completed")
+      .andWhere("s.tenant_id", tenantId)
+      .andWhere("p.tenant_id", tenantId)
       .groupBy("c.id", "c.name")
       .orderByRaw("revenue DESC");
 
@@ -391,9 +415,14 @@ export async function getStockAlerts(
   threshold: number = 5,
 ): Promise<Result<{ id: string; name: string; stock: number }[]>> {
   try {
+    const currentUser = await getCurrentUser();
+    if (!currentUser?.id) return Result.fail("Not Authorized");
+    const tenantId = currentUser.tenant_id || DEFAULT_TENANT_ID;
+
     const results = await db("products")
       .select("id", "name", "stock_quantity as stock")
-      .where("stock_quantity", "<", threshold)
+      .where("tenant_id", tenantId)
+      .andWhere("stock_quantity", "<", threshold)
       .orderBy("stock_quantity", "asc");
 
     return Result.ok(results);
@@ -410,11 +439,17 @@ export async function getTopProductsByQuantity(
   limit: number = 10,
 ): Promise<Result<{ id: string; name: string; quantity: number }[]>> {
   try {
+    const currentUser = await getCurrentUser();
+    if (!currentUser?.id) return Result.fail("Not Authorized");
+    const tenantId = currentUser.tenant_id || DEFAULT_TENANT_ID;
+
     const results = await db("sale_items as si")
       .join("products as p", "si.product_id", "p.id")
       .join("sales as s", "si.sales_id", "s.id")
       .select("p.id", "p.name", db.raw("SUM(si.quantity) as quantity"))
       .where("s.status", "completed")
+      .andWhere("s.tenant_id", tenantId)
+      .andWhere("p.tenant_id", tenantId)
       .groupBy("p.id", "p.name")
       .orderByRaw("quantity DESC")
       .limit(limit);
@@ -438,8 +473,16 @@ export async function getTopProductsByQuantity(
 
 export async function getActivityHeatmapData(
   days: number = 30,
+  tenantIdOverride?: string,
 ): Promise<Result<ActivityHeatmapData>> {
   try {
+    let tenantId = tenantIdOverride;
+    if (!tenantId) {
+      const currentUser = await getCurrentUser();
+      if (!currentUser?.id) return Result.fail("Not Authorized");
+      tenantId = currentUser.tenant_id || DEFAULT_TENANT_ID;
+    }
+
     const now = new Date();
     const startDate = startOfDay(subDays(now, days - 1));
     const endDate = endOfDay(now);
@@ -452,7 +495,8 @@ export async function getActivityHeatmapData(
     try {
       salesRows = await db("v_sale_summary")
         .select("sale_id", "sale_date", "total_amount", "status")
-        .where("status", "completed")
+        .where("tenant_id", tenantId)
+        .andWhere("status", "completed")
         .andWhereBetween("sale_date", [startIso, endIso]);
     } catch {
       // Fallback to direct sales table if view is not accessible
@@ -464,7 +508,8 @@ export async function getActivityHeatmapData(
             "total_amount",
             "status",
           )
-          .where("status", "completed")
+          .where("tenant_id", tenantId)
+          .andWhere("status", "completed")
           .andWhereBetween("created_at", [startIso, endIso]);
       } catch {
         salesRows = [];
@@ -476,6 +521,7 @@ export async function getActivityHeatmapData(
     try {
       const auditRows = await db("audit_logs")
         .select("id", "entity_type", "action", "created_at")
+        .where("tenant_id", tenantId)
         .whereIn("entity_type", ["inventory", "products", "stocks"])
         .andWhereBetween("created_at", [startIso, endIso]);
 
@@ -487,6 +533,7 @@ export async function getActivityHeatmapData(
     try {
       const invRecords = await db("inventory")
         .select("id", "updated_at", "created_at", "restock_date")
+        .where("tenant_id", tenantId)
         .whereBetween("updated_at", [startIso, endIso]);
 
       inventoryEventRows.push(...invRecords);
@@ -743,10 +790,8 @@ export async function getComprehensiveAdminDashboardData(): Promise<
 
    const currentUser = await getCurrentUser();
     if (!currentUser?.id) return Result.fail("Not Authorized");
+    const tenantId = currentUser.tenant_id || DEFAULT_TENANT_ID;
 
-    // The original never checked this — any logged-in user (cashier
-    // included) could call an "admin dashboard" action and see revenue,
-    // margins, and every employee's numbers. Restore the gate.
     if (currentUser.role !== "admin") {
       throw new Error("Forbidden: admin access required");
     }
@@ -759,21 +804,12 @@ export async function getComprehensiveAdminDashboardData(): Promise<
     const yesterdayEnd = endOfDay(subDays(now, 1));
     const thisMonthStart = startOfMonth(now);
     const thisMonthEnd = endOfDay(now);
-    // Bug: the original used `subDays(now, 30)` to find "last month". On
-    // any day where the current month has run fewer than 30 days (e.g.
-    // March 3rd -> 30 days back is Jan 31st), that resolves to two months
-    // ago, not last month. Use calendar months instead.
     const lastMonthStart = startOfMonth(subMonths(now, 1));
     const lastMonthEnd = endOfMonth(subMonths(now, 1));
 
-    // ── One aggregate query replaces the original's 5 sequential ones
-    // (all-time, today, yesterday, this-month, last-month) ──
-    // Also fixes: `DATE(date) = ?` / `strftime('%Y-%m', date) = ?` compared
-    // against a JS-formatted (server-local) string, while `date` may hold
-    // UTC timestamps — the same day/timezone mismatch as the sales-summary
-    // bug. `datetime(...) BETWEEN datetime(...)` normalises both sides.
     const periodStatsP = db("sales")
-      .where("status", "completed")
+      .where("tenant_id", tenantId)
+      .andWhere("status", "completed")
       .select(
         db.raw(
           `
@@ -813,12 +849,13 @@ export async function getComprehensiveAdminDashboardData(): Promise<
 
     const totalUnitsSoldP = db("sale_items as si")
       .join("sales as s", "si.sales_id", "s.id")
-      .where("s.status", "completed")
+      .where("s.tenant_id", tenantId)
+      .andWhere("s.status", "completed")
       .sum("si.quantity as totalUnits")
       .first();
 
-    // ── Products/inventory: 1 query replaces 3 (stats, out-of-stock, low-stock) ──
     const productStatsP = db("products")
+      .where("tenant_id", tenantId)
       .select(
         db.raw(`
           COUNT(*)                                  as totalProducts,
@@ -831,34 +868,36 @@ export async function getComprehensiveAdminDashboardData(): Promise<
       .first();
 
     const customersCountP = db("customers")
+      .where("tenant_id", tenantId)
       .count("id as count")
       .first()
       .catch(() => ({ count: 0 }));
 
     const suppliersCountP = db("suppliers")
+      .where("tenant_id", tenantId)
       .count("id as count")
       .first()
       .catch(() => ({ count: 0 }));
 
-    // Role counts computed in SQL instead of pulling every user row into
-    // Node just to .filter() it twice.
     const roleCountsP = db("users")
+      .where("tenant_id", tenantId)
       .select("role")
       .count("id as count")
       .groupBy("role")
       .catch(() => [] as any[]);
 
     const unreadNotifP = db("notifications")
-      .where("user_id", currentUser.id)
+      .where("tenant_id", tenantId)
+      .andWhere("user_id", currentUser.id)
       .andWhere("is_read", false)
       .count("id as count")
       .first()
       .catch(() => ({ count: 0 }));
 
     const salesOverTimeP = Promise.all([
-      getSalesOverTime(7),
-      getSalesOverTime(14),
-      getSalesOverTime(30),
+      getSalesOverTime(7, tenantId),
+      getSalesOverTime(14, tenantId),
+      getSalesOverTime(30, tenantId),
     ]);
 
     const topProductsByRevenueP = db("sale_items as si")
@@ -873,15 +912,13 @@ export async function getComprehensiveAdminDashboardData(): Promise<
         db.raw("SUM(si.quantity * si.unit_price) as revenue"),
         db.raw("SUM(si.quantity) as quantity"),
       )
-      .where("s.status", "completed")
+      .where("s.tenant_id", tenantId)
+      .andWhere("p.tenant_id", tenantId)
+      .andWhere("s.status", "completed")
       .groupBy("p.id", "p.name", "p.unit_price", "c.name")
       .orderByRaw("revenue DESC")
       .limit(10);
 
-    // Bug fix: the original derived "top by quantity" by re-sorting the
-    // top-10-BY-REVENUE array. A high-volume, low-price product that
-    // didn't crack the revenue top 10 could never appear here, no matter
-    // how many units it sold. Query it directly.
     const topProductsByQuantityP = db("sale_items as si")
       .join("products as p", "si.product_id", "p.id")
       .leftJoin("product_categories as c", "p.category_id", "c.id")
@@ -894,7 +931,9 @@ export async function getComprehensiveAdminDashboardData(): Promise<
         db.raw("SUM(si.quantity * si.unit_price) as revenue"),
         db.raw("SUM(si.quantity) as quantity"),
       )
-      .where("s.status", "completed")
+      .where("s.tenant_id", tenantId)
+      .andWhere("p.tenant_id", tenantId)
+      .andWhere("s.status", "completed")
       .groupBy("p.id", "p.name", "p.unit_price", "c.name")
       .orderByRaw("quantity DESC")
       .limit(10);
@@ -908,11 +947,14 @@ export async function getComprehensiveAdminDashboardData(): Promise<
         db.raw("SUM(si.quantity * si.unit_price) as revenue"),
         db.raw("SUM(si.quantity) as item_count"),
       )
-      .where("s.status", "completed")
+      .where("s.tenant_id", tenantId)
+      .andWhere("p.tenant_id", tenantId)
+      .andWhere("s.status", "completed")
       .groupBy("c.id", "c.name")
       .orderByRaw("revenue DESC");
 
     const monthSalesP = db("sales")
+      .where("tenant_id", tenantId)
       .select(
         db.raw("CAST(strftime('%m', date) AS INTEGER) AS month"),
         db.raw("strftime('%Y', date) AS year"),
@@ -924,6 +966,7 @@ export async function getComprehensiveAdminDashboardData(): Promise<
       .orderByRaw("strftime('%Y', date) ASC, strftime('%m', date) ASC");
 
     const recentTransactionsP = db("v_sale_summary")
+      .where("tenant_id", tenantId)
       .select(
         "sale_id as id",
         "receipt_number as receiptNo",
@@ -957,11 +1000,13 @@ export async function getComprehensiveAdminDashboardData(): Promise<
         "p.unit_price as sellingPrice",
         db.raw("COALESCE(c.name, 'Uncategorized') as categoryName"),
       )
-      .where("p.stock_quantity", "<", 5)
+      .where("p.tenant_id", tenantId)
+      .andWhere("p.stock_quantity", "<", 5)
       .orderBy("p.stock_quantity", "asc")
       .limit(10);
 
     const recentActivityP = db("v_activity_logs")
+      .where("tenant_id", tenantId)
       .select(
         "id",
         "activity_type as type",
@@ -974,7 +1019,7 @@ export async function getComprehensiveAdminDashboardData(): Promise<
       .limit(6)
       .catch(() => [] as any[]);
 
-    const heatmapP = getActivityHeatmapData(30);
+    const heatmapP = getActivityHeatmapData(30, tenantId);
 
     // Everything above is independent of everything else, so it all goes
     // out together instead of the original's ~20 sequential round trips.

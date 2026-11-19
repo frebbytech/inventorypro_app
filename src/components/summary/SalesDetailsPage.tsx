@@ -34,7 +34,8 @@ function formatDate(value: unknown, pattern = "PPP p") {
   return Number.isNaN(date.getTime()) ? null : format(date, pattern);
 }
 
-const capitalize = (text: string) => text.charAt(0).toUpperCase() + text.slice(1).toLowerCase();
+const capitalize = (text?: string | null) =>
+  text ? text.charAt(0).toUpperCase() + text.slice(1).toLowerCase() : "";
 
 function isCompleted(status?: string | null) {
   return !status || status.toLowerCase() === "completed";

@@ -15,25 +15,31 @@ import { currencyFormatter } from "@/config/formatter";
 import { getCurrentUser } from "./_actions";
 import { generateId } from "@/utils/generator";
 import { checkRole } from "@/utils/roles";
-import { generateQrCode } from "@/lib/qrcode";
-import { dateRangeType } from "@/lib/searchparams";
 import { revalidatePath } from "next/cache";
 import { createAuditLog } from "./audit-logs";
 import { createActivityLog } from "./activity-logs";
 import { createNotification } from "./notifications";
-import { knex } from "knex";
+import { DEFAULT_TENANT_ID } from "@/lib/tenant";
+import {
+  emitSyncEvent,
+  insertSyncEvent,
+  publishSyncEvent,
+  type SyncEventRecord,
+} from "@/lib/sync-bus";
 
 // ──────────────────────────────────────────────────────────────
-// 1. Sale Items (products sold in sales) – using v_sale_items_detail
+// 1. Sale Items (tenant-scoped)
 // ──────────────────────────────────────────────────────────────
 
-/**
- * Get all sale items (product sales) – can be filtered by user if needed.
- */
 export async function getProductSales(): Promise<Result<any[]>> {
   try {
+    const currentUser = await getCurrentUser();
+    if (!currentUser?.id) return Result.fail("Unauthorized");
+    const tenantId = currentUser.tenant_id || DEFAULT_TENANT_ID;
+
     const productSales = await db("v_sale_items_detail")
       .select("*")
+      .where("tenant_id", tenantId)
       .orderBy("created_at", "desc");
 
     return Result.ok(productSales);
@@ -43,14 +49,15 @@ export async function getProductSales(): Promise<Result<any[]>> {
   }
 }
 
-/**
- * Get a single sale item by its ID.
- */
 export async function getProductSale(id: string): Promise<Result<any>> {
   try {
+    const currentUser = await getCurrentUser();
+    if (!currentUser?.id) return Result.fail("Unauthorized");
+    const tenantId = currentUser.tenant_id || DEFAULT_TENANT_ID;
+
     const item = await db("v_sale_items_detail")
       .select("*")
-      .where("sale_item_id", id)
+      .where({ sale_item_id: id, tenant_id: tenantId })
       .first();
 
     if (!item) {
@@ -64,16 +71,17 @@ export async function getProductSale(id: string): Promise<Result<any>> {
   }
 }
 
-/**
- * Get all sale items for a given sale ID.
- */
 export async function getProductSaleBySaleID(
   saleId: string,
 ): Promise<Result<any[]>> {
   try {
+    const currentUser = await getCurrentUser();
+    if (!currentUser?.id) return Result.fail("Unauthorized");
+    const tenantId = currentUser.tenant_id || DEFAULT_TENANT_ID;
+
     const items = await db("v_sale_items_detail")
       .select("*")
-      .where("sale_id", saleId)
+      .where({ sale_id: saleId, tenant_id: tenantId })
       .orderBy("created_at", "desc");
 
     return Result.ok(items);
@@ -84,22 +92,18 @@ export async function getProductSaleBySaleID(
 }
 
 // ──────────────────────────────────────────────────────────────
-// 2. Create Sale (with transaction)
+// 2. Create Sale (server-authoritative with atomic stock deltas)
 // ──────────────────────────────────────────────────────────────
 
-/**
- * Create a new sale with its items, update stock, and link to customer.
- * Uses a database transaction to maintain consistency.
- */
 export async function createProductSales(
   sales: InsertSales,
   salesItems: CartItem[],
 ): Promise<Result<PaymentInfo>> {
   try {
     const currentUser = await getCurrentUser();
-    if (!currentUser?.id) throw new Error("Unauthorized");
+    if (!currentUser?.id) return Result.fail("Unauthorized");
+    const tenantId = currentUser.tenant_id || DEFAULT_TENANT_ID;
 
-    // Validate data
     if (!sales.customer?.name) {
       return Result.fail("Customer name is required");
     }
@@ -109,18 +113,28 @@ export async function createProductSales(
 
     const lowStock = await db("settings")
       .select("stock_alert_threshold")
-      .where("user_id", currentUser?.id)
+      .where("tenant_id", tenantId)
       .first();
 
-    // Start transaction
+    const threshold = Number(lowStock?.stock_alert_threshold ?? 5);
+    const nowIso = new Date().toISOString();
+    const eventsToPublish: SyncEventRecord[] = [];
+    const lowStockAlerts: {
+      id: string;
+      name: string;
+      remainingStock: number;
+      threshold: number;
+    }[] = [];
+
     const trx = await db.transaction();
+    let salesId = "";
+    let receiptNo = "";
+    let customerId = "";
 
     try {
-      // 1. Upsert customer (find by name + phone if provided)
-      let customerId: string;
-
+      // 1. Upsert customer within tenant
       const existingCustomer = await trx("customers")
-        .where("name", sales.customer.name)
+        .where({ tenant_id: tenantId, name: sales.customer.name })
         .andWhere((qb: any) => {
           if (sales.customer?.phonenumber) {
             qb.where("phonenumber", sales.customer.phonenumber);
@@ -128,166 +142,221 @@ export async function createProductSales(
         })
         .first();
 
+      let createdNewCustomer = false;
       if (existingCustomer) {
         customerId = existingCustomer.id;
       } else {
-        const newCustomerId = generateId();
+        customerId = generateId();
+        createdNewCustomer = true;
         await trx("customers").insert({
-          id: newCustomerId,
-          user_id: currentUser?.id,
+          id: customerId,
+          tenant_id: tenantId,
+          user_id: currentUser.id,
           name: sales.customer.name,
           phonenumber: sales.customer?.phonenumber || null,
         });
-        customerId = newCustomerId;
       }
-      const receiptNo = sales.receipt_number || `INVP-${Date.now()}`;
+
+      receiptNo = sales.receipt_number || `INVP-${Date.now()}`;
+      salesId = generateId();
 
       // 2. Insert sale record
-      const salesId = generateId();
       await trx("sales").insert({
         id: salesId,
+        tenant_id: tenantId,
         customer_id: customerId,
-        user_id: currentUser?.id,
-        receipt_number: receiptNo, // Generate a receipt number if not provided
-        details: JSON.stringify(sales.details) || "",
+        user_id: currentUser.id,
+        receipt_number: receiptNo,
+        details: JSON.stringify(sales.details ?? "") || "",
         total_amount: sales.total_amount,
         payment_mode: sales.payment_mode || "cash",
         status: "completed",
       });
 
-      // 3. Prepare sale items, update product stock, and check for low stock thresholds
-      const lowStockAlerts: {
-        id: string;
-        name: string;
-        remainingStock: number;
-        threshold: number;
-      }[] = [];
+      // 3. Atomically decrement stock (enforcing stock_quantity >= item.quantity) & bump product version
+      const saleItemsData: any[] = [];
 
-      // 3. Prepare sale items and update product stock
-      const saleItemsData = await Promise.all(
-        salesItems.map(async (item) => {
-          await trx("products")
-            .where("id", item.id)
-            .decrement("stock_quantity", item.quantity);
+      for (const item of salesItems) {
+        const qty = Number(item.quantity);
+        if (!Number.isFinite(qty) || qty <= 0) {
+          throw new Error(`Invalid quantity for product "${item.name}".`);
+        }
 
-          const updatedProduct = await trx("products")
-            .select("id", "name", "stock_quantity")
-            .where("id", item.id)
+        const updatedRows = await trx("products")
+          .where({ id: item.id, tenant_id: tenantId })
+          .andWhere("stock_quantity", ">=", qty)
+          .update({
+            stock_quantity: db.raw("stock_quantity - ?", [qty]),
+            version: db.raw("COALESCE(version, 1) + 1"),
+            updated_at: nowIso,
+          });
+
+        if (updatedRows !== 1) {
+          const prod = await trx("products")
+            .select("name", "stock_quantity")
+            .where({ id: item.id, tenant_id: tenantId })
             .first();
 
-          if (updatedProduct) {
-            const threshold = lowStock?.stock_alert_threshold ?? 5;
-            if (updatedProduct.stock_quantity <= threshold) {
-              lowStockAlerts.push({
-                id: updatedProduct.id,
-                name: updatedProduct.name,
-                remainingStock: updatedProduct.stock_quantity,
-                threshold,
-              });
-            }
+          if (!prod) {
+            throw new Error(`Product "${item.name}" was not found in this store.`);
+          }
+          throw new Error(
+            `Insufficient stock for ${prod.name}. Available: ${prod.stock_quantity}, requested: ${qty}.`,
+          );
+        }
+
+        const updatedProduct = await trx("products")
+          .select("id", "name", "stock_quantity", "version")
+          .where({ id: item.id, tenant_id: tenantId })
+          .first();
+
+        if (updatedProduct) {
+          const remainingStock = Number(updatedProduct.stock_quantity ?? 0);
+          if (remainingStock <= threshold) {
+            lowStockAlerts.push({
+              id: updatedProduct.id,
+              name: updatedProduct.name,
+              remainingStock,
+              threshold,
+            });
           }
 
-          return {
-            id: generateId(),
-            sales_id: salesId,
-            product_id: item.id,
-            quantity: item.quantity,
-            unit_price: item.unit_price,
-          };
+          const deltaEvt = await insertSyncEvent(trx, {
+            tenantId,
+            entityType: "product",
+            entityId: updatedProduct.id,
+            action: "stock_delta",
+            payload: {
+              delta: -qty,
+              stock_quantity: remainingStock,
+              version: Number(updatedProduct.version ?? 1),
+            },
+            actorUserId: currentUser.id,
+          });
+          eventsToPublish.push(deltaEvt);
+        }
+
+        saleItemsData.push({
+          id: generateId(),
+          tenant_id: tenantId,
+          sales_id: salesId,
+          product_id: item.id,
+          quantity: qty,
+          unit_price: item.unit_price,
+        });
+      }
+
+      await trx("sale_items").insert(saleItemsData);
+
+      if (createdNewCustomer) {
+        eventsToPublish.push(
+          await insertSyncEvent(trx, {
+            tenantId,
+            entityType: "customer",
+            entityId: customerId,
+            action: "upsert",
+            actorUserId: currentUser.id,
+          }),
+        );
+      }
+
+      eventsToPublish.push(
+        await insertSyncEvent(trx, {
+          tenantId,
+          entityType: "sale",
+          entityId: salesId,
+          action: "upsert",
+          payload: {
+            receipt_number: receiptNo,
+            total_amount: sales.total_amount,
+          },
+          actorUserId: currentUser.id,
         }),
       );
 
-      await trx("sale_items").insert(saleItemsData);
       await trx.commit();
-
-      // Low stock notifications
-      for (const alert of lowStockAlerts) {
-        try {
-          await createNotification({
-            user_id: currentUser.id,
-            type: "product",
-            title: `Low Stock: ${alert.name}`,
-            message: `${alert.name} has reached ${alert.remainingStock} remaining items (Threshold: ${alert.threshold}).`,
-            reference_type: "product_low_stock",
-            reference_id: alert.id,
-          });
-        } catch (e) {
-          console.error("Failed to create stock notification:", e);
-        }
-      }
-
-      // ── Logs and notifications ──
-      // Audit log
-      await createAuditLog({
-        entity_type: "sale",
-        entity_id: salesId,
-        action: "create",
-        new_values: {
-          customer_id: customerId,
-          total_amount: sales.total_amount,
-          payment_mode: sales.payment_mode,
-          item_count: salesItems.length,
-        },
-      });
-
-      // Activity log
-      await createActivityLog({
-        activity_type: "sale_created",
-        title: `Sale to ${sales.customer.name}`,
-        description: `Sold ${salesItems.length} products worth ${currencyFormatter(
-          sales.total_amount,
-        )}`,
-        metadata: {
-          sale_id: salesId,
-          customer_id: customerId,
-          total_amount: sales.total_amount,
-        },
-      });
-
-      // ✅ Notification for the user who created the sale (or the admin)
-      try {
-        await createNotification({
-          user_id: currentUser.id,
-          type: "sale",
-          title: `New Sale #${salesId.slice(0, 8)}`,
-          message: `You sold ${salesItems.length} items to ${sales.customer.name} for ${currencyFormatter(sales.total_amount)}.`,
-          reference_type: "sale_created",
-          reference_id: salesId,
-        });
-      } catch (notifError) {
-        console.error("Failed to create notification for sale:", notifError);
-        // Non‑critical – do not fail the transaction
-      }
-
-      // Build receipt
-      const receipt: PaymentInfo = {
-        transactionId: salesId,
-        customer: sales.customer,
-        receipt_number: receiptNo,
-        date: new Date(),
-        totalAmount: sales.total_amount,
-        amountPaid: sales.total_amount,
-        balance: 0,
-        products: salesItems,
-        paymentMode: sales.payment_mode || "cash",
-        lowStockAlerts: lowStockAlerts.length > 0 ? lowStockAlerts : undefined,
-        qrcode: "",
-        attendantName: currentUser?.fullname||currentUser?.username,
-      };
-
-      // const result = await generateQrCode(`/checkout/${receiptNo}`);
-      // if (result.success && result.qrCode) {
-      //   receipt.qrcode = result.qrCode;
-      // }
-
-      revalidatePath("/sales");
-      revalidatePath("/admin/sales");
-
-      return Result.ok(receipt);
     } catch (error) {
       await trx.rollback();
       throw error;
     }
+
+    for (const evt of eventsToPublish) {
+      publishSyncEvent(evt);
+    }
+
+    // Low stock notifications
+    for (const alert of lowStockAlerts) {
+      try {
+        await createNotification({
+          user_id: currentUser.id,
+          type: "product",
+          title: `Low Stock: ${alert.name}`,
+          message: `${alert.name} has reached ${alert.remainingStock} remaining items (Threshold: ${alert.threshold}).`,
+          reference_type: "product_low_stock",
+          reference_id: alert.id,
+        });
+      } catch (e) {
+        console.error("Failed to create stock notification:", e);
+      }
+    }
+
+    await createAuditLog({
+      entity_type: "sale",
+      entity_id: salesId,
+      action: "create",
+      new_values: {
+        customer_id: customerId,
+        total_amount: sales.total_amount,
+        payment_mode: sales.payment_mode,
+        item_count: salesItems.length,
+      },
+    });
+
+    await createActivityLog({
+      activity_type: "sale_created",
+      title: `Sale to ${sales.customer.name}`,
+      description: `Sold ${salesItems.length} products worth ${currencyFormatter(
+        sales.total_amount,
+      )}`,
+      metadata: {
+        sale_id: salesId,
+        customer_id: customerId,
+        total_amount: sales.total_amount,
+      },
+    });
+
+    try {
+      await createNotification({
+        user_id: currentUser.id,
+        type: "sale",
+        title: `New Sale #${salesId.slice(0, 8)}`,
+        message: `You sold ${salesItems.length} items to ${sales.customer.name} for ${currencyFormatter(sales.total_amount)}.`,
+        reference_type: "sale_created",
+        reference_id: salesId,
+      });
+    } catch (notifError) {
+      console.error("Failed to create notification for sale:", notifError);
+    }
+
+    const receipt: PaymentInfo = {
+      transactionId: salesId,
+      customer: sales.customer,
+      receipt_number: receiptNo,
+      date: new Date(),
+      totalAmount: sales.total_amount,
+      amountPaid: sales.total_amount,
+      balance: 0,
+      products: salesItems,
+      paymentMode: sales.payment_mode || "cash",
+      lowStockAlerts: lowStockAlerts.length > 0 ? lowStockAlerts : undefined,
+      qrcode: "",
+      attendantName: currentUser?.fullname || currentUser?.username,
+    };
+
+    revalidatePath("/sales");
+    revalidatePath("/admin/sales");
+
+    return Result.ok(receipt);
   } catch (error: any) {
     console.error("Failed to create sale:", error);
     return Result.fail(error?.message || "Failed to create sale");
@@ -295,7 +364,7 @@ export async function createProductSales(
 }
 
 // ──────────────────────────────────────────────────────────────
-// 3. Delete Sale (and cascade to sale_items)
+// 3. Delete Sale (tenant-scoped)
 // ──────────────────────────────────────────────────────────────
 
 export async function removeProductSales(
@@ -304,25 +373,21 @@ export async function removeProductSales(
   try {
     const currentUser = await getCurrentUser();
     const userId = currentUser?.id;
-    if (!userId) throw new Error("Unauthorized");
+    if (!userId) return Result.fail("Unauthorized");
+    const tenantId = currentUser.tenant_id || DEFAULT_TENANT_ID;
 
-    // Fetch sale for audit and notification
-    const sale = await db("sales").where("id", id).first();
+    const sale = await db("sales").where({ id, tenant_id: tenantId }).first();
     if (!sale) {
       return Result.fail("Sale not found");
     }
 
-    // Optional: check role or ownership
-    // if (!checkRole("admin") && sale.user_id !== userId) {
-    //   return Result.fail("Not authorized");
-    // }
-
-    const deletedCount = await db("sales").where("id", id).del();
+    const deletedCount = await db("sales")
+      .where({ id, tenant_id: tenantId })
+      .del();
     if (deletedCount === 0) {
       return Result.fail("Sale not found");
     }
 
-    // Audit log
     await createAuditLog({
       entity_type: "sale",
       entity_id: id,
@@ -334,7 +399,6 @@ export async function removeProductSales(
       },
     });
 
-    // Activity log
     await createActivityLog({
       activity_type: "sale_deleted",
       title: `Sale ${id} deleted`,
@@ -342,13 +406,12 @@ export async function removeProductSales(
       metadata: { sale_id: id },
     });
 
-    // ✅ Notification for the user who performed the deletion
     try {
       await createNotification({
         user_id: userId,
         type: "sale",
         title: `Sale #${id.slice(0, 8)} Deleted`,
-        message: `The sale to ${sale.customer_name || "customer"} was permanently removed.`,
+        message: `The sale record was permanently removed.`,
         reference_type: "sale_deleted",
         reference_id: id,
       });
@@ -361,6 +424,14 @@ export async function removeProductSales(
 
     revalidatePath("/sales");
     revalidatePath("/admin/sales");
+    await emitSyncEvent({
+      tenantId,
+      entityType: "sale",
+      entityId: id,
+      action: "delete",
+      actorUserId: userId,
+    });
+
     return Result.ok({ success: true });
   } catch (error: any) {
     console.error("Failed to delete sale:", error);
@@ -369,26 +440,20 @@ export async function removeProductSales(
 }
 
 // ──────────────────────────────────────────────────────────────
-// 4. Customer Sales (aggregated from v_sale_summary)
+// 4. Customer Sales (tenant-scoped)
 // ──────────────────────────────────────────────────────────────
 
-/**
- * Get all sales (summary view) – can be filtered by user.
- */
 export async function getCustomerSales(): Promise<Result<any[]>> {
   try {
     const currentUser = await getCurrentUser();
-    const userId = currentUser?.id;
-    if (!userId) throw new Error("Unauthorized");
+    if (!currentUser?.id) return Result.fail("Unauthorized");
+    const tenantId = currentUser.tenant_id || DEFAULT_TENANT_ID;
 
-    const query = db("v_sale_summary").select("*").orderBy("sale_date", "desc");
+    const sales = await db("v_sale_summary")
+      .select("*")
+      .where("tenant_id", tenantId)
+      .orderBy("sale_date", "desc");
 
-    // Optional: restrict to own sales if not admin
-    // if (!checkRole("admin")) {
-    //   query.where("user_id", userId);
-    // }
-
-    const sales = await query;
     return Result.ok(sales);
   } catch (error: any) {
     console.error("Failed to fetch customer sales:", error);
@@ -396,45 +461,25 @@ export async function getCustomerSales(): Promise<Result<any[]>> {
   }
 }
 
-/**
- * Get sales summary within a date range (for reporting).
- * Only returns completed sales.
- */
 export async function getSalesSummary(): Promise<Result<SaleSummaryView[]>> {
-  // date: dateRangeType,
   const currentUser = await getCurrentUser();
-  if (!currentUser?.id) throw new Error("Unauthorized");
+  if (!currentUser?.id) return Result.fail("Unauthorized");
+  const tenantId = currentUser.tenant_id || DEFAULT_TENANT_ID;
 
   const isAdmin = await checkRole("admin");
-  // console.log(date)
 
   try {
-    // const fromDate = date.from
-    //   ? format(date.from, "yyyy-MM-dd")
-    //   : format(new Date(), "yyyy-MM-dd");
-    // const toDate = date.to
-    //   ? format(date.to, "yyyy-MM-dd")
-    //   : format(new Date(), "yyyy-MM-dd");
+    const query = db("v_sale_summary")
+      .select("*")
+      .where("tenant_id", tenantId)
+      .andWhere("status", "completed")
+      .orderBy("sale_date", "desc");
 
-    const query = db("v_sale_summary").select("*");
-
-    if (isAdmin) {
-      query
-        .where("status", "completed")
-        // .andWhereRaw("DATE(sale_date) BETWEEN ? AND ?", [fromDate, toDate])
-        .orderBy("sale_date", "desc");
-    } else {
-      query
-        .where({
-          user_id: currentUser?.id,
-          status: "completed",
-        })
-        // .andWhereRaw("DATE(sale_date) BETWEEN ? AND ?", [fromDate, toDate])
-        .orderBy("sale_date", "desc");
+    if (!isAdmin) {
+      query.andWhere("user_id", currentUser.id);
     }
 
     const sales = await query;
-
     return Result.ok(sales);
   } catch (error: any) {
     console.error("Failed to fetch sales summary:", error);
@@ -442,14 +487,15 @@ export async function getSalesSummary(): Promise<Result<SaleSummaryView[]>> {
   }
 }
 
-/**
- * Get a single sale summary by ID.
- */
 export async function getCustomerSale(id: string): Promise<Result<any>> {
   try {
+    const currentUser = await getCurrentUser();
+    if (!currentUser?.id) return Result.fail("Unauthorized");
+    const tenantId = currentUser.tenant_id || DEFAULT_TENANT_ID;
+
     const sale = await db("v_sale_summary")
       .select("*")
-      .where("sale_id", id)
+      .where({ sale_id: id, tenant_id: tenantId })
       .first();
 
     if (!sale) {
@@ -463,16 +509,17 @@ export async function getCustomerSale(id: string): Promise<Result<any>> {
   }
 }
 
-/**
- * Get all sales for a specific customer ID.
- */
 export async function getCustomerSaleByCustomerID(
   customerId: string,
 ): Promise<Result<any[]>> {
   try {
+    const currentUser = await getCurrentUser();
+    if (!currentUser?.id) return Result.fail("Unauthorized");
+    const tenantId = currentUser.tenant_id || DEFAULT_TENANT_ID;
+
     const sales = await db("v_sale_summary")
       .select("*")
-      .where("customer_id", customerId)
+      .where({ customer_id: customerId, tenant_id: tenantId })
       .orderBy("sale_date", "desc");
 
     return Result.ok(sales);
@@ -481,24 +528,24 @@ export async function getCustomerSaleByCustomerID(
     return Result.fail(error?.message || "Failed to fetch customer sales");
   }
 }
-/**
- * Get all sales for a specific customer ID.
- */
+
 export async function getEmployeeSales(
   id: string,
 ): Promise<Result<EmployeeSale[]>> {
   try {
+    const currentUser = await getCurrentUser();
+    if (!currentUser?.id) return Result.fail("Unauthorized");
+    const tenantId = currentUser.tenant_id || DEFAULT_TENANT_ID;
+
     const sales = await db("v_sale_summary")
       .select("*")
-      .where("user_id", id)
+      .where({ user_id: id, tenant_id: tenantId })
       .orderBy("sale_date", "desc");
-
-    // console.log(sales)
 
     return Result.ok(sales);
   } catch (error: any) {
-    console.error("Failed to fetch sales for customer:", error);
-    return Result.fail(error?.message || "Failed to fetch customer sales");
+    console.error("Failed to fetch employee sales:", error);
+    return Result.fail(error?.message || "Failed to fetch employee sales");
   }
 }
 
@@ -506,9 +553,13 @@ export async function getSalesItemsBySalesId(
   id: string,
 ): Promise<Result<SaleItem[]>> {
   try {
+    const currentUser = await getCurrentUser();
+    if (!currentUser?.id) return Result.fail("Unauthorized");
+    const tenantId = currentUser.tenant_id || DEFAULT_TENANT_ID;
+
     const item = await db("v_sale_items_detail")
       .select("*")
-      .where("sale_id", id);
+      .where({ sale_id: id, tenant_id: tenantId });
 
     if (!item) {
       return Result.fail("Sale items not found");

@@ -88,8 +88,8 @@ export default function EmployeeTransactionsTable({
     setTimeout(() => setCopiedId(null), 2000);
   };
 
-  const getStatusBadge = (status: string) => {
-    switch (status.toLowerCase()) {
+  const getStatusBadge = (status?: string | null) => {
+    switch ((status ?? "").toLowerCase()) {
       case "completed":
         return (
           <Badge className="bg-emerald-500/15 text-emerald-700 dark:text-emerald-400 border-emerald-500/30 text-[10px] py-0 px-1.5 h-4">
@@ -117,8 +117,8 @@ export default function EmployeeTransactionsTable({
     }
   };
 
-  const getPaymentModeIcon = (mode: string) => {
-    switch (mode.toLowerCase()) {
+  const getPaymentModeIcon = (mode?: string | null) => {
+    switch ((mode ?? "").toLowerCase()) {
       case "momo":
         return <Smartphone className="h-3 w-3 text-amber-600 inline mr-1" />;
       case "card":

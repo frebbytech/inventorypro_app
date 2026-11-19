@@ -306,6 +306,8 @@ type NotificationType =
 // Main Tables
 // ==============================
 
+export type TwoFactorMethod = "email" | "sms";
+
 export interface User {
   id: string; // CHAR(36)
   clerk_id?: string | null;
@@ -318,9 +320,28 @@ export interface User {
   role: UserRole;
   failed_login_attempts?: number;
   locked_until?: string | Date | null;
+  two_factor_enabled?: boolean;
+  two_factor_method?: TwoFactorMethod;
+  two_factor_updated_at?: string | Date | null;
   created_at: Date;
   updated_at: Date;
   lastSignedIn: Date;
+}
+
+export interface StaffTwoFactorAccount {
+  id: string;
+  username: string;
+  email: string;
+  firstname: string;
+  lastname: string;
+  fullname: string;
+  phonenumber: string;
+  role: UserRole;
+  two_factor_enabled: boolean;
+  two_factor_method: TwoFactorMethod;
+  two_factor_updated_at: string | null;
+  last_login_at: string | null;
+  isCurrentUser: boolean;
 }
 
 export interface ProductCategory {

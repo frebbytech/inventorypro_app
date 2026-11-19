@@ -9,24 +9,18 @@ import { createActivityLog } from "./activity-logs";
 import { getCurrentUser } from "./_actions";
 import { generateId } from "@/utils/generator";
 import { checkRole } from "@/utils/roles";
+import { DEFAULT_TENANT_ID } from "@/lib/tenant";
+import { emitSyncEvent } from "@/lib/sync-bus";
 
-// ──────────────────────────────────────────────────────────────
-// Read functions
-// ──────────────────────────────────────────────────────────────
-
-/**
- * Get all suppliers – uses v_supplier_info view.
- * (Admin sees all; regular users can be restricted to their own.)
- */
 export async function getSuppliers(): Promise<Result<SupplierInfoView[]>> {
   try {
     const currentUser = await getCurrentUser();
-    if (!currentUser?.id) throw new Error("Unauthorized");
+    if (!currentUser?.id) return Result.fail("Unauthorized");
+    const tenantId = currentUser.tenant_id || DEFAULT_TENANT_ID;
 
-
-    const query = db("v_supplier_info")
+    const suppliers = await db("v_supplier_info")
       .select(
-         "supplier_id as id",
+        "supplier_id as id",
         "supplier_name as name",
         "email",
         "company_name",
@@ -38,32 +32,24 @@ export async function getSuppliers(): Promise<Result<SupplierInfoView[]>> {
         "updated_at",
         "is_active",
       )
+      .where("tenant_id", tenantId)
       .orderBy("created_at", "desc");
 
-    // Optional: restrict to own suppliers if not admin
-    // if (!checkRole("admin")) {
-    //   query.where("user_id", userId);
-    // }
-
-    const suppliers = await query;
     return Result.ok(suppliers);
   } catch (error: any) {
     console.error("Failed to fetch suppliers:", error);
-    return Result.fail("Failed to fetch suppliers:");
-    // return {
-    //   error: true,
-    //   message: error?.message || "Failed to fetch suppliers",
-    // };
+    return Result.fail(error?.message || "Failed to fetch suppliers");
   }
 }
 
-/**
- * Get a single supplier by ID.
- */
 export async function getSupplier(
   id: string,
 ): Promise<Result<SupplierInfoView>> {
   try {
+    const currentUser = await getCurrentUser();
+    if (!currentUser?.id) return Result.fail("Unauthorized");
+    const tenantId = currentUser.tenant_id || DEFAULT_TENANT_ID;
+
     const supplier = await db("v_supplier_info")
       .select(
         "supplier_id as id",
@@ -78,7 +64,7 @@ export async function getSupplier(
         "updated_at",
         "is_active",
       )
-      .where("supplier_id", id)
+      .where({ supplier_id: id, tenant_id: tenantId })
       .first();
 
     if (!supplier) {
@@ -89,47 +75,34 @@ export async function getSupplier(
   } catch (error: any) {
     console.error("Failed to fetch supplier:", error);
     return Result.fail("Failed to fetch supplier");
-    // return {
-    //   error: true,
-    //   message: error?.message || "Failed to fetch supplier",
-    // };
   }
 }
 
-// ──────────────────────────────────────────────────────────────
-// Create / Update / Delete
-// ──────────────────────────────────────────────────────────────
-
-/**
- * Create a new supplier – attaches the authenticated user's ID.
- */
 export async function createSupplier(
   supplierData: Omit<InsertSupplier, "id" | "user_id">,
 ): Promise<Result<{ id: string }>> {
   try {
     const currentUser = await getCurrentUser();
+    if (!currentUser?.id) return Result.fail("Unauthorized");
+    const tenantId = currentUser.tenant_id || DEFAULT_TENANT_ID;
 
-    if (!currentUser.id) throw new Error("Unauthorized");
-
-    // Validate required fields
-    if (!supplierData) {
-      return Result.fail("All field are reuquired!");
+    if (!supplierData?.name?.trim()) {
+      return Result.fail("Supplier name is required");
     }
 
     const newId = generateId();
-    // Insert with current user_id
     await db("suppliers").insert({
       id: newId,
-      user_id: currentUser?.id,
-      name: supplierData.name,
-      email: supplierData.email,
-      company_name: supplierData.company_name,
-      address: supplierData.address || null,
-      phonenumber: supplierData.phonenumber || null,
-      is_active: supplierData.is_active,
+      tenant_id: tenantId,
+      user_id: currentUser.id,
+      name: supplierData.name.trim(),
+      email: supplierData.email?.trim() || null,
+      company_name: supplierData.company_name?.trim() || null,
+      address: supplierData.address?.trim() || null,
+      phonenumber: supplierData.phonenumber?.trim() || null,
+      is_active: supplierData.is_active !== false ? 1 : 0,
     });
 
-    // Audit log
     await createAuditLog({
       entity_type: "supplier",
       entity_id: newId,
@@ -144,7 +117,6 @@ export async function createSupplier(
       },
     });
 
-    // Activity log
     await createActivityLog({
       activity_type: "supplier_created",
       title: `Supplier ${supplierData.name} created`,
@@ -153,46 +125,51 @@ export async function createSupplier(
     });
 
     revalidatePath("/admin/supplier");
+    await emitSyncEvent({
+      tenantId,
+      entityType: "supplier",
+      entityId: newId,
+      action: "upsert",
+      actorUserId: currentUser.id,
+    });
+
     return Result.ok({ id: newId });
   } catch (error: any) {
     console.error("Failed to create supplier:", error);
-    return Result.fail("Failed to create supplier:");
+    return Result.fail(error?.message || "Failed to create supplier");
   }
 }
 
-/**
- * Update an existing supplier – must have an `id` in the update data.
- */
 export async function updateSupplier(
   supplierData: Partial<InsertSupplier> & { id: string },
 ): Promise<Result<{ id: string }>> {
   try {
     const currentUser = await getCurrentUser();
     const userId = currentUser?.id;
-    if (!userId) throw new Error("Unauthorized");
+    if (!userId) return Result.fail("Unauthorized");
+    const tenantId = currentUser.tenant_id || DEFAULT_TENANT_ID;
 
-    // Fetch current supplier for audit and ownership check
-    const current = await db("suppliers").where("id", supplierData.id).first();
+    const current = await db("suppliers")
+      .where({ id: supplierData.id, tenant_id: tenantId })
+      .first();
     if (!current) {
       return Result.fail("Supplier not found");
     }
 
-    // Optional: restrict update to owner or admin
     const isAdmin = await checkRole("admin");
-
     if (!isAdmin && current.user_id !== userId) {
       return Result.fail("Not authorized to update this supplier");
     }
 
-    // Build update object
     const updateFields: any = {};
-    if (supplierData.name !== undefined) updateFields.name = supplierData.name;
+    if (supplierData.name !== undefined)
+      updateFields.name = supplierData.name.trim();
     if (supplierData.email !== undefined)
       updateFields.email = supplierData.email;
     if (supplierData.company_name !== undefined)
       updateFields.company_name = supplierData.company_name;
     if (supplierData.is_active !== undefined)
-      updateFields.is_active = supplierData.is_active;
+      updateFields.is_active = supplierData.is_active ? 1 : 0;
     if (supplierData.address !== undefined)
       updateFields.address = supplierData.address;
     if (supplierData.phonenumber !== undefined)
@@ -202,15 +179,16 @@ export async function updateSupplier(
       return Result.fail("No fields to update");
     }
 
+    updateFields.updated_at = new Date().toISOString();
+
     const updatedCount = await db("suppliers")
-      .where("id", supplierData.id)
+      .where({ id: supplierData.id, tenant_id: tenantId })
       .update(updateFields);
 
     if (updatedCount === 0) {
       return Result.fail("Supplier not found or no changes made");
     }
 
-    // Audit log – old vs new
     await createAuditLog({
       entity_type: "supplier",
       entity_id: supplierData.id,
@@ -227,7 +205,6 @@ export async function updateSupplier(
       },
     });
 
-    // Activity log
     await createActivityLog({
       activity_type: "supplier_updated",
       title: `Supplier ${current.name} updated`,
@@ -237,46 +214,48 @@ export async function updateSupplier(
 
     revalidatePath(`/admin/supplier/${supplierData.id}`);
     revalidatePath("/admin/supplier");
+    await emitSyncEvent({
+      tenantId,
+      entityType: "supplier",
+      entityId: supplierData.id,
+      action: "upsert",
+      actorUserId: userId,
+    });
 
     return Result.ok({ id: supplierData.id });
   } catch (error: any) {
     console.error("Failed to update supplier:", error);
-    return Result.fail(error?.message || "Failed to update supplier:");
-    // return {
-    //   error: true,
-    //   message: error?.message || "Failed to update supplier",
-    // };
+    return Result.fail(error?.message || "Failed to update supplier");
   }
 }
 
-/**
- * Delete a supplier by ID.
- */
 export async function removeSupplier(
   id: string,
 ): Promise<Result<{ id: string }>> {
   try {
     const currentUser = await getCurrentUser();
     const userId = currentUser?.id;
-    if (!userId) throw new Error("Unauthorized");
+    if (!userId) return Result.fail("Unauthorized");
+    const tenantId = currentUser.tenant_id || DEFAULT_TENANT_ID;
 
-    // Optional: ownership check
-    if (!checkRole("admin")) {
+    if (!(await checkRole("admin"))) {
       return Result.fail("Not authorized to delete this supplier!");
     }
 
-    // Fetch supplier for audit and ownership
-    const supplier = await db("suppliers").where("id", id).first();
+    const supplier = await db("suppliers")
+      .where({ id, tenant_id: tenantId })
+      .first();
     if (!supplier) {
       return Result.fail("Supplier not found");
     }
 
-    const deletedCount = await db("suppliers").where("id", id).del();
+    const deletedCount = await db("suppliers")
+      .where({ id, tenant_id: tenantId })
+      .del();
     if (deletedCount === 0) {
       return Result.fail("Supplier not found");
     }
 
-    // Audit log
     await createAuditLog({
       entity_type: "supplier",
       entity_id: id,
@@ -289,7 +268,6 @@ export async function removeSupplier(
       },
     });
 
-    // Activity log
     await createActivityLog({
       activity_type: "supplier_deleted",
       title: `Supplier ${supplier.name} deleted`,
@@ -298,6 +276,14 @@ export async function removeSupplier(
     });
 
     revalidatePath("/admin/supplier");
+    await emitSyncEvent({
+      tenantId,
+      entityType: "supplier",
+      entityId: id,
+      action: "delete",
+      actorUserId: userId,
+    });
+
     return Result.ok({ id });
   } catch (error: any) {
     console.error("Failed to delete supplier:", error);
@@ -305,30 +291,29 @@ export async function removeSupplier(
   }
 }
 
-// ──────────────────────────────────────────────────────────────
-// Bulk delete (optional)
-// ──────────────────────────────────────────────────────────────
-
 export async function removeSuppliers(ids: string[]) {
   try {
     const currentUser = await getCurrentUser();
     const userId = currentUser?.id;
-    if (!userId) throw new Error("Unauthorized");
+    if (!userId) return { error: true, message: "Unauthorized" };
+    const tenantId = currentUser.tenant_id || DEFAULT_TENANT_ID;
 
-    // Optional: admin-only
-    // if (!checkRole("admin")) {
-    //   return Result.fail( "Not authorized" );
-    // }
+    if (!(await checkRole("admin"))) {
+      return { error: true, message: "Not authorized" };
+    }
 
-    // Fetch all to log
-    const suppliers = await db("suppliers").whereIn("id", ids);
+    const suppliers = await db("suppliers")
+      .where("tenant_id", tenantId)
+      .whereIn("id", ids);
     if (suppliers.length === 0) {
       return Result.fail("No suppliers found");
     }
 
-    const deleted = await db("suppliers").whereIn("id", ids).del();
+    const deleted = await db("suppliers")
+      .where("tenant_id", tenantId)
+      .whereIn("id", ids)
+      .del();
 
-    // Audit log (summary)
     await createAuditLog({
       entity_type: "suppliers",
       entity_id: ids.join(","),
@@ -344,6 +329,14 @@ export async function removeSuppliers(ids: string[]) {
     });
 
     revalidatePath("/admin/supplier");
+    await emitSyncEvent({
+      tenantId,
+      entityType: "supplier",
+      entityId: ids.join(","),
+      action: "refresh",
+      actorUserId: userId,
+    });
+
     return { data: { deletedCount: deleted } };
   } catch (error: any) {
     console.error("Failed to delete suppliers:", error);

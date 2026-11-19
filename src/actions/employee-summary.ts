@@ -25,6 +25,7 @@ import {
   min as earliestOf,
 } from "date-fns";
 import { getCurrentUser } from "./_actions";
+import { DEFAULT_TENANT_ID } from "@/lib/tenant";
 
 // ──────────────────────────────────────────────────────────────
 // Configuration
@@ -423,10 +424,12 @@ export async function getEmployeesList(): Promise<Result<EmployeeInfo[]>> {
   try {
     const currentUser = await getCurrentUser();
     if (!currentUser?.id) {
-      throw new Error("Unauthorized: Please log in");
+      return Result.fail("Unauthorized: Please log in");
     }
+    const tenantId = currentUser.tenant_id || DEFAULT_TENANT_ID;
 
     const query = db("users")
+      .where("tenant_id", tenantId)
       .select(
         "id",
         "username",
@@ -477,6 +480,7 @@ async function buildEmployeeSalesSummary(
   if (!currentUser?.id) {
     throw new Error("Unauthorized: Please log in to view sales summaries");
   }
+  const tenantId = currentUser.tenant_id || DEFAULT_TENANT_ID;
 
   const isAdmin = currentUser.role === "admin";
   const employeeId = isAdmin
@@ -510,6 +514,7 @@ async function buildEmployeeSalesSummary(
     const from = dbBound(isPrev ? prevStart : start);
     const to = dbBound(isPrev ? prevEnd : end);
 
+    query.where("tenant_id", tenantId);
     query.whereRaw("datetime(sale_date) between datetime(?) and datetime(?)", [
       from,
       to,
@@ -534,22 +539,14 @@ async function buildEmployeeSalesSummary(
 
   const scoped = (isPrev = false) => applyFilters(db("v_sale_summary"), isPrev);
 
-  // ── Items-sold source of truth ──
-  // `v_sale_summary.item_count` turned out to be a line-item / distinct-
-  // product count per sale, not a unit count — so a sale of "3x Coke + 2x
-  // Water" reported item_count = 2 instead of 5, and every AGG that summed
-  // it (totals, per-employee, time series) undercounted actual units sold.
-  // Source it from sale_items.quantity directly instead, via the same date
-  // range / employee / payment / search filters, but always restricted to
-  // completed sales (units "sold" only makes sense for completed sales,
-  // same as the original AGG's `case when status = 'completed'` guard).
   const scopedItems = (isPrev = false) => {
     const from = dbBound(isPrev ? prevStart : start);
     const to = dbBound(isPrev ? prevEnd : end);
 
     const q = db("sale_items as si")
       .join("v_sale_summary as v", "si.sales_id", "v.sale_id")
-      .where("v.status", "completed")
+      .where("v.tenant_id", tenantId)
+      .andWhere("v.status", "completed")
       .whereRaw("datetime(v.sale_date) between datetime(?) and datetime(?)", [
         from,
         to,
@@ -720,14 +717,16 @@ async function buildEmployeeSalesSummary(
     itemsByEmployee.set(String(row.user_id ?? "unknown"), num(row.items_sold));
   }
 
-  const usersQuery = db("users").select(
-    "id",
-    "username",
-    "email",
-    "firstname",
-    "lastname",
-    "role",
-  );
+  const usersQuery = db("users")
+    .where("tenant_id", tenantId)
+    .select(
+      "id",
+      "username",
+      "email",
+      "firstname",
+      "lastname",
+      "role",
+    );
   if (employeeId !== "all") usersQuery.where("id", employeeId);
   const users = await usersQuery;
 
@@ -869,6 +868,7 @@ async function buildEmployeeSalesSummary(
       db("sale_items")
         .join("products", "sale_items.product_id", "products.id")
         .select("sale_items.sales_id", "products.name", "sale_items.quantity")
+        .where("sale_items.tenant_id", tenantId)
         .whereIn("sale_items.sales_id", chunk),
     );
 
@@ -1377,6 +1377,10 @@ export async function getEmployeeSalesSummaryData(
   options: EmployeeFilterOptions = {},
 ): Promise<Result<EmployeeSalesSummaryResponse>> {
   try {
+    const currentUser = await getCurrentUser();
+    if (!currentUser?.id) {
+      return Result.fail("Unauthorized: Please log in to view sales summaries");
+    }
     return Result.ok(
       await buildEmployeeSalesSummary(options, {
         maxPageSize: MAX_PAGE_SIZE,
@@ -1396,6 +1400,10 @@ export async function getEmployeeSummaryExportData(
   Result<{ transactions: any[]; employeePerformance: any[]; summaryKpis: any }>
 > {
   try {
+    const currentUser = await getCurrentUser();
+    if (!currentUser?.id) {
+      return Result.fail("Unauthorized: Please log in to view sales summaries");
+    }
     // The public action caps pageSize at 100, so the old export silently
     // returned 100 rows. Exports get their own, higher ceiling.
     const data = await buildEmployeeSalesSummary(

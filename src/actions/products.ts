@@ -4,7 +4,6 @@
 import db from "@/db/knex";
 import {
   InsertProduct,
-  Product,
   ProductCatalogView,
   ProductSalesView,
   ReStockProduct,
@@ -16,6 +15,13 @@ import { createAuditLog } from "./audit-logs";
 import { createActivityLog } from "./activity-logs";
 import { generateId } from "@/utils/generator";
 import { getCurrentUser } from "./_actions";
+import { DEFAULT_TENANT_ID } from "@/lib/tenant";
+import {
+  emitSyncEvent,
+  insertSyncEvent,
+  publishSyncEvent,
+  type SyncEventRecord,
+} from "@/lib/sync-bus";
 
 export interface BulkProductImportItem {
   name: string;
@@ -32,7 +38,6 @@ export interface BulkProductImportItem {
 
 /**
  * Bulk create products – admin only.
- * Automatically resolves category_id by category_name (creating the category if missing).
  */
 export async function bulkCreateProducts(
   productsData: BulkProductImportItem[],
@@ -50,15 +55,15 @@ export async function bulkCreateProducts(
   try {
     const currentUser = await getCurrentUser();
     const userId = currentUser?.id;
-    if (!userId) throw new Error("Unauthorized");
+    if (!userId) return Result.fail("Unauthorized");
+    const tenantId = currentUser.tenant_id || DEFAULT_TENANT_ID;
 
     if (!Array.isArray(productsData) || productsData.length === 0) {
       return Result.fail("No products provided for import");
     }
 
-    // Fetch existing categories for mapping
     const existingCategories = await db("product_categories")
-      .where("user_id", userId)
+      .where("tenant_id", tenantId)
       .select("id", "name");
 
     const categoryNameToId = new Map<string, string>();
@@ -71,16 +76,15 @@ export async function bulkCreateProducts(
 
     const newCategoriesToInsert: Array<{
       id: string;
+      tenant_id: string;
       user_id: string;
       name: string;
       description: string | null;
     }> = [];
 
-    // First pass: identify any new categories that need creation
     for (const item of productsData) {
       if (!item.name?.trim()) continue;
-
-      let catId = item.category_id;
+      const catId = item.category_id;
       const catName = item.category_name?.trim();
 
       if (catId && categoryIdSet.has(catId)) {
@@ -95,20 +99,21 @@ export async function bulkCreateProducts(
           categoryIdSet.add(newCatId);
           newCategoriesToInsert.push({
             id: newCatId,
+            tenant_id: tenantId,
             user_id: userId,
             name: catName,
-            description: `Auto-created during bulk import`,
+            description: "Auto-created during bulk import",
           });
         }
       }
     }
 
-    // Default category fallback if none provided
     let defaultCatId = existingCategories[0]?.id;
     if (!defaultCatId && newCategoriesToInsert.length === 0) {
       const generalCatId = generateId();
       newCategoriesToInsert.push({
         id: generalCatId,
+        tenant_id: tenantId,
         user_id: userId,
         name: "General",
         description: "General category",
@@ -118,9 +123,9 @@ export async function bulkCreateProducts(
       defaultCatId = generalCatId;
     }
 
-    // Prepare products to insert
     const productsToInsert: Array<{
       id: string;
+      tenant_id: string;
       user_id: string;
       category_id: string;
       name: string;
@@ -128,9 +133,9 @@ export async function bulkCreateProducts(
       cost_price: number;
       unit_price: number;
       stock_quantity: number;
+      version: number;
       barcode?: string | null;
       is_active: number;
-      // photo_url: string | null;
     }> = [];
 
     for (const item of productsData) {
@@ -149,9 +154,9 @@ export async function bulkCreateProducts(
 
       if (!targetCatId) continue;
 
-      const newProdId = generateId();
       productsToInsert.push({
-        id: newProdId,
+        id: generateId(),
+        tenant_id: tenantId,
         user_id: userId,
         category_id: targetCatId,
         name: trimmedName,
@@ -159,9 +164,9 @@ export async function bulkCreateProducts(
         cost_price: Math.max(0, Number(item.cost_price) || 0),
         unit_price: Math.max(0, Number(item.unit_price) || 0),
         stock_quantity: Math.max(0, Number(item.stock_quantity) || 0),
+        version: 1,
         barcode: item.barcode?.toString()?.trim() || null,
         is_active: item.active !== false ? 1 : 0,
-        // photo_url: item.photo_url || null,
       });
     }
 
@@ -170,49 +175,41 @@ export async function bulkCreateProducts(
     }
 
     await db.transaction(async (trx) => {
-      // 1. Insert new categories if any
       if (newCategoriesToInsert.length > 0) {
-        const catChunkSize = 50;
-        for (let i = 0; i < newCategoriesToInsert.length; i += catChunkSize) {
-          const chunk = newCategoriesToInsert.slice(i, i + catChunkSize);
-          await trx("product_categories").insert(chunk);
+        for (let i = 0; i < newCategoriesToInsert.length; i += 50) {
+          await trx("product_categories").insert(
+            newCategoriesToInsert.slice(i, i + 50),
+          );
         }
       }
 
-      // 2. Insert products in chunks
-      const prodChunkSize = 50;
-      for (let i = 0; i < productsToInsert.length; i += prodChunkSize) {
-        const chunk = productsToInsert.slice(i, i + prodChunkSize);
-        await trx("products").insert(chunk);
+      for (let i = 0; i < productsToInsert.length; i += 50) {
+        await trx("products").insert(productsToInsert.slice(i, i + 50));
       }
-
-      // 3. Audit log
-      // await createAuditLog({
-      //   entity_type: "products",
-      //   entity_id: productsToInsert.map((p) => p.id).join(","),
-      //   action: "create",
-      //   new_values: {
-      //     productsCount: productsToInsert.length,
-      //     newCategoriesCount: newCategoriesToInsert.length,
-      //   },
-      // });
-
-      // // 4. Activity log
-      // await createActivityLog({
-      //   activity_type: "products_bulk_imported",
-      //   title: `Bulk imported ${productsToInsert.length} products`,
-      //   description: `Imported ${productsToInsert.length} products and created ${newCategoriesToInsert.length} categories via Spreadsheet/CSV`,
-      //   metadata: {
-      //     productsCount: productsToInsert.length,
-      //     newCategoriesCount: newCategoriesToInsert.length,
-      //   },
-      // });
     });
 
     revalidatePath("/admin/product");
     revalidatePath("/admin/product-category");
     revalidatePath("/admin/inventory");
     revalidatePath("/admin/stocks");
+
+    if (newCategoriesToInsert.length > 0) {
+      await emitSyncEvent({
+        tenantId,
+        entityType: "category",
+        entityId: "bulk",
+        action: "refresh",
+        actorUserId: userId,
+      });
+    }
+    await emitSyncEvent({
+      tenantId,
+      entityType: "product",
+      entityId: "bulk",
+      action: "refresh",
+      payload: { count: productsToInsert.length },
+      actorUserId: userId,
+    });
 
     return Result.ok({
       createdCount: productsToInsert.length,
@@ -225,14 +222,15 @@ export async function bulkCreateProducts(
 }
 
 // ──────────────────────────────────────────────────────────────
-// Read functions
+// Read functions (tenant-scoped)
 // ──────────────────────────────────────────────────────────────
 
-/**
- * Get all products – uses v_product_catalog view.
- */
 export async function getProducts(): Promise<Result<ProductCatalogView[]>> {
   try {
+    const currentUser = await getCurrentUser();
+    if (!currentUser?.id) return Result.fail("Unauthorized");
+    const tenantId = currentUser.tenant_id || DEFAULT_TENANT_ID;
+
     const products: ProductCatalogView[] = await db("v_product_catalog")
       .select(
         "product_id as id",
@@ -252,9 +250,8 @@ export async function getProducts(): Promise<Result<ProductCatalogView[]>> {
         "created_at",
         "updated_at",
       )
+      .where("tenant_id", tenantId)
       .orderBy("created_at", "desc");
-
-  
 
     return Result.ok(products);
   } catch (error: any) {
@@ -263,13 +260,14 @@ export async function getProducts(): Promise<Result<ProductCatalogView[]>> {
   }
 }
 
-/**
- * Get a single product by ID.
- */
 export async function getProduct(
   id: string,
 ): Promise<Result<ProductCatalogView>> {
   try {
+    const currentUser = await getCurrentUser();
+    if (!currentUser?.id) return Result.fail("Unauthorized");
+    const tenantId = currentUser.tenant_id || DEFAULT_TENANT_ID;
+
     const product = await db("v_product_catalog")
       .select(
         "product_id as id",
@@ -289,7 +287,7 @@ export async function getProduct(
         "created_at",
         "updated_at",
       )
-      .where("product_id", id)
+      .where({ product_id: id, tenant_id: tenantId })
       .first();
 
     if (!product) {
@@ -303,14 +301,14 @@ export async function getProduct(
   }
 }
 
-/**
- * Normalize and find a product by its barcode.
- */
 export async function findProductByBarcode(
   rawBarcode: string,
 ): Promise<Result<ProductCatalogView>> {
   try {
-    // await ensureFullDatabaseSchema();
+    const currentUser = await getCurrentUser();
+    if (!currentUser?.id) return Result.fail("Unauthorized");
+    const tenantId = currentUser.tenant_id || DEFAULT_TENANT_ID;
+
     if (!rawBarcode || typeof rawBarcode !== "string") {
       return Result.fail("Invalid barcode supplied");
     }
@@ -320,13 +318,6 @@ export async function findProductByBarcode(
       return Result.fail("Empty barcode supplied");
     }
 
-    // id: string;
-    // name: string;
-    // quantity: number;
-    // unit_price: number;
-    // cost_price?: number;
-
-    // Direct match or trimmed match
     const product = await db("v_product_catalog")
       .select(
         "product_id as id",
@@ -336,8 +327,7 @@ export async function findProductByBarcode(
         "unit_price",
         "barcode",
       )
-      .where("barcode", normalized)
-      // .orWhere(db.raw("LOWER(barcode)"), normalized.toLowerCase())
+      .where({ barcode: normalized, tenant_id: tenantId })
       .first();
 
     if (!product) {
@@ -351,13 +341,14 @@ export async function findProductByBarcode(
   }
 }
 
-/**
- * Get all products – uses v_product_catalog view.
- */
 export async function getProductSales(
   id: string,
 ): Promise<Result<ProductSalesView[]>> {
   try {
+    const currentUser = await getCurrentUser();
+    if (!currentUser?.id) return Result.fail("Unauthorized");
+    const tenantId = currentUser.tenant_id || DEFAULT_TENANT_ID;
+
     const products: ProductSalesView[] = await db("v_sale_items_detail")
       .select(
         "sale_item_id as id",
@@ -371,7 +362,7 @@ export async function getProductSales(
         "user_id",
         "user_name as created_by",
       )
-      .where("product_id", id)
+      .where({ product_id: id, tenant_id: tenantId })
       .orderBy("sale_date", "desc");
 
     return Result.ok(products);
@@ -382,12 +373,9 @@ export async function getProductSales(
 }
 
 // ──────────────────────────────────────────────────────────────
-// Create / Update / Delete
+// Create / Update / Delete (tenant-scoped + atomic sync)
 // ──────────────────────────────────────────────────────────────
 
-/**
- * Create a new product – admin only.
- */
 export async function createProduct(
   productData: InsertProduct,
 ): Promise<Result<{ id: string }>> {
@@ -398,9 +386,9 @@ export async function createProduct(
 
   try {
     const currentUser = await getCurrentUser();
-    if (!currentUser.id) throw new Error("Unauthorized");
+    if (!currentUser?.id) return Result.fail("Unauthorized");
+    const tenantId = currentUser.tenant_id || DEFAULT_TENANT_ID;
 
-    // Validate required fields
     if (!productData.name || !productData.category_id) {
       return Result.fail("Product name and category are required");
     }
@@ -411,53 +399,45 @@ export async function createProduct(
       return Result.fail("Stock quantity cannot be negative");
     }
 
-    // Check that category exists and belongs to the same user (or is public)
     const category = await db("product_categories")
-      .where("id", productData.category_id)
+      .where({ id: productData.category_id, tenant_id: tenantId })
       .first();
     if (!category) {
       return Result.fail("Category not found");
     }
-    // Optional: ensure category belongs to the same user or is accessible
-    // if (category.user_id !== userId && !checkRole("admin")) {
-    //   return Result.fail("Category does not belong to you");
-    // }
 
-    // Duplicate barcode check if provided
     let normalizedBarcode: string | null = null;
     if (productData.barcode && typeof productData.barcode === "string") {
-      normalizedBarcode = productData.barcode.trim();
+      normalizedBarcode = productData.barcode.trim() || null;
       if (normalizedBarcode) {
         const existingWithBarcode = await db("products")
-          .where("barcode", normalizedBarcode)
-          // .orWhere(db.raw("LOWER(barcode)"), normalizedBarcode.toLowerCase())
+          .where({ barcode: normalizedBarcode, tenant_id: tenantId })
           .first();
         if (existingWithBarcode) {
           return Result.fail(
-            `Barcode "${normalizedBarcode}" is already assigned to product "${existingWithBarcode.product_name || existingWithBarcode.name}".`,
+            `Barcode "${normalizedBarcode}" is already assigned to product "${existingWithBarcode.name}".`,
           );
         }
-      } else {
-        normalizedBarcode = null;
       }
     }
 
     const newId = generateId();
     await db("products").insert({
       id: newId,
-      user_id: currentUser?.id,
+      tenant_id: tenantId,
+      user_id: currentUser.id,
       category_id: productData.category_id,
       name: productData.name,
       description: productData.description,
       cost_price: productData.cost_price,
       unit_price: productData.unit_price,
       stock_quantity: productData.stock_quantity,
+      version: 1,
       barcode: normalizedBarcode,
-      is_active: productData.active,
+      is_active: productData.active !== false ? 1 : 0,
       photo_url: productData.photo_url,
     });
 
-    // Audit log
     await createAuditLog({
       entity_type: "product",
       entity_id: newId,
@@ -473,7 +453,6 @@ export async function createProduct(
       },
     });
 
-    // Activity log
     await createActivityLog({
       activity_type: "product_created",
       title: `Product ${productData.name} created`,
@@ -482,6 +461,14 @@ export async function createProduct(
     });
 
     revalidatePath("/admin/product");
+    await emitSyncEvent({
+      tenantId,
+      entityType: "product",
+      entityId: newId,
+      action: "upsert",
+      actorUserId: currentUser.id,
+    });
+
     return Result.ok({ id: newId });
   } catch (error: any) {
     console.error("Failed to create product:", error);
@@ -489,9 +476,6 @@ export async function createProduct(
   }
 }
 
-/**
- * Update an existing product – admin only.
- */
 export async function updateProduct(
   productData: Partial<InsertProduct> & { id: string },
 ): Promise<Result<{ success: true }>> {
@@ -503,21 +487,27 @@ export async function updateProduct(
   try {
     const currentUser = await getCurrentUser();
     const userId = currentUser?.id;
-    if (!userId) throw new Error("Unauthorized");
+    if (!userId) return Result.fail("Unauthorized");
+    const tenantId = currentUser.tenant_id || DEFAULT_TENANT_ID;
 
-    // Fetch current product for audit
-    const current = await db("products").where("id", productData.id).first();
+    const current = await db("products")
+      .where({ id: productData.id, tenant_id: tenantId })
+      .first();
     if (!current) {
       return Result.fail("Product not found");
     }
 
-    // Build update object – only allowed fields
     const updateFields: any = {};
     if (productData.name !== undefined) updateFields.name = productData.name;
     if (productData.description !== undefined)
       updateFields.description = productData.description;
-    if (productData.category_id !== undefined)
+    if (productData.category_id !== undefined) {
+      const cat = await db("product_categories")
+        .where({ id: productData.category_id, tenant_id: tenantId })
+        .first();
+      if (!cat) return Result.fail("Category not found");
       updateFields.category_id = productData.category_id;
+    }
     if (productData.cost_price !== undefined) {
       if (productData.cost_price < 0)
         return Result.fail("Cost price cannot be negative");
@@ -539,13 +529,12 @@ export async function updateProduct(
         const normalized = productData.barcode.trim();
         if (normalized) {
           const existingWithBarcode = await db("products")
-            .where("barcode", normalized)
-            // .orWhere(db.raw("LOWER(barcode)"), normalized.toLowerCase())
+            .where({ barcode: normalized, tenant_id: tenantId })
             .whereNot("id", productData.id)
             .first();
           if (existingWithBarcode) {
             return Result.fail(
-              `Barcode "${normalized}" is already assigned to product "${existingWithBarcode.product_name || existingWithBarcode.name}".`,
+              `Barcode "${normalized}" is already assigned to product "${existingWithBarcode.name}".`,
             );
           }
           updateFields.barcode = normalized;
@@ -561,22 +550,25 @@ export async function updateProduct(
       updateFields.photo_url = productData.photo_url || null;
     }
 
-    if (productData.active !== undefined)
-      updateFields.is_active = productData.active;
+    if (productData.active !== undefined) {
+      updateFields.is_active = productData.active ? 1 : 0;
+    }
 
     if (Object.keys(updateFields).length === 0) {
       return Result.fail("No fields to update");
     }
 
+    updateFields.version = db.raw("COALESCE(version, 1) + 1");
+    updateFields.updated_at = new Date().toISOString();
+
     const updatedCount = await db("products")
-      .where("id", productData.id)
+      .where({ id: productData.id, tenant_id: tenantId })
       .update(updateFields);
 
     if (updatedCount === 0) {
       return Result.fail("Product not found or no changes made");
     }
 
-    // Audit log
     await createAuditLog({
       entity_type: "product",
       entity_id: productData.id,
@@ -587,23 +579,29 @@ export async function updateProduct(
         category_id: current.category_id,
         cost_price: current.cost_price,
         unit_price: current.unit_price,
-        barcode: current?.barcode,
+        barcode: current.barcode,
         stock_quantity: current.stock_quantity,
         is_active: current.is_active,
       },
       new_values: {
         name: updateFields.name ?? current.name,
         description: updateFields.description ?? current.description,
-        barcode: updateFields.barcode ?? current.barcode,
+        barcode:
+          updateFields.barcode !== undefined
+            ? updateFields.barcode
+            : current.barcode,
         category_id: updateFields.category_id ?? current.category_id,
         cost_price: updateFields.cost_price ?? current.cost_price,
         unit_price: updateFields.unit_price ?? current.unit_price,
-        stock_quantity: updateFields.stock_quantity ?? current.stock_quantity,
-        is_active: updateFields.is_active ?? current.is_active,
+        stock_quantity:
+          updateFields.stock_quantity ?? current.stock_quantity,
+        is_active:
+          updateFields.is_active !== undefined
+            ? updateFields.is_active
+            : current.is_active,
       },
     });
 
-    // Activity log
     await createActivityLog({
       activity_type: "product_updated",
       title: `Product ${current.name} updated`,
@@ -613,15 +611,21 @@ export async function updateProduct(
 
     revalidatePath(`/admin/product/${productData.id}`);
     revalidatePath("/admin/product");
+    await emitSyncEvent({
+      tenantId,
+      entityType: "product",
+      entityId: productData.id,
+      action: "upsert",
+      actorUserId: userId,
+    });
+
     return Result.ok({ success: true });
   } catch (error: any) {
     console.error("Failed to update product:", error);
     return Result.fail(error?.message || "Failed to update product");
   }
 }
-/**
- * Update or restock product – admin only.
- */
+
 export async function restockProduct(
   productData: ReStockProduct,
 ): Promise<Result<{ success: true }>> {
@@ -633,54 +637,80 @@ export async function restockProduct(
   try {
     const currentUser = await getCurrentUser();
     const userId = currentUser?.id;
-    if (!userId) throw new Error("Unauthorized");
+    if (!userId) return Result.fail("Unauthorized");
+    const tenantId = currentUser.tenant_id || DEFAULT_TENANT_ID;
 
-    // Fetch current product for audit
-    const current = await db("products").where("id", productData.id).first();
-    if (!current) {
-      return Result.fail("Product not found");
+    const delta = Number(productData.stock_quantity);
+    if (!Number.isFinite(delta) || delta <= 0) {
+      return Result.fail("Restock quantity must be positive");
     }
 
-    // Build update object – only allowed fields
-    const updateFields: any = {};
+    const trx = await db.transaction();
+    let syncRecord: SyncEventRecord | null = null;
+    let currentProduct: any;
+    let nextStock = 0;
 
-    if (productData.stock_quantity !== undefined) {
-      if (productData.stock_quantity < 0)
-        return Result.fail("Stock quantity cannot be negative");
-      updateFields.stock_quantity = productData.stock_quantity;
+    try {
+      currentProduct = await trx("products")
+        .where({ id: productData.id, tenant_id: tenantId })
+        .first();
+      if (!currentProduct) {
+        await trx.rollback();
+        return Result.fail("Product not found");
+      }
+
+      const nowIso = new Date().toISOString();
+      await trx("products")
+        .where({ id: productData.id, tenant_id: tenantId })
+        .update({
+          stock_quantity: db.raw("stock_quantity + ?", [delta]),
+          version: db.raw("COALESCE(version, 1) + 1"),
+          updated_at: nowIso,
+        });
+
+      const refreshed = await trx("products")
+        .select("stock_quantity", "version")
+        .where({ id: productData.id, tenant_id: tenantId })
+        .first();
+
+      nextStock = Number(refreshed?.stock_quantity ?? 0);
+
+      syncRecord = await insertSyncEvent(trx, {
+        tenantId,
+        entityType: "product",
+        entityId: productData.id,
+        action: "stock_delta",
+        payload: {
+          delta,
+          stock_quantity: nextStock,
+          version: Number(refreshed?.version ?? 1),
+        },
+        actorUserId: userId,
+      });
+
+      await trx.commit();
+    } catch (err) {
+      await trx.rollback();
+      throw err;
     }
 
-    if (Object.keys(updateFields).length === 0) {
-      return Result.fail("No fields to update");
+    if (syncRecord) {
+      publishSyncEvent(syncRecord);
     }
 
-    const updatedCount = await db("products")
-      .where("id", productData.id)
-      .increment("stock_quantity", productData.stock_quantity);
-
-    if (updatedCount === 0) {
-      return Result.fail("Product not found or no changes made");
-    }
-
-    // Audit log
     await createAuditLog({
       entity_type: "product",
       entity_id: productData.id,
       action: "update",
-      old_values: {
-        stock_quantity: current.stock_quantity,
-      },
-      new_values: {
-        stock_quantity: current.stock_quantity + productData.stock_quantity,
-      },
+      old_values: { stock_quantity: currentProduct.stock_quantity },
+      new_values: { stock_quantity: nextStock },
     });
 
-    // Activity log
     await createActivityLog({
       activity_type: "product_restocked",
-      title: `Product ${current.name} restocked`,
-      description: "Product stock quantity updated",
-      metadata: { product_id: productData.id },
+      title: `Product ${currentProduct.name} restocked`,
+      description: `Added ${delta} unit(s) to stock`,
+      metadata: { product_id: productData.id, delta },
     });
 
     revalidatePath(`/admin/product/${productData.id}`);
@@ -693,9 +723,6 @@ export async function restockProduct(
   }
 }
 
-/**
- * Delete a product – admin only.
- */
 export async function removeProduct(
   id: string,
 ): Promise<Result<{ success: true }>> {
@@ -705,17 +732,24 @@ export async function removeProduct(
   }
 
   try {
-    const product = await db("products").where("id", id).first();
+    const currentUser = await getCurrentUser();
+    if (!currentUser?.id) return Result.fail("Unauthorized");
+    const tenantId = currentUser.tenant_id || DEFAULT_TENANT_ID;
+
+    const product = await db("products")
+      .where({ id, tenant_id: tenantId })
+      .first();
     if (!product) {
       return Result.fail("Product not found");
     }
 
-    const deletedCount = await db("products").where("id", id).del();
+    const deletedCount = await db("products")
+      .where({ id, tenant_id: tenantId })
+      .del();
     if (deletedCount === 0) {
       return Result.fail("Product not found");
     }
 
-    // Audit log
     await createAuditLog({
       entity_type: "product",
       entity_id: id,
@@ -729,7 +763,6 @@ export async function removeProduct(
       },
     });
 
-    // Activity log
     await createActivityLog({
       activity_type: "product_deleted",
       title: `Product ${product.name} deleted`,
@@ -738,6 +771,14 @@ export async function removeProduct(
     });
 
     revalidatePath("/admin/product");
+    await emitSyncEvent({
+      tenantId,
+      entityType: "product",
+      entityId: id,
+      action: "delete",
+      actorUserId: currentUser.id,
+    });
+
     return Result.ok({ success: true });
   } catch (error: any) {
     console.error("Failed to delete product:", error);
@@ -755,13 +796,22 @@ export async function updateProductsStatus(
   }
 
   try {
+    const currentUser = await getCurrentUser();
+    if (!currentUser?.id) return Result.fail("Unauthorized");
+    const tenantId = currentUser.tenant_id || DEFAULT_TENANT_ID;
+
     if (!ids || ids.length === 0) {
       return Result.fail("No product IDs provided");
     }
 
     const updated = await db("products")
+      .where("tenant_id", tenantId)
       .whereIn("id", ids)
-      .update({ is_active: active ? 1 : 0 });
+      .update({
+        is_active: active ? 1 : 0,
+        version: db.raw("COALESCE(version, 1) + 1"),
+        updated_at: new Date().toISOString(),
+      });
 
     await createAuditLog({
       entity_type: "products",
@@ -780,16 +830,20 @@ export async function updateProductsStatus(
 
     revalidatePath("/admin/product");
     revalidatePath("/admin/inventory");
+    await emitSyncEvent({
+      tenantId,
+      entityType: "product",
+      entityId: ids.join(","),
+      action: "refresh",
+      actorUserId: currentUser.id,
+    });
+
     return Result.ok({ updatedCount: updated });
   } catch (error: any) {
     console.error("Failed to update product statuses:", error);
     return Result.fail(error?.message || "Failed to update product status");
   }
 }
-
-// ──────────────────────────────────────────────────────────────
-// (Optional) Bulk delete – admin only
-// ──────────────────────────────────────────────────────────────
 
 export async function removeProducts(
   ids: string[],
@@ -800,12 +854,21 @@ export async function removeProducts(
   }
 
   try {
-    const products = await db("products").whereIn("id", ids);
+    const currentUser = await getCurrentUser();
+    if (!currentUser?.id) return Result.fail("Unauthorized");
+    const tenantId = currentUser.tenant_id || DEFAULT_TENANT_ID;
+
+    const products = await db("products")
+      .where("tenant_id", tenantId)
+      .whereIn("id", ids);
     if (products.length === 0) {
       return Result.fail("No products found");
     }
 
-    const deleted = await db("products").whereIn("id", ids).del();
+    const deleted = await db("products")
+      .where("tenant_id", tenantId)
+      .whereIn("id", ids)
+      .del();
 
     await createAuditLog({
       entity_type: "products",
@@ -823,6 +886,14 @@ export async function removeProducts(
 
     revalidatePath("/admin/product");
     revalidatePath("/admin/inventory");
+    await emitSyncEvent({
+      tenantId,
+      entityType: "product",
+      entityId: ids.join(","),
+      action: "refresh",
+      actorUserId: currentUser.id,
+    });
+
     return Result.ok({ deletedCount: deleted });
   } catch (error: any) {
     console.error("Failed to delete products:", error);

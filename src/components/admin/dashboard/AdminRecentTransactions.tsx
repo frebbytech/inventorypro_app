@@ -73,8 +73,8 @@ export function AdminRecentTransactions({
     setIsModalOpen(true);
   };
 
-  const getStatusBadge = (status: string) => {
-    const s = status.toLowerCase();
+  const getStatusBadge = (status?: string | null) => {
+    const s = (status ?? "").toLowerCase();
     if (s === "completed") {
       return (
         <span className="inline-flex items-center gap-1 rounded-full bg-emerald-500/10 px-2 py-0.5 text-sm font-semibold text-emerald-600 dark:text-emerald-400">

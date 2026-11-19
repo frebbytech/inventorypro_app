@@ -1,7 +1,18 @@
 import React, { useCallback, useState } from "react";
 import { Modal, Pressable, StyleSheet, Text, View } from "react-native";
 import { useFocusEffect, useRouter } from "expo-router";
-import { Bell, LogOut, Settings, ShieldCheck, User } from "lucide-react-native";
+import {
+  AlertTriangle,
+  Bell,
+  Cloud,
+  LogOut,
+  RefreshCw,
+  Settings,
+  ShieldCheck,
+  Smartphone,
+  User,
+  WifiOff,
+} from "lucide-react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useAuth } from "@/api/AuthProvider";
 import { SignOutConfirmDialog } from "@/components/SignOutConfirmDialog";
@@ -15,7 +26,16 @@ export function DemoBanner({
   subtitle?: string;
 }) {
   const { theme } = useTheme();
-  const { user, unreadNotificationsCount, refreshUnreadNotifications } = useAuth();
+  const {
+    user,
+    workspaceMode,
+    syncStatus,
+    pendingOutboxCount,
+    conflictOutboxCount,
+    triggerSyncNow,
+    unreadNotificationsCount,
+    refreshUnreadNotifications,
+  } = useAuth();
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const { colors, radii, spacing, typography, fontFamilies, shadows } = theme;
@@ -43,6 +63,104 @@ export function DemoBanner({
   ) => {
     setMenuOpen(false);
     router.push(path);
+  };
+
+  const renderSyncChip = () => {
+    if (workspaceMode === "mobile_only") {
+      return (
+        <Pressable
+          onPress={() => router.push("/(tabs)/account")}
+          accessibilityLabel="Mobile-Only workspace mode"
+          style={({ pressed }) => [
+            styles.syncChip,
+            {
+              backgroundColor: colors.muted,
+              borderColor: colors.border,
+              opacity: pressed ? 0.78 : 1,
+            },
+          ]}
+        >
+          <Smartphone size={12} color={colors.mutedForeground} />
+          <Text
+            style={[
+              typography.micro,
+              {
+                color: colors.mutedForeground,
+                fontFamily: fontFamilies.semibold,
+              },
+            ]}
+          >
+            Local
+          </Text>
+        </Pressable>
+      );
+    }
+
+    const isConflict = syncStatus === "conflict" || conflictOutboxCount > 0;
+    const isOffline = syncStatus === "offline";
+    const isSyncing =
+      syncStatus === "syncing" ||
+      syncStatus === "connecting" ||
+      syncStatus === "reconnecting";
+
+    const label = isConflict
+      ? `${conflictOutboxCount} Conflict`
+      : isOffline
+        ? pendingOutboxCount > 0
+          ? `Offline · ${pendingOutboxCount}`
+          : "Offline"
+        : isSyncing
+          ? "Syncing"
+          : "Live";
+
+    const tintBg = isConflict
+      ? colors.dangerTint
+      : isOffline
+        ? colors.muted
+        : colors.primaryTint;
+    const tintBorder = isConflict
+      ? colors.dangerBorder
+      : isOffline
+        ? colors.border
+        : colors.primary;
+    const tintText = isConflict
+      ? colors.dangerText
+      : isOffline
+        ? colors.mutedForeground
+        : colors.primary;
+
+    return (
+      <Pressable
+        onPress={() => void triggerSyncNow()}
+        accessibilityLabel={`Sync status: ${label}. Tap to sync now`}
+        style={({ pressed }) => [
+          styles.syncChip,
+          {
+            backgroundColor: tintBg,
+            borderColor: tintBorder,
+            opacity: pressed ? 0.78 : 1,
+          },
+        ]}
+      >
+        {isConflict ? (
+          <AlertTriangle size={12} color={tintText} />
+        ) : isOffline ? (
+          <WifiOff size={12} color={tintText} />
+        ) : isSyncing ? (
+          <RefreshCw size={12} color={tintText} />
+        ) : (
+          <Cloud size={12} color={tintText} />
+        )}
+        <Text
+          style={[
+            typography.micro,
+            { color: tintText, fontFamily: fontFamilies.semibold },
+          ]}
+        >
+          {label}
+        </Text>
+      </Pressable>
+    );
   };
 
   return (
@@ -77,6 +195,8 @@ export function DemoBanner({
           </View>
 
           <View style={styles.rightActions}>
+            {renderSyncChip()}
+
             <Pressable
               onPress={() => router.push("/notifications")}
               accessibilityLabel={`Notifications${unreadNotificationsCount > 0 ? `, ${unreadNotificationsCount} unread` : ""}`}
@@ -352,6 +472,15 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     gap: 8,
+  },
+  syncChip: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 5,
+    borderWidth: 1,
+    borderRadius: 9999,
+    paddingHorizontal: 9,
+    paddingVertical: 5,
   },
   iconBtn: {
     width: 36,

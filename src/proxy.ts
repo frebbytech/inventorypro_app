@@ -7,6 +7,7 @@ const JWT_SECRET = new TextEncoder().encode(
 );
 
 const COOKIE_NAME = process.env.COOKIE_NAME || "auth_session";
+const SUPER_ADMIN_COOKIE_NAME = "super_admin_session";
 
 export default async function proxy(request: NextRequest) {
   const { pathname } = request.nextUrl;
@@ -21,6 +22,41 @@ export default async function proxy(request: NextRequest) {
     return NextResponse.next();
   }
 
+  // Dedicated Super Admin portal routing (completely isolated from tenant sessions)
+  if (pathname === "/super-admin/login" || pathname.startsWith("/super-admin")) {
+    const superToken = request.cookies.get(SUPER_ADMIN_COOKIE_NAME)?.value;
+    let superSession: { superAdminId: string; scope: string } | null = null;
+
+    if (superToken) {
+      try {
+        const { payload } = await jwtVerify(superToken, JWT_SECRET);
+        if (
+          payload?.scope === "super_admin" &&
+          typeof payload?.superAdminId === "string"
+        ) {
+          superSession = {
+            superAdminId: payload.superAdminId,
+            scope: payload.scope,
+          };
+        }
+      } catch {
+        superSession = null;
+      }
+    }
+
+    if (pathname === "/super-admin/login") {
+      if (superSession) {
+        return NextResponse.redirect(new URL("/super-admin", request.url));
+      }
+      return NextResponse.next();
+    }
+
+    if (!superSession) {
+      return NextResponse.redirect(new URL("/super-admin/login", request.url));
+    }
+
+    return NextResponse.next();
+  }
 
   const isPublicRoute =
     pathname.startsWith("/auth") ||
@@ -31,6 +67,7 @@ export default async function proxy(request: NextRequest) {
 
   let session: {
     userId: string;
+    tenantId?: string;
     username: string;
     role: "admin" | "member";
   } | null = null;
@@ -38,11 +75,14 @@ export default async function proxy(request: NextRequest) {
   if (token) {
     try {
       const { payload } = await jwtVerify(token, JWT_SECRET);
-      session = payload as unknown as {
-        userId: string;
-        username: string;
-        role: "admin" | "member";
-      };
+      if (payload?.scope !== "super_admin" && typeof payload?.userId === "string") {
+        session = payload as unknown as {
+          userId: string;
+          tenantId?: string;
+          username: string;
+          role: "admin" | "member";
+        };
+      }
     } catch {
       session = null;
     }
@@ -52,6 +92,15 @@ export default async function proxy(request: NextRequest) {
   if (!session && !isPublicRoute) {
     const signInUrl = new URL("/auth/sign-in", request.url);
     return NextResponse.redirect(signInUrl);
+  }
+
+  // Clear stale cookie when redirected from a server layout/page due to missing DB session
+  if (isPublicRoute && request.nextUrl.searchParams.get("session") === "expired") {
+    const res = NextResponse.next();
+    if (token) {
+      res.cookies.delete(COOKIE_NAME);
+    }
+    return res;
   }
 
   // Redirect authenticated users away from public auth pages

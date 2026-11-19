@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 "use server";
 
 import db from "@/db/knex";
@@ -5,30 +6,42 @@ import { revalidatePath } from "next/cache";
 import { Result, ApiSettings, UpdateApiSettingsInput } from "@/types/globals";
 import { encrypt, decrypt, maskSecret } from "@/lib/encryption";
 import { getCurrentUser } from "./_actions";
+import { generateId } from "@/utils/generator";
+import { DEFAULT_TENANT_ID } from "@/lib/tenant";
+
+async function findOrCreateTenantApiSettingsRow(userId: string, tenantId: string) {
+  let row = await db("api_settings")
+    .where("tenant_id", tenantId)
+    .orderByRaw("CASE WHEN user_id = ? THEN 0 ELSE 1 END", [userId])
+    .first();
+
+  if (!row) {
+    const newId = generateId();
+    await db("api_settings").insert({
+      id: newId,
+      tenant_id: tenantId,
+      user_id: userId,
+      arkessel_base_url: "https://sms.arkesel.com/api/v2/sms/send",
+      smtp_host: "smtp.gmail.com",
+      smtp_port: 587,
+      smtp_secure: false,
+    });
+    row = await db("api_settings").where("id", newId).first();
+  }
+
+  return row;
+}
 
 /**
- * Get API settings with sensitive fields masked.
+ * Get API settings for the current workspace with sensitive fields masked.
  */
 export async function getApiSettings(): Promise<Result<ApiSettings>> {
   try {
     const user = await getCurrentUser();
     if (!user?.id) return Result.fail("Unauthorized");
 
-    let row = await db("api_settings").where("user_id", user?.id).first();
-
-    // Create default row on first access
-    if (!row) {
-      const [created] = await db("api_settings")
-        .insert({
-          user_id: user?.id,
-          arkessel_base_url: "https://sms.arkesel.com/api/v2/sms/send",
-          smtp_host: "smtp.gmail.com",
-          smtp_port: 587,
-          smtp_secure: false,
-        })
-        .returning("*");
-      row = created;
-    }
+    const tenantId = user.tenant_id || DEFAULT_TENANT_ID;
+    const row = await findOrCreateTenantApiSettingsRow(user.id, tenantId);
 
     const safe: ApiSettings = {
       id: row.id,
@@ -65,11 +78,7 @@ export async function getApiSettings(): Promise<Result<ApiSettings>> {
 }
 
 /**
- * Update API settings.
- * Rules for secrets:
- *  - If the value is empty string → clear the stored secret.
- *  - If the value starts with "••••" (masked) → ignore (unchanged).
- *  - Otherwise → encrypt and store.
+ * Update API settings for the current workspace.
  */
 export async function updateApiSettings(
   input: UpdateApiSettingsInput,
@@ -78,9 +87,11 @@ export async function updateApiSettings(
     const user = await getCurrentUser();
     if (!user?.id) return Result.fail("Unauthorized");
 
-    const update: any = { updated_at: db.fn.now() };
+    const tenantId = user.tenant_id || DEFAULT_TENANT_ID;
+    const row = await findOrCreateTenantApiSettingsRow(user.id, tenantId);
 
-    // Non-secret fields
+    const update: any = { updated_at: new Date().toISOString() };
+
     if (input.arkessel_sender_id !== undefined)
       update.arkessel_sender_id = input.arkessel_sender_id;
     if (input.arkessel_base_url !== undefined)
@@ -95,7 +106,6 @@ export async function updateApiSettings(
     if (input.smtp_from_email !== undefined)
       update.smtp_from_email = input.smtp_from_email;
 
-    // Secrets
     if (input.arkessel_api_key !== undefined) {
       const val = input.arkessel_api_key;
       if (val === "") {
@@ -114,7 +124,9 @@ export async function updateApiSettings(
       }
     }
 
-    await db("api_settings").where("user_id", user?.id).update(update);
+    await db("api_settings")
+      .where({ id: row.id, tenant_id: tenantId })
+      .update(update);
 
     revalidatePath("/admin/settings");
     return Result.ok({ success: true });
@@ -124,10 +136,6 @@ export async function updateApiSettings(
   }
 }
 
-/**
- * Test the Arkessel SMS connection by sending a test SMS.
- * (Uses the stored key.)
- */
 export async function testSmsConnection(
   toPhone: string,
 ): Promise<Result<{ success: true }>> {
@@ -135,7 +143,8 @@ export async function testSmsConnection(
     const user = await getCurrentUser();
     if (!user?.id) return Result.fail("Unauthorized");
 
-    const row = await db("api_settings").where("user_id", user?.id).first();
+    const tenantId = user.tenant_id || DEFAULT_TENANT_ID;
+    const row = await db("api_settings").where("tenant_id", tenantId).first();
     if (!row?.arkessel_api_key)
       return Result.fail("Arkessel API key not configured");
 
@@ -151,21 +160,18 @@ export async function testSmsConnection(
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        sender: sender,
+        sender,
         message: "This is a test SMS from your inventory app.",
         recipients: [toPhone],
       }),
     });
 
-    
     if (!response.ok) {
-        const text = await response.text();
-        return Result.fail(`SMS provider error: ${response.status} ${text}`);
+      const text = await response.text();
+      return Result.fail(`SMS provider error: ${response.status} ${text}`);
     }
-    
+
     const data = await response.json();
-    // console.log(data)
-    // Arkessel returns { status: "success", ... } or similar
     if (data?.status && data.status !== "success") {
       return Result.fail(data?.message || "Failed to send test SMS");
     }
@@ -177,9 +183,6 @@ export async function testSmsConnection(
   }
 }
 
-/**
- * Test the Gmail SMTP connection using Nodemailer's verify().
- */
 export async function testEmailConnection(): Promise<
   Result<{ success: true }>
 > {
@@ -187,7 +190,8 @@ export async function testEmailConnection(): Promise<
     const user = await getCurrentUser();
     if (!user?.id) return Result.fail("Unauthorized");
 
-    const row = await db("api_settings").where("user_id", user?.id).first();
+    const tenantId = user.tenant_id || DEFAULT_TENANT_ID;
+    const row = await db("api_settings").where("tenant_id", tenantId).first();
     if (!row?.smtp_user || !row?.smtp_password)
       return Result.fail("SMTP credentials not configured");
 
@@ -211,14 +215,19 @@ export async function testEmailConnection(): Promise<
 }
 
 /**
- * Internal helper: get decrypted credentials for other modules.
- * Only call this from server-side code.
+ * Internal helper: get decrypted workspace API credentials.
  */
-export async function getDecryptedApiCredentials() {
-  const user = await getCurrentUser();
-  if (!user?.id) return null;
-  const row = await db("api_settings").where("user_id", user?.id).first();
+export async function getDecryptedApiCredentials(tenantIdOverride?: string) {
+  let tenantId = tenantIdOverride;
+  if (!tenantId) {
+    const user = await getCurrentUser();
+    if (!user?.id) return null;
+    tenantId = user.tenant_id || DEFAULT_TENANT_ID;
+  }
+
+  const row = await db("api_settings").where("tenant_id", tenantId).first();
   if (!row) return null;
+
   return {
     arkessel: {
       apiKey: row.arkessel_api_key ? decrypt(row.arkessel_api_key) : "",

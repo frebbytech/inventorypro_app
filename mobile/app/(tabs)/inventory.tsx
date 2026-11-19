@@ -44,7 +44,7 @@ export default function InventoryScreen() {
   const params = useLocalSearchParams<{ stock?: string }>();
   const { theme } = useTheme();
   const api = useApiClient();
-  const { store, updateStockThreshold } = useAuth();
+  const { store, syncVersion, updateStockThreshold } = useAuth();
   const router = useRouter();
   const { colors, spacing, radii, typography, fontFamilies } = theme;
 
@@ -160,12 +160,22 @@ export default function InventoryScreen() {
     return () => clearTimeout(timer);
   }, [loadProducts]);
 
+  const loadProductsRef = useRef(loadProducts);
+  loadProductsRef.current = loadProducts;
+
   useFocusEffect(
     useCallback(() => {
       void api.getCategories().then(setCategories).catch(() => {});
       void loadProducts(products.length > 0);
     }, [api, loadProducts]),
   );
+
+  useEffect(() => {
+    if (syncVersion > 0) {
+      void api.getCategories().then(setCategories).catch(() => {});
+      void loadProductsRef.current(true);
+    }
+  }, [syncVersion, api]);
 
   const counts = useMemo(() => {
     let low = 0;

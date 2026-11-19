@@ -25,6 +25,8 @@ import { Metadata } from "next";
 import PrintingSettings from "@/components/settings/PrintingSettings";
 import { getApiSettings } from "@/actions/api-settings";
 import ApiSettings from "@/components/settings/ApiSettings";
+import { getStaffTwoFactorAccounts } from "@/actions/security";
+import SecuritySettings from "@/components/settings/SecuritySettings";
 
 export const metadata: Metadata = getPageMetadata("/admin/settings");
 
@@ -34,11 +36,16 @@ export default async function SettingsPage() {
     redirect("/sign-in");
   }
 
-  const [settingsResult, apiSettingsResult] = await Promise.all([
-    getSettings(),
-    getApiSettings(),
-  ]);
+  const isAdmin = user.role === "admin";
+
+  const [settingsResult, apiSettingsResult, staffSecurityResult] =
+    await Promise.all([
+      getSettings(),
+      getApiSettings(),
+      isAdmin ? getStaffTwoFactorAccounts() : Promise.resolve(null),
+    ]);
   const settings = settingsResult.success ? settingsResult.data : null;
+  const apiSettings = apiSettingsResult.success ? apiSettingsResult.data : null;
 
   return (
     <PageContainer>
@@ -75,6 +82,7 @@ export default async function SettingsPage() {
               Printing
             </TabsTrigger>
             <TabsTrigger value="api">API Integration</TabsTrigger>
+            {isAdmin && <TabsTrigger value="security">Security</TabsTrigger>}
           </TabsList>
 
           <TabsContent value="business">
@@ -94,15 +102,31 @@ export default async function SettingsPage() {
           </TabsContent>
           <TabsContent value="api">
             <ApiSettings
-              apiSettings={
-                apiSettingsResult.success ? apiSettingsResult.data : null
-              }
+              apiSettings={apiSettings}
               settings={{
                 business_name: settings?.business_name || "",
                 business_email: settings?.business_email || "",
               }}
             />
           </TabsContent>
+          {isAdmin && (
+            <TabsContent value="security">
+              <SecuritySettings
+                initialAccounts={
+                  staffSecurityResult?.success ? staffSecurityResult.data : []
+                }
+                emailConfigured={Boolean(
+                  apiSettings?.smtp_user && apiSettings?.has_smtp_password,
+                )}
+                smsConfigured={Boolean(apiSettings?.has_arkessel_api_key)}
+                loadError={
+                  staffSecurityResult && !staffSecurityResult.success
+                    ? staffSecurityResult.message
+                    : null
+                }
+              />
+            </TabsContent>
+          )}
         </Tabs>
       </div>
     </PageContainer>

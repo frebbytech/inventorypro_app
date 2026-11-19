@@ -8,6 +8,8 @@ import { createAuditLog } from "./audit-logs";
 import { createActivityLog } from "./activity-logs";
 import { generateId } from "@/utils/generator";
 import { getCurrentUser } from "./_actions";
+import { DEFAULT_TENANT_ID } from "@/lib/tenant";
+import { emitSyncEvent } from "@/lib/sync-bus";
 
 // ──────────────────────────────────────────────────────────────
 // Read functions
@@ -15,7 +17,6 @@ import { getCurrentUser } from "./_actions";
 
 /**
  * Get all notifications for the current authenticated user.
- * Optionally filter by read status and limit.
  */
 export async function getNotifications(options?: {
   unreadOnly?: boolean;
@@ -26,10 +27,11 @@ export async function getNotifications(options?: {
     if (!currentUser?.id) {
       return Result.fail("Unauthorized");
     }
+    const tenantId = currentUser.tenant_id || DEFAULT_TENANT_ID;
 
     let query = db("notifications")
       .select("*")
-      .where("user_id", currentUser?.id)
+      .where({ tenant_id: tenantId, user_id: currentUser.id })
       .orderBy("created_at", "desc");
 
     if (options?.unreadOnly) {
@@ -49,7 +51,7 @@ export async function getNotifications(options?: {
 }
 
 /**
- * Get a single notification by ID – only if it belongs to the current user.
+ * Get a single notification by ID – only if it belongs to the current user & workspace.
  */
 export async function getNotification(
   id: string,
@@ -59,10 +61,10 @@ export async function getNotification(
     if (!currentUser?.id) {
       return Result.fail("Unauthorized");
     }
+    const tenantId = currentUser.tenant_id || DEFAULT_TENANT_ID;
 
     const notification = await db("notifications")
-      .where("id", id)
-      .andWhere("user_id", currentUser?.id)
+      .where({ id, tenant_id: tenantId, user_id: currentUser.id })
       .first();
 
     if (!notification) {
@@ -85,10 +87,10 @@ export async function getUnreadCount(): Promise<Result<{ count: number }>> {
     if (!currentUser?.id) {
       return Result.fail("Unauthorized");
     }
+    const tenantId = currentUser.tenant_id || DEFAULT_TENANT_ID;
 
     const result = await db("notifications")
-      .where("user_id", currentUser?.id)
-      .andWhere("is_read", false)
+      .where({ tenant_id: tenantId, user_id: currentUser.id, is_read: false })
       .count("id as count")
       .first();
 
@@ -104,41 +106,35 @@ export async function getUnreadCount(): Promise<Result<{ count: number }>> {
 // ──────────────────────────────────────────────────────────────
 
 /**
- * Create a new notification – usually called internally by other services.
- * Can be exposed for administrative creation if needed.
+ * Create a new notification scoped to the target user's tenant.
  */
 export async function createNotification(
-  notificationData: InsertNotification,
+  notificationData: InsertNotification & { tenant_id?: string },
 ): Promise<Result<{ id: string }>> {
   try {
-    // You may want to restrict who can create notifications.
-    // For now, allow any authenticated user (or system) to create.
-    // If you want only admins, add a role check.
-    const currentUser = await getCurrentUser();
-    if (!currentUser.id) {
-      // If the notification is for another user, we still need to know who.
-      // For simplicity, we require a target user_id in the data.
-      if (!notificationData.user_id) {
-        return Result.fail("User ID is required to create a notification");
-      }
-    } else {
-      // If the caller is authenticated, we can override user_id with the logged-in user?
-      // Usually notifications are for others, so we keep the provided user_id.
-      // If no user_id provided, we could default to the current user.
-      // Let's enforce that user_id is always provided.
-      if (!notificationData.user_id) {
-        return Result.fail("User ID is required to create a notification");
-      }
+    const currentUser = await getCurrentUser().catch(() => null);
+
+    if (!notificationData.user_id) {
+      return Result.fail("User ID is required to create a notification");
     }
 
-    // Validate required fields
     if (!notificationData.type || !notificationData.title) {
       return Result.fail("Notification type and title are required");
+    }
+
+    let tenantId = notificationData.tenant_id || currentUser?.tenant_id;
+    if (!tenantId) {
+      const targetUser = await db("users")
+        .select("tenant_id")
+        .where("id", notificationData.user_id)
+        .first();
+      tenantId = targetUser?.tenant_id || DEFAULT_TENANT_ID;
     }
 
     const newId = generateId();
     await db("notifications").insert({
       id: newId,
+      tenant_id: tenantId,
       user_id: notificationData.user_id,
       type: notificationData.type,
       title: notificationData.title,
@@ -148,12 +144,22 @@ export async function createNotification(
       reference_id: notificationData.reference_id || null,
     });
 
-    // No audit log for every notification creation (could be noisy), but we can log an activity.
-    await createActivityLog({
-      activity_type: "notification_created",
-      title: `Notification sent to user ${notificationData.user_id}`,
-      description: notificationData.title,
-      metadata: { notification_id: newId, type: notificationData.type },
+    if (currentUser?.id) {
+      await createActivityLog({
+        activity_type: "notification_created",
+        title: `Notification sent to user ${notificationData.user_id}`,
+        description: notificationData.title,
+        metadata: { notification_id: newId, type: notificationData.type },
+      }).catch(() => {});
+    }
+
+    await emitSyncEvent({
+      tenantId,
+      entityType: "notification",
+      entityId: newId,
+      action: "upsert",
+      payload: { user_id: notificationData.user_id },
+      actorUserId: currentUser?.id || null,
     });
 
     return Result.ok({ id: newId });
@@ -164,7 +170,7 @@ export async function createNotification(
 }
 
 /**
- * Mark a single notification as read – only if it belongs to the current user.
+ * Mark a single notification as read – only if it belongs to the current user & workspace.
  */
 export async function markNotificationAsRead(
   id: string,
@@ -174,34 +180,45 @@ export async function markNotificationAsRead(
     if (!currentUser?.id) {
       return Result.fail("Unauthorized");
     }
+    const tenantId = currentUser.tenant_id || DEFAULT_TENANT_ID;
 
     const notification = await db("notifications")
-      .where("id", id)
-      .andWhere("user_id", currentUser?.id)
+      .where({ id, tenant_id: tenantId, user_id: currentUser.id })
       .first();
 
     if (!notification) {
       return Result.fail("Notification not found");
     }
 
-    // If already read, we can still return success.
     if (notification.is_read) {
       return Result.ok({ success: true });
     }
 
     await db("notifications")
-      .where("id", id)
+      .where({ id, tenant_id: tenantId })
       .update({ is_read: true, updated_at: db.fn.now() });
 
-    // No audit log, but we may log an activity.
     await createActivityLog({
       activity_type: "notification_read",
       title: "Notification marked as read",
       description: notification.title,
       metadata: { notification_id: id },
+    }).catch(() => {});
+
+    await emitSyncEvent({
+      tenantId,
+      entityType: "notification",
+      entityId: id,
+      action: "upsert",
+      payload: { is_read: true, user_id: currentUser.id },
+      actorUserId: currentUser.id,
     });
 
-    revalidatePath("/notifications");
+    try {
+      revalidatePath("/notifications");
+    } catch {
+      // Ignore outside Next.js render context
+    }
     return Result.ok({ success: true });
   } catch (error: any) {
     console.error("Failed to mark notification as read:", error);
@@ -220,10 +237,10 @@ export async function markAllNotificationsAsRead(): Promise<
     if (!currentUser?.id) {
       return Result.fail("Unauthorized");
     }
+    const tenantId = currentUser.tenant_id || DEFAULT_TENANT_ID;
 
     const updated = await db("notifications")
-      .where("user_id", currentUser?.id)
-      .andWhere("is_read", false)
+      .where({ tenant_id: tenantId, user_id: currentUser.id, is_read: false })
       .update({ is_read: true, updated_at: db.fn.now() });
 
     await createActivityLog({
@@ -231,9 +248,22 @@ export async function markAllNotificationsAsRead(): Promise<
       title: "All notifications marked as read",
       description: `${updated} notifications updated`,
       metadata: { count: updated },
+    }).catch(() => {});
+
+    await emitSyncEvent({
+      tenantId,
+      entityType: "notification",
+      entityId: currentUser.id,
+      action: "refresh",
+      payload: { user_id: currentUser.id, all_read: true },
+      actorUserId: currentUser.id,
     });
 
-    revalidatePath("/notifications");
+    try {
+      revalidatePath("/notifications");
+    } catch {
+      // Ignore outside Next.js render context
+    }
     return Result.ok({ count: updated });
   } catch (error: any) {
     console.error("Failed to mark all notifications as read:", error);
@@ -244,7 +274,7 @@ export async function markAllNotificationsAsRead(): Promise<
 }
 
 /**
- * Delete a notification – only if it belongs to the current user.
+ * Delete a notification – only if it belongs to the current user & workspace.
  */
 export async function deleteNotification(
   id: string,
@@ -254,19 +284,18 @@ export async function deleteNotification(
     if (!currentUser?.id) {
       return Result.fail("Unauthorized");
     }
+    const tenantId = currentUser.tenant_id || DEFAULT_TENANT_ID;
 
     const notification = await db("notifications")
-      .where("id", id)
-      .andWhere("user_id", currentUser?.id)
+      .where({ id, tenant_id: tenantId, user_id: currentUser.id })
       .first();
 
     if (!notification) {
       return Result.fail("Notification not found");
     }
 
-    await db("notifications").where("id", id).del();
+    await db("notifications").where({ id, tenant_id: tenantId }).del();
 
-    // Audit log for deletion (optional)
     await createAuditLog({
       entity_type: "notification",
       entity_id: id,
@@ -275,16 +304,28 @@ export async function deleteNotification(
         type: notification.type,
         title: notification.title,
       },
-    });
+    }).catch(() => {});
 
     await createActivityLog({
       activity_type: "notification_deleted",
       title: `Notification deleted`,
       description: notification.title,
       metadata: { notification_id: id },
+    }).catch(() => {});
+
+    await emitSyncEvent({
+      tenantId,
+      entityType: "notification",
+      entityId: id,
+      action: "delete",
+      actorUserId: currentUser.id,
     });
 
-    revalidatePath("/notifications");
+    try {
+      revalidatePath("/notifications");
+    } catch {
+      // Ignore outside Next.js render context
+    }
     return Result.ok({ success: true });
   } catch (error: any) {
     console.error("Failed to delete notification:", error);
@@ -303,26 +344,39 @@ export async function deleteAllNotifications(): Promise<
     if (!currentUser?.id) {
       return Result.fail("Unauthorized");
     }
+    const tenantId = currentUser.tenant_id || DEFAULT_TENANT_ID;
 
     const deleted = await db("notifications")
-      .where("user_id", currentUser?.id)
+      .where({ tenant_id: tenantId, user_id: currentUser.id })
       .del();
 
     await createAuditLog({
       entity_type: "notifications",
-      entity_id: currentUser?.id,
+      entity_id: currentUser.id,
       action: "delete",
-      old_values: { user_id: currentUser?.id, count: deleted },
-    });
+      old_values: { user_id: currentUser.id, count: deleted },
+    }).catch(() => {});
 
     await createActivityLog({
       activity_type: "notifications_all_deleted",
       title: "All notifications deleted",
       description: `${deleted} notifications removed`,
       metadata: { count: deleted },
+    }).catch(() => {});
+
+    await emitSyncEvent({
+      tenantId,
+      entityType: "notification",
+      entityId: currentUser.id,
+      action: "refresh",
+      actorUserId: currentUser.id,
     });
 
-    revalidatePath("/notifications");
+    try {
+      revalidatePath("/notifications");
+    } catch {
+      // Ignore outside Next.js render context
+    }
     return Result.ok({ count: deleted });
   } catch (error: any) {
     console.error("Failed to delete all notifications:", error);

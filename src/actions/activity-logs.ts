@@ -7,17 +7,22 @@ import { checkRole } from "@/utils/roles";
 import { headers } from "next/headers";
 import { revalidatePath } from "next/cache";
 import { generateId } from "@/utils/generator";
-import { getCurrentUser, getUserFromDb } from "./_actions";
+import { getCurrentUser } from "./_actions";
+import { DEFAULT_TENANT_ID } from "@/lib/tenant";
 
 /**
- * Get all activity logs – admin sees all, others see only their own.
+ * Get all activity logs – admin sees all in workspace, others see only their own.
  */
 export async function getActivityLogs() {
   const currentUser = await getCurrentUser();
   if (!currentUser?.id) throw new Error("Unauthorized");
   const userId = currentUser.id;
+  const tenantId = currentUser.tenant_id || DEFAULT_TENANT_ID;
 
-  const query = db("v_activity_logs").select("*").orderBy("created_at", "desc");
+  const query = db("v_activity_logs")
+    .where("tenant_id", tenantId)
+    .select("*")
+    .orderBy("created_at", "desc");
   const isAdmin = await checkRole("admin");
   if (!isAdmin) {
     query.where("user_id", userId);
@@ -31,7 +36,20 @@ export async function getActivityLogs() {
  * Get a single activity log by ID.
  */
 export async function getActivityLog(id: string) {
-  const log = await db("v_activity_logs").select("*").where("id", id).first();
+  const currentUser = await getCurrentUser();
+  if (!currentUser?.id) throw new Error("Unauthorized");
+  const tenantId = currentUser.tenant_id || DEFAULT_TENANT_ID;
+
+  const query = db("v_activity_logs")
+    .select("*")
+    .where({ id, tenant_id: tenantId });
+
+  const isAdmin = await checkRole("admin");
+  if (!isAdmin) {
+    query.andWhere("user_id", currentUser.id);
+  }
+
+  const log = await query.first();
 
   if (!log) {
     throw new Error("Activity log not found");
@@ -41,14 +59,13 @@ export async function getActivityLog(id: string) {
 }
 
 /**
- * Get activity logs for a specific user.
- * - Admin can view any user's logs.
- * - Non‑admins can only view their own logs.
+ * Get activity logs for a specific user within the current workspace.
  */
 export async function getUserActivityLogs(userId: string) {
   const currentUser = await getCurrentUser();
   if (!currentUser?.id) throw new Error("Unauthorized");
   const currentUserId = currentUser.id;
+  const tenantId = currentUser.tenant_id || DEFAULT_TENANT_ID;
 
   const isAdmin = await checkRole("admin");
 
@@ -58,7 +75,7 @@ export async function getUserActivityLogs(userId: string) {
 
   const logs = await db("v_activity_logs")
     .select("*")
-    .where("user_id", userId)
+    .where({ user_id: userId, tenant_id: tenantId })
     .orderBy("created_at", "desc");
 
   return logs;
@@ -66,8 +83,6 @@ export async function getUserActivityLogs(userId: string) {
 
 /**
  * Create a new activity log entry.
- * @param data - { activity_type, title, description?, metadata? }
- * @returns The inserted record ID(s).
  */
 export async function createActivityLog(data: {
   activity_type: string;
@@ -77,20 +92,24 @@ export async function createActivityLog(data: {
 }) {
   const currentUser = await getCurrentUser();
   if (!currentUser?.id) throw new Error("Unauthorized");
+  const tenantId = currentUser.tenant_id || DEFAULT_TENANT_ID;
 
-  // Basic validation
   if (!data.activity_type || !data.title) {
     throw new Error("activity_type and title are required");
   }
 
-
-  // Optionally capture IP and user-agent in metadata
-  const headersList = await headers();
-  const ip =
-    headersList.get("x-forwarded-for")?.split(",")[0]?.trim() ||
-    headersList.get("x-real-ip") ||
-    null;
-  const userAgent = headersList.get("user-agent") || null;
+  let ip: string | null = null;
+  let userAgent: string | null = null;
+  try {
+    const headersList = await headers();
+    ip =
+      headersList.get("x-forwarded-for")?.split(",")[0]?.trim() ||
+      headersList.get("x-real-ip") ||
+      null;
+    userAgent = headersList.get("user-agent") || null;
+  } catch {
+    // Non-request context (e.g., cron / after callback)
+  }
 
   const enrichedMetadata = {
     ...(data.metadata || {}),
@@ -101,15 +120,22 @@ export async function createActivityLog(data: {
   try {
     const result = await db("activity_logs").insert({
       id: generateId(),
-      user_id: currentUser?.id,
+      tenant_id: tenantId,
+      user_id: currentUser.id,
       activity_type: data.activity_type,
       title: data.title,
       description: data.description || null,
-      metadata: Object.keys(enrichedMetadata).length ? enrichedMetadata : null,
+      metadata: Object.keys(enrichedMetadata).length
+        ? JSON.stringify(enrichedMetadata)
+        : null,
       created_at: db.fn.now(),
     });
 
-    revalidatePath("/activity-logs");
+    try {
+      revalidatePath("/activity-logs");
+    } catch {
+      // Ignore outside Next.js render context
+    }
     return result;
   } catch (error) {
     console.error("Failed to create activity log:", error);
@@ -121,13 +147,17 @@ export async function createActivityLog(data: {
  * Delete an activity log – admin only.
  */
 export async function removeActivityLog(id: string) {
+  const currentUser = await getCurrentUser();
   const isAdmin = await checkRole("admin");
-  if (!isAdmin) {
+  if (!currentUser?.id || !isAdmin) {
     throw new Error("Not authorized to delete logs");
   }
+  const tenantId = currentUser.tenant_id || DEFAULT_TENANT_ID;
 
   try {
-    const result = await db("activity_logs").where("id", id).del();
+    const result = await db("activity_logs")
+      .where({ id, tenant_id: tenantId })
+      .del();
     if (result === 0) {
       throw new Error("Activity log not found");
     }
@@ -140,21 +170,25 @@ export async function removeActivityLog(id: string) {
 }
 
 /**
- * (Optional) Bulk delete – admin only.
- * @param ids - Array of log IDs.
+ * Bulk delete – admin only.
  */
 export async function removeActivityLogs(ids: string[]) {
- const isAdmin = await checkRole("admin");
-  if (!isAdmin) {
+  const currentUser = await getCurrentUser();
+  const isAdmin = await checkRole("admin");
+  if (!currentUser?.id || !isAdmin) {
     throw new Error("Not authorized to delete logs");
   }
+  const tenantId = currentUser.tenant_id || DEFAULT_TENANT_ID;
 
   if (!ids || ids.length === 0) {
     throw new Error("No IDs provided");
   }
 
   try {
-    const result = await db("activity_logs").whereIn("id", ids).del();
+    const result = await db("activity_logs")
+      .where("tenant_id", tenantId)
+      .whereIn("id", ids)
+      .del();
     revalidatePath("/activity-logs");
     return { deletedCount: result };
   } catch (error) {
@@ -163,36 +197,39 @@ export async function removeActivityLogs(ids: string[]) {
   }
 }
 
-// ─── If you need to update (though rarely) ──────────────────────────────
-
 /**
- * Update an activity log (e.g., modify description or metadata).
- * Admin only, or restrict to own logs? We'll keep admin-only for safety.
+ * Update an activity log. Admin only.
  */
 export async function updateActivityLog(
   id: string,
   data: Partial<Pick<ActivityLog, "title" | "description" | "metadata">>,
 ) {
-const isAdmin = await checkRole("admin");
-  if (!isAdmin) {
+  const currentUser = await getCurrentUser();
+  const isAdmin = await checkRole("admin");
+  if (!currentUser?.id || !isAdmin) {
     throw new Error("Not authorized to update logs");
   }
-
-  // You can optionally allow users to update only their own logs.
-  // For now, admin-only.
+  const tenantId = currentUser.tenant_id || DEFAULT_TENANT_ID;
 
   try {
     const updateData: any = {};
     if (data.title !== undefined) updateData.title = data.title;
     if (data.description !== undefined)
       updateData.description = data.description;
-    if (data.metadata !== undefined) updateData.metadata = data.metadata;
+    if (data.metadata !== undefined) {
+      updateData.metadata =
+        typeof data.metadata === "string"
+          ? data.metadata
+          : JSON.stringify(data.metadata);
+    }
 
     if (Object.keys(updateData).length === 0) {
       throw new Error("No fields to update");
     }
 
-    const result = await db("activity_logs").where("id", id).update(updateData);
+    const result = await db("activity_logs")
+      .where({ id, tenant_id: tenantId })
+      .update(updateData);
 
     if (result === 0) {
       throw new Error("Activity log not found");
