@@ -34,18 +34,26 @@ import type {
   AuthLoginResponse,
   AuthLoginResult,
   ChangePasswordInput,
+  SendDailyReportResult,
   SessionUser,
+  StaffTwoFactorAccount,
   StoreProfile,
   SyncStatus,
   TenantInfo,
+  UpdateBusinessHoursInput,
   UpdateBusinessSettingsInput,
   UpdateMyProfileInput,
+  UpdateNotificationSettingsInput,
+  UpdateTwoFactorInput,
   WorkspaceMode,
 } from "@/types/domain";
 
 interface AuthContextValue {
   workspaceMode: WorkspaceMode;
   serverUrl: string;
+  isPlatformUrlConfigured: boolean;
+  isResolvingServerUrl: boolean;
+  refreshPlatformServerUrl: () => Promise<string>;
   tenant: TenantInfo | null;
   syncStatus: SyncStatus;
   syncVersion: number;
@@ -64,7 +72,6 @@ interface AuthContextValue {
   completeOnboarding: () => Promise<void>;
   apiClient: AuthenticatedApiClient;
   setWorkspaceModePreference: (mode: WorkspaceMode) => Promise<void>;
-  setServerUrl: (url: string) => Promise<void>;
   signIn: (
     identifier: string,
     password: string,
@@ -94,11 +101,22 @@ interface AuthContextValue {
   triggerSyncNow: () => Promise<void>;
   discardSyncConflicts: () => Promise<void>;
   signOut: () => Promise<void>;
+  refreshStoreSettings: () => Promise<StoreProfile>;
   updateStockThreshold: (threshold: number) => Promise<StoreProfile>;
   updateBusinessSettings: (
     input: UpdateBusinessSettingsInput,
   ) => Promise<StoreProfile>;
+  updateNotificationSettings: (
+    input: UpdateNotificationSettingsInput,
+  ) => Promise<StoreProfile>;
+  updateBusinessHours: (
+    input: UpdateBusinessHoursInput,
+  ) => Promise<StoreProfile>;
+  sendDailyReportNow: (dateStr?: string) => Promise<SendDailyReportResult>;
   updateMyProfile: (input: UpdateMyProfileInput) => Promise<SessionUser>;
+  updateUserTwoFactor: (
+    input: UpdateTwoFactorInput,
+  ) => Promise<StaffTwoFactorAccount>;
   changePassword: (input: ChangePasswordInput) => Promise<void>;
   uploadProductImage: (
     localUri: string,
@@ -123,9 +141,16 @@ function extractTenant(res: {
   return null;
 }
 
+function isLegacyMetroUrl(url: string | null | undefined): boolean {
+  if (!url) return false;
+  return /:(8081|19000|19001|19006)(\/|$)/.test(url);
+}
+
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [workspaceMode, setWorkspaceMode] = useState<WorkspaceMode>("mobile_only");
   const [serverUrl, setServerUrlState] = useState<string>(resolveApiBaseUrl());
+  const [isPlatformUrlConfigured, setIsPlatformUrlConfigured] = useState(false);
+  const [isResolvingServerUrl, setIsResolvingServerUrl] = useState(false);
   const [tenant, setTenant] = useState<TenantInfo | null>(null);
   const [user, setUser] = useState<SessionUser | null>(null);
   const [store, setStore] = useState<StoreProfile | null>(null);
@@ -228,6 +253,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         setStore(snapshot.store);
         setUser(snapshot.user);
         setTenant(snapshot.tenant);
+        if (Array.isArray(snapshot.notifications)) {
+          setUnreadNotificationsCount(
+            snapshot.notifications.filter((n) => !n.isRead).length,
+          );
+        }
         setSyncVersion((v) => v + 1);
       },
     );
@@ -256,6 +286,47 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     };
   }, [workspaceMode, token, user?.id, httpClient, refreshUnreadNotifications]);
 
+  const refreshPlatformServerUrl = useCallback(async (): Promise<string> => {
+    setIsResolvingServerUrl(true);
+    try {
+      const bootstrapUrl = resolveApiBaseUrl();
+      const current = isLegacyMetroUrl(serverUrlRef.current)
+        ? ""
+        : serverUrlRef.current;
+
+      const candidates = Array.from(
+        new Set(
+          [bootstrapUrl, current].map((u) => u.trim().replace(/\/+$/, "")),
+        ),
+      );
+
+      for (const candidate of candidates) {
+        try {
+          const cfg = await httpClient.getPlatformConfig(candidate);
+          if (cfg?.ok) {
+            const discovered =
+              typeof cfg.serverUrl === "string" && cfg.serverUrl.trim()
+                ? cfg.serverUrl.trim().replace(/\/+$/, "")
+                : candidate;
+            serverUrlRef.current = discovered;
+            setServerUrlState(discovered);
+            setIsPlatformUrlConfigured(Boolean(cfg.configuredBySuperAdmin));
+            if (discovered) {
+              await setStoredServerUrl(discovered);
+            }
+            return discovered;
+          }
+        } catch {
+          // Try next candidate
+        }
+      }
+
+      return current || bootstrapUrl;
+    } finally {
+      setIsResolvingServerUrl(false);
+    }
+  }, [httpClient]);
+
   // Restore session & workspace mode on startup
   useEffect(() => {
     let active = true;
@@ -272,13 +343,19 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
         if (!active) return;
 
-        const resolvedServer = storedServer || resolveApiBaseUrl();
+        const cleanStoredServer =
+          storedServer && !isLegacyMetroUrl(storedServer) ? storedServer : null;
+        const resolvedServer = cleanStoredServer || resolveApiBaseUrl();
         serverUrlRef.current = resolvedServer;
         setServerUrlState(resolvedServer);
         setWorkspaceMode(storedMode);
         setSyncStatus(storedMode === "synced" ? "connecting" : "local_only");
         setHasCompletedOnboardingState(onboarded);
         if (storedTenant) setTenant(storedTenant);
+
+        // Automatically fetch the Super-Admin configured static server URL
+        await refreshPlatformServerUrl().catch(() => resolvedServer);
+        if (!active) return;
 
         if (!storedToken) {
           return;
@@ -330,18 +407,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     return () => {
       active = false;
     };
-  }, [httpClient, sqliteClient]);
+  }, [httpClient, sqliteClient, refreshPlatformServerUrl]);
 
   const completeOnboarding = useCallback(async () => {
     setHasCompletedOnboardingState(true);
     await setHasCompletedOnboarding(true);
-  }, []);
-
-  const setServerUrl = useCallback(async (url: string) => {
-    const clean = url.trim().replace(/\/+$/, "");
-    serverUrlRef.current = clean;
-    setServerUrlState(clean);
-    await setStoredServerUrl(clean || null);
   }, []);
 
   const setWorkspaceModePreference = useCallback(
@@ -349,14 +419,23 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       setWorkspaceMode(mode);
       setSyncStatus(mode === "synced" ? "offline" : "local_only");
       await setStoredWorkspaceMode(mode);
+      if (mode === "synced") {
+        void refreshPlatformServerUrl();
+      }
     },
-    [],
+    [refreshPlatformServerUrl],
   );
 
   const commitSyncedSession = useCallback(
     async (res: AuthLoginResponse, strategy: "merge" | "pull" = "pull") => {
-      tokenRef.current = res.token;
-      await setStoredAuthToken(res.token);
+      if (!res || typeof res.token !== "string" || !res.token.trim()) {
+        throw new Error(
+          "Web server returned an invalid session token. Please check the Super Admin server configuration.",
+        );
+      }
+      const cleanToken = res.token.trim();
+      tokenRef.current = cleanToken;
+      await setStoredAuthToken(cleanToken);
       await setStoredWorkspaceMode("synced");
       const resolvedTenant = extractTenant(res);
       setTenant(resolvedTenant);
@@ -364,7 +443,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       await setStoredSyncCursor(0);
 
       // Run migration or initial bootstrap BEFORE flipping user+token+mode into SyncEngine
-      const tempEngine = new SyncEngine(httpClient, () => res.token);
+      const tempEngine = new SyncEngine(httpClient, () => cleanToken);
       if (strategy === "merge") {
         await tempEngine.mergeLocalAndBootstrap();
       } else {
@@ -372,7 +451,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       }
 
       setWorkspaceMode("synced");
-      setToken(res.token);
+      setToken(cleanToken);
       setUser(res.user);
       setStore(res.store);
       setSyncVersion((v) => v + 1);
@@ -391,6 +470,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       options?: { workspaceSlug?: string },
     ): Promise<AuthLoginResult> => {
       if (workspaceMode === "synced") {
+        await refreshPlatformServerUrl().catch(() => {});
         const res = await httpClient.login({
           identifier,
           password,
@@ -411,6 +491,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         password,
         deviceName: `Inventory Pro (${Platform.OS})`,
       })) as AuthLoginResponse;
+      if (
+        !response ||
+        typeof response.token !== "string" ||
+        !response.token.trim()
+      ) {
+        throw new Error("Local device login failed to issue a session token.");
+      }
       tokenRef.current = response.token;
       await setStoredAuthToken(response.token);
       setToken(response.token);
@@ -424,7 +511,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       setUnreadNotificationsCount(unread);
       return response;
     },
-    [workspaceMode, httpClient, sqliteClient, commitSyncedSession],
+    [
+      workspaceMode,
+      httpClient,
+      sqliteClient,
+      commitSyncedSession,
+      refreshPlatformServerUrl,
+    ],
   );
 
   const verifyTwoFactorSignIn = useCallback(
@@ -447,14 +540,16 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   );
 
   const authenticateCloudPreview = useCallback(
-    (payload: AuthLoginPayload) =>
-      httpClient.login({
+    async (payload: AuthLoginPayload) => {
+      await refreshPlatformServerUrl().catch(() => {});
+      return httpClient.login({
         ...payload,
         deviceName: `Inventory Pro (${Platform.OS})`,
         deviceType: "mobile",
         operatingSystem: Platform.OS,
-      }),
-    [httpClient],
+      });
+    },
+    [httpClient, refreshPlatformServerUrl],
   );
 
   const verifyTwoFactorPreview = useCallback(
@@ -541,6 +636,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   }, [apiClient, workspaceMode]);
 
+  const refreshStoreSettings = useCallback(async (): Promise<StoreProfile> => {
+    const latest = await apiClient.getStoreSettings();
+    setStore(latest);
+    return latest;
+  }, [apiClient]);
+
   const updateStockThreshold = useCallback(
     async (threshold: number): Promise<StoreProfile> => {
       const updated = await apiClient.updateStockAlertThreshold(threshold);
@@ -559,10 +660,54 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     [apiClient],
   );
 
+  const updateNotificationSettings = useCallback(
+    async (input: UpdateNotificationSettingsInput): Promise<StoreProfile> => {
+      const updated = await apiClient.updateNotificationSettings(input);
+      setStore(updated);
+      return updated;
+    },
+    [apiClient],
+  );
+
+  const updateBusinessHours = useCallback(
+    async (input: UpdateBusinessHoursInput): Promise<StoreProfile> => {
+      const updated = await apiClient.updateBusinessHours(input);
+      setStore(updated);
+      return updated;
+    },
+    [apiClient],
+  );
+
+  const sendDailyReportNow = useCallback(
+    async (dateStr?: string): Promise<SendDailyReportResult> => {
+      return apiClient.sendDailyReportNow(dateStr);
+    },
+    [apiClient],
+  );
+
   const updateMyProfile = useCallback(
     async (input: UpdateMyProfileInput): Promise<SessionUser> => {
       const updated = await apiClient.updateMyProfile(input);
       setUser(updated);
+      return updated;
+    },
+    [apiClient],
+  );
+
+  const updateUserTwoFactor = useCallback(
+    async (input: UpdateTwoFactorInput): Promise<StaffTwoFactorAccount> => {
+      const updated = await apiClient.updateUserTwoFactor(input);
+      if (updated.isCurrentUser || updated.id === userRef.current?.id) {
+        setUser((prev) =>
+          prev
+            ? {
+                ...prev,
+                twoFactorEnabled: updated.twoFactorEnabled,
+                twoFactorMethod: updated.twoFactorMethod,
+              }
+            : prev,
+        );
+      }
       return updated;
     },
     [apiClient],
@@ -590,6 +735,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     () => ({
       workspaceMode,
       serverUrl,
+      isPlatformUrlConfigured,
+      isResolvingServerUrl,
+      refreshPlatformServerUrl,
       tenant,
       syncStatus,
       syncVersion,
@@ -608,7 +756,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       completeOnboarding,
       apiClient,
       setWorkspaceModePreference,
-      setServerUrl,
       signIn,
       verifyTwoFactorSignIn,
       resendTwoFactorCode,
@@ -619,15 +766,23 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       triggerSyncNow,
       discardSyncConflicts,
       signOut,
+      refreshStoreSettings,
       updateStockThreshold,
       updateBusinessSettings,
+      updateNotificationSettings,
+      updateBusinessHours,
+      sendDailyReportNow,
       updateMyProfile,
+      updateUserTwoFactor,
       changePassword,
       uploadProductImage,
     }),
     [
       workspaceMode,
       serverUrl,
+      isPlatformUrlConfigured,
+      isResolvingServerUrl,
+      refreshPlatformServerUrl,
       tenant,
       syncStatus,
       syncVersion,
@@ -645,7 +800,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       completeOnboarding,
       apiClient,
       setWorkspaceModePreference,
-      setServerUrl,
       signIn,
       verifyTwoFactorSignIn,
       resendTwoFactorCode,
@@ -656,9 +810,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       triggerSyncNow,
       discardSyncConflicts,
       signOut,
+      refreshStoreSettings,
       updateStockThreshold,
       updateBusinessSettings,
+      updateNotificationSettings,
+      updateBusinessHours,
+      sendDailyReportNow,
       updateMyProfile,
+      updateUserTwoFactor,
       changePassword,
       uploadProductImage,
     ],

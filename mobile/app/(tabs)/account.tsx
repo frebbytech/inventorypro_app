@@ -28,6 +28,7 @@ import {
   Settings,
   Share2,
   Shield,
+  ShieldCheck,
   Smartphone,
   Truck,
   UserCog,
@@ -138,6 +139,7 @@ export default function AccountScreen() {
       | "/restocks"
       | "/audit-logs"
       | "/sales/summary"
+      | "/security"
       | "/settings";
     icon: React.ReactNode;
   }> = [
@@ -190,8 +192,14 @@ export default function AccountScreen() {
       icon: <BarChart3 size={18} color={colors.primary} />,
     },
     {
+      title: "Security & 2FA",
+      description: "Profile, password, two-factor auth & device sessions",
+      route: "/security",
+      icon: <ShieldCheck size={18} color={colors.primary} />,
+    },
+    {
       title: "Settings",
-      description: `${store?.storeName || "Business info"} & appearance theme`,
+      description: `${store?.storeName || "Business info"}, alerts, hours & theme`,
       route: "/settings",
       icon: <Settings size={18} color={colors.primary} />,
     },

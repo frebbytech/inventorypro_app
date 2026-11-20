@@ -3,31 +3,56 @@ import { Platform } from "react-native";
 
 const TOKEN_KEY = "inventory_pro_mobile_token";
 
+function toSecureStoreString(value: unknown): string {
+  if (typeof value === "string") {
+    return value;
+  }
+  if (value === null || value === undefined) {
+    return "";
+  }
+  return JSON.stringify(value);
+}
+
 export async function getStoredAuthToken(): Promise<string | null> {
   if (Platform.OS === "web") {
     try {
-      return typeof window !== "undefined"
-        ? window.localStorage.getItem(TOKEN_KEY)
-        : null;
+      const val =
+        typeof window !== "undefined"
+          ? window.localStorage.getItem(TOKEN_KEY)
+          : null;
+      return typeof val === "string" && val.trim().length > 0 ? val : null;
     } catch {
       return null;
     }
   }
-  return SecureStore.getItemAsync(TOKEN_KEY);
+  try {
+    const val = await SecureStore.getItemAsync(TOKEN_KEY);
+    return typeof val === "string" && val.trim().length > 0 ? val : null;
+  } catch {
+    return null;
+  }
 }
 
 export async function setStoredAuthToken(token: string): Promise<void> {
+  if (typeof token !== "string" || !token.trim()) {
+    throw new Error(
+      "Authentication failed: server did not return a valid session token.",
+    );
+  }
+  const cleanToken = token.trim();
+
   if (Platform.OS === "web") {
     try {
       if (typeof window !== "undefined") {
-        window.localStorage.setItem(TOKEN_KEY, token);
+        window.localStorage.setItem(TOKEN_KEY, cleanToken);
       }
     } catch {
       // ignore storage quota errors
     }
     return;
   }
-  await SecureStore.setItemAsync(TOKEN_KEY, token);
+
+  await SecureStore.setItemAsync(TOKEN_KEY, cleanToken);
 }
 
 export async function clearStoredAuthToken(): Promise<void> {
@@ -41,7 +66,11 @@ export async function clearStoredAuthToken(): Promise<void> {
     }
     return;
   }
-  await SecureStore.deleteItemAsync(TOKEN_KEY);
+  try {
+    await SecureStore.deleteItemAsync(TOKEN_KEY);
+  } catch {
+    // ignore SecureStore delete errors
+  }
 }
 
 const APPEARANCE_KEY = "inventory_pro_mobile_appearance";
@@ -149,12 +178,15 @@ async function getKey(key: string): Promise<string | null> {
   }
 }
 
-async function setKey(key: string, value: string | null): Promise<void> {
+async function setKey(key: string, value: string | null | undefined): Promise<void> {
+  const shouldDelete = value === null || value === undefined;
+  const serialized = shouldDelete ? "" : toSecureStoreString(value);
+
   if (Platform.OS === "web") {
     try {
       if (typeof window !== "undefined") {
-        if (value === null) window.localStorage.removeItem(key);
-        else window.localStorage.setItem(key, value);
+        if (shouldDelete) window.localStorage.removeItem(key);
+        else window.localStorage.setItem(key, serialized);
       }
     } catch {
       // ignore storage errors
@@ -162,8 +194,8 @@ async function setKey(key: string, value: string | null): Promise<void> {
     return;
   }
   try {
-    if (value === null) await SecureStore.deleteItemAsync(key);
-    else await SecureStore.setItemAsync(key, value);
+    if (shouldDelete) await SecureStore.deleteItemAsync(key);
+    else await SecureStore.setItemAsync(key, serialized);
   } catch {
     // ignore SecureStore errors
   }
@@ -177,15 +209,17 @@ export async function getStoredWorkspaceMode(): Promise<"mobile_only" | "synced"
 export async function setStoredWorkspaceMode(
   mode: "mobile_only" | "synced",
 ): Promise<void> {
-  await setKey(WORKSPACE_MODE_KEY, mode);
+  await setKey(WORKSPACE_MODE_KEY, mode === "synced" ? "synced" : "mobile_only");
 }
 
 export async function getStoredServerUrl(): Promise<string | null> {
-  return getKey(SERVER_URL_KEY);
+  const raw = await getKey(SERVER_URL_KEY);
+  return typeof raw === "string" && raw.trim() ? raw.trim() : null;
 }
 
 export async function setStoredServerUrl(url: string | null): Promise<void> {
-  await setKey(SERVER_URL_KEY, url ? url.trim().replace(/\/+$/, "") : null);
+  const clean = typeof url === "string" ? url.trim().replace(/\/+$/, "") : "";
+  await setKey(SERVER_URL_KEY, clean || null);
 }
 
 export interface StoredTenantInfo {
@@ -208,7 +242,10 @@ export async function getStoredTenantInfo(): Promise<StoredTenantInfo | null> {
 export async function setStoredTenantInfo(
   tenant: StoredTenantInfo | null,
 ): Promise<void> {
-  await setKey(TENANT_INFO_KEY, tenant ? JSON.stringify(tenant) : null);
+  await setKey(
+    TENANT_INFO_KEY,
+    tenant && typeof tenant === "object" ? JSON.stringify(tenant) : null,
+  );
 }
 
 export async function getStoredSyncCursor(): Promise<number> {
@@ -220,4 +257,3 @@ export async function getStoredSyncCursor(): Promise<number> {
 export async function setStoredSyncCursor(cursor: number): Promise<void> {
   await setKey(SYNC_CURSOR_KEY, String(Math.max(0, Math.trunc(cursor || 0))));
 }
-

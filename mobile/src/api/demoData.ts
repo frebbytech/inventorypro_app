@@ -1,22 +1,43 @@
-import type {
-  ProductItem,
-  ReceiptLineItem,
-  SaleStatus,
-  PaymentMode,
+import {
+  DEFAULT_WEEKLY_SCHEDULE,
+  type ProductItem,
+  type ReceiptLineItem,
+  type SaleStatus,
+  type StoreProfile,
+  type PaymentMode,
 } from "@/types/domain";
 
 /**
  * EXPLICIT DEMO SAMPLE DATA — Phase 1 Only.
  * Store profile matches the seed configuration in src/lib/auth.ts.
  */
-export const DEMO_STORE_PROFILE = {
+export const DEMO_STORE_PROFILE: StoreProfile = {
   storeName: "Inventory Pro (Demo)",
   storeAddress: "AK-459-6364, Kumasi",
   storePhone: "+233543772591",
   storeEmail: "inventorypro@frebbytech.com",
   currency: "GHS",
   taxRate: 0.01, // 1.0% matching src/lib/auth.ts seed tax_rate: 1.0
-} as const;
+  stockAlertThreshold: 5,
+  language: "en",
+  notificationEmail: true,
+  notificationPush: true,
+  notificationSms: false,
+  stockAudioAlert: true,
+  stockAudioTone: "chime",
+  stockAudioVolume: 0.5,
+  eodReportEnabled: false,
+  eodBusinessClosingTime: "18:00",
+  eodAdminEmail: "inventorypro@frebbytech.com",
+  eodAdminPhone: "+233543772591",
+  business247: false,
+  businessOpeningTime: "08:00",
+  businessClosingTime: "18:00",
+  businessHoursSchedule: DEFAULT_WEEKLY_SCHEDULE,
+  businessHoursNotes: "",
+  printAfterSale: false,
+  paperSize: "thermal_80mm",
+};
 
 export const DEMO_SAMPLE_BARCODES = [
   { label: "Peak Milk", code: "5449000000996" },

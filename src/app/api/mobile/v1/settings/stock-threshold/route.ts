@@ -27,15 +27,17 @@ export async function PATCH(req: Request) {
           updated_at: new Date().toISOString(),
         });
 
+      const store = await getTenantStoreProfile(tenantId, session);
+
       await emitSyncEvent({
         tenantId,
         entityType: "settings",
         entityId: tenantId,
         action: "upsert",
+        payload: store as unknown as Record<string, unknown>,
         actorUserId: session.id,
       });
 
-      const store = await getTenantStoreProfile(tenantId, session);
       return NextResponse.json(store);
     },
     { requireAdmin: true },

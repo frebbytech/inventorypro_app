@@ -1,7 +1,9 @@
 import { NextResponse } from "next/server";
 import db from "@/db/knex";
+import { createAuditLog } from "@/actions/audit-logs";
 import { emitSyncEvent } from "@/lib/sync-bus";
 import {
+  getUserTwoFactorFlags,
   HttpStatusError,
   mapSessionUserToMobile,
   withMobileAuth,
@@ -42,6 +44,24 @@ export async function PATCH(req: Request) {
         updated_at: new Date().toISOString(),
       });
 
+    await createAuditLog({
+      entity_type: "user",
+      entity_id: session.id,
+      action: "update",
+      old_values: {
+        firstname: session.firstname,
+        lastname: session.lastname,
+        email: session.email,
+        phonenumber: session.phonenumber || "",
+      },
+      new_values: {
+        firstname,
+        lastname,
+        email,
+        phonenumber,
+      },
+    }).catch(() => {});
+
     await emitSyncEvent({
       tenantId,
       entityType: "employee",
@@ -50,14 +70,19 @@ export async function PATCH(req: Request) {
       actorUserId: session.id,
     });
 
+    const twoFactor = await getUserTwoFactorFlags(session.id);
+
     return NextResponse.json(
-      mapSessionUserToMobile({
-        ...session,
-        firstname,
-        lastname,
-        email,
-        phonenumber,
-      }),
+      mapSessionUserToMobile(
+        {
+          ...session,
+          firstname,
+          lastname,
+          email,
+          phonenumber,
+        },
+        twoFactor,
+      ),
     );
   });
 }

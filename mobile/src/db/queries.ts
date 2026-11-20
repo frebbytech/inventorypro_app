@@ -18,6 +18,7 @@ import {
   users,
 } from "./schema";
 import {
+  DEFAULT_WEEKLY_SCHEDULE,
   LOW_STOCK_THRESHOLD,
   type AdjustStockInput,
   type AuditLogItem,
@@ -29,6 +30,7 @@ import {
   type BroadcastRecipient,
   type BroadcastRecipientGroup,
   type BulkImportProductsResult,
+  type BulkUpdateTwoFactorInput,
   type CategoryItem,
   type ChangePasswordInput,
   type CreateCategoryInput,
@@ -43,10 +45,12 @@ import {
   type CustomerItem,
   type DailyCashierBreakdown,
   type DailyReportData,
+  type DaySchedule,
   type EmployeeDetailResponse,
   type EmployeeItem,
   type NotificationItem,
   type NotificationsQueryParams,
+  type PaperSize,
   type PaySupplierBalanceInput,
   type PaymentBreakdownItem,
   type PaymentMode,
@@ -65,20 +69,27 @@ import {
   type SaleTransactionSummary,
   type SendBroadcastInput,
   type SessionUser,
+  type StaffTwoFactorAccount,
   type StockAlertItem,
+  type StockAudioTone,
   type StoreProfile,
   type SupplierDetailResponse,
   type SupplierItem,
   type SupplierTransactionSummary,
   type TodayDashboardData,
   type TopSellingProductItem,
+  type TwoFactorMethod,
+  type TwoFactorOverviewResponse,
+  type UpdateBusinessHoursInput,
   type UpdateBusinessSettingsInput,
   type UpdateCategoryInput,
   type UpdateCustomerInput,
   type UpdateEmployeeInput,
   type UpdateMyProfileInput,
+  type UpdateNotificationSettingsInput,
   type UpdateProductInput,
   type UpdateSupplierInput,
+  type UpdateTwoFactorInput,
   type UserSessionItem,
 } from "@/types/domain";
 
@@ -131,20 +142,44 @@ function mapSessionUser(row: typeof users.$inferSelect): SessionUser {
     phonenumber: row.phonenumber ?? undefined,
     role: row.role,
     lastLoginAt: row.lastLoginAt,
+    twoFactorEnabled: row.twoFactorEnabled === 1,
+    twoFactorMethod: row.twoFactorMethod === "sms" ? "sms" : "email",
   };
+}
+
+function parseLocalSchedule(raw?: string | null): DaySchedule[] {
+  if (raw && raw.trim()) {
+    try {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed) && parsed.length === 7) {
+        return parsed.map((d: any, idx: number) => ({
+          day: String(d?.day || DEFAULT_WEEKLY_SCHEDULE[idx].day),
+          label: String(d?.label || DEFAULT_WEEKLY_SCHEDULE[idx].label),
+          closed: Boolean(d?.closed),
+          openTime: String(d?.openTime || "08:00"),
+          closeTime: String(d?.closeTime || "18:00"),
+          ...(d?.is24Hours !== undefined ? { is24Hours: Boolean(d.is24Hours) } : {}),
+        }));
+      }
+    } catch {
+      // fall through
+    }
+  }
+  return DEFAULT_WEEKLY_SCHEDULE.map((d) => ({ ...d }));
+}
+
+function normalizeToneLocal(val?: string | null): StockAudioTone {
+  if (val === "bell" || val === "marimba" || val === "ping") return val;
+  return "chime";
+}
+
+function normalizePaperSizeLocal(val?: string | null): PaperSize {
+  return val === "a4" ? "a4" : "thermal_80mm";
 }
 
 export function getStoreProfile(db: ExpoSqliteDrizzleDb): StoreProfile {
   const row = db
-    .select({
-      businessName: settings.businessName,
-      businessAddress: settings.businessAddress,
-      businessPhone: settings.businessPhone,
-      businessEmail: settings.businessEmail,
-      currency: settings.currency,
-      taxRate: settings.taxRate,
-      stockAlertThreshold: settings.stockAlertThreshold,
-    })
+    .select()
     .from(settings)
     .limit(1)
     .get();
@@ -158,6 +193,24 @@ export function getStoreProfile(db: ExpoSqliteDrizzleDb): StoreProfile {
       currency: "GHS",
       taxRate: 0.01,
       stockAlertThreshold: LOW_STOCK_THRESHOLD,
+      language: "en",
+      notificationEmail: false,
+      notificationPush: false,
+      notificationSms: false,
+      stockAudioAlert: true,
+      stockAudioTone: "chime",
+      stockAudioVolume: 0.5,
+      eodReportEnabled: false,
+      eodBusinessClosingTime: "18:00",
+      eodAdminEmail: "",
+      eodAdminPhone: "",
+      business247: false,
+      businessOpeningTime: "08:00",
+      businessClosingTime: "18:00",
+      businessHoursSchedule: DEFAULT_WEEKLY_SCHEDULE.map((d) => ({ ...d })),
+      businessHoursNotes: "",
+      printAfterSale: true,
+      paperSize: "thermal_80mm",
     };
   }
 
@@ -169,6 +222,25 @@ export function getStoreProfile(db: ExpoSqliteDrizzleDb): StoreProfile {
     currency: row.currency || "GHS",
     taxRate: Number(row.taxRate) || 0,
     stockAlertThreshold: Number(row.stockAlertThreshold) || LOW_STOCK_THRESHOLD,
+    language: row.language || "en",
+    notificationEmail: row.notificationEmail === 1,
+    notificationPush: row.notificationPush === 1,
+    notificationSms: row.notificationSms === 1,
+    stockAudioAlert: row.stockAudioAlert !== 0,
+    stockAudioTone: normalizeToneLocal(row.stockAudioTone),
+    stockAudioVolume:
+      typeof row.stockAudioVolume === "number" ? row.stockAudioVolume : 0.5,
+    eodReportEnabled: row.eodReportEnabled === 1,
+    eodBusinessClosingTime: row.eodBusinessClosingTime || "18:00",
+    eodAdminEmail: row.eodAdminEmail || "",
+    eodAdminPhone: row.eodAdminPhone || "",
+    business247: row.business247 === 1,
+    businessOpeningTime: row.businessOpeningTime || "08:00",
+    businessClosingTime: row.businessClosingTime || "18:00",
+    businessHoursSchedule: parseLocalSchedule(row.businessHoursSchedule),
+    businessHoursNotes: row.businessHoursNotes || "",
+    printAfterSale: row.printAfterSale !== 0,
+    paperSize: normalizePaperSizeLocal(row.paperSize),
   };
 }
 
@@ -255,6 +327,17 @@ export function updateStoreBusinessProfile(
     throw new Error("Tax rate must be between 0% and 100%.");
   }
 
+  const cleanThreshold =
+    input.stockAlertThreshold !== undefined
+      ? Math.trunc(Number(input.stockAlertThreshold))
+      : undefined;
+  if (
+    cleanThreshold !== undefined &&
+    (!Number.isFinite(cleanThreshold) || cleanThreshold < 1 || cleanThreshold > 9999)
+  ) {
+    throw new Error("Stock alert threshold must be between 1 and 9,999 units.");
+  }
+
   const normalizedTaxRate = Number(taxRate.toFixed(4));
   const nowIso = new Date().toISOString();
 
@@ -282,6 +365,16 @@ export function updateStoreBusinessProfile(
           businessEmail: storeEmail,
           currency,
           taxRate: normalizedTaxRate,
+          ...(cleanThreshold !== undefined ? { stockAlertThreshold: cleanThreshold } : {}),
+          ...(input.language !== undefined
+            ? { language: input.language.trim() || "en" }
+            : {}),
+          ...(input.printAfterSale !== undefined
+            ? { printAfterSale: input.printAfterSale ? 1 : 0 }
+            : {}),
+          ...(input.paperSize !== undefined
+            ? { paperSize: normalizePaperSizeLocal(input.paperSize) }
+            : {}),
           updatedAt: nowIso,
         })
         .where(eq(settings.id, existing.id))
@@ -309,6 +402,7 @@ export function updateStoreBusinessProfile(
             business_email: storeEmail,
             currency,
             tax_rate: normalizedTaxRate,
+            ...(cleanThreshold !== undefined ? { stock_alert_threshold: cleanThreshold } : {}),
           }),
         })
         .run();
@@ -324,8 +418,144 @@ export function updateStoreBusinessProfile(
           businessEmail: storeEmail,
           currency,
           taxRate: normalizedTaxRate,
+          ...(cleanThreshold !== undefined ? { stockAlertThreshold: cleanThreshold } : {}),
+          ...(input.printAfterSale !== undefined
+            ? { printAfterSale: input.printAfterSale ? 1 : 0 }
+            : {}),
+          ...(input.paperSize !== undefined
+            ? { paperSize: normalizePaperSizeLocal(input.paperSize) }
+            : {}),
           createdAt: nowIso,
           updatedAt: nowIso,
+        })
+        .run();
+    }
+  });
+
+  return getStoreProfile(db);
+}
+
+export function updateStoreNotificationSettings(
+  db: ExpoSqliteDrizzleDb,
+  input: UpdateNotificationSettingsInput & { userId: string },
+): StoreProfile {
+  const current = getStoreProfile(db);
+  const nextThreshold =
+    input.stockAlertThreshold !== undefined
+      ? Math.trunc(Number(input.stockAlertThreshold))
+      : current.stockAlertThreshold;
+
+  if (!Number.isFinite(nextThreshold) || nextThreshold < 1) {
+    throw new Error("Low-stock alert threshold must be at least 1 unit.");
+  }
+
+  const closingTime = (
+    input.eodBusinessClosingTime ??
+    current.eodBusinessClosingTime ??
+    "18:00"
+  ).trim();
+  if (!/^([01]\d|2[0-3]):([0-5]\d)$/.test(closingTime)) {
+    throw new Error("Closing time must use 24-hour HH:MM format.");
+  }
+
+  const adminEmail = (input.eodAdminEmail ?? current.eodAdminEmail ?? "").trim();
+  if (adminEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(adminEmail)) {
+    throw new Error("Enter a valid EOD report email address.");
+  }
+
+  const adminPhone = (input.eodAdminPhone ?? current.eodAdminPhone ?? "").trim();
+  const volume =
+    input.stockAudioVolume !== undefined
+      ? Math.min(1, Math.max(0, Number(input.stockAudioVolume)))
+      : current.stockAudioVolume ?? 0.5;
+  const nowIso = new Date().toISOString();
+
+  db.transaction((tx) => {
+    const existing = tx.select({ id: settings.id }).from(settings).limit(1).get();
+    const values = {
+      notificationEmail: (input.notificationEmail ?? current.notificationEmail) ? 1 : 0,
+      notificationPush: (input.notificationPush ?? current.notificationPush) ? 1 : 0,
+      notificationSms: (input.notificationSms ?? current.notificationSms) ? 1 : 0,
+      stockAlertThreshold: nextThreshold,
+      stockAudioAlert: (input.stockAudioAlert ?? current.stockAudioAlert ?? true) ? 1 : 0,
+      stockAudioTone: normalizeToneLocal(input.stockAudioTone ?? current.stockAudioTone),
+      stockAudioVolume: Number(volume.toFixed(2)),
+      eodReportEnabled: (input.eodReportEnabled ?? current.eodReportEnabled) ? 1 : 0,
+      eodBusinessClosingTime: closingTime,
+      eodAdminEmail: adminEmail,
+      eodAdminPhone: adminPhone,
+      updatedAt: nowIso,
+    };
+
+    if (existing) {
+      tx.update(settings).set(values).where(eq(settings.id, existing.id)).run();
+    } else {
+      tx.insert(settings)
+        .values({
+          id: generateId("settings"),
+          userId: input.userId,
+          ...values,
+          createdAt: nowIso,
+        })
+        .run();
+    }
+
+    tx.insert(auditLogs)
+      .values({
+        id: generateId("aud"),
+        userId: input.userId,
+        entityType: "settings",
+        entityId: existing?.id || "settings",
+        action: "update",
+        newValues: JSON.stringify({ notificationSettingsUpdated: true, stockAlertThreshold: nextThreshold }),
+      })
+      .run();
+  });
+
+  return getStoreProfile(db);
+}
+
+export function updateStoreBusinessHours(
+  db: ExpoSqliteDrizzleDb,
+  input: UpdateBusinessHoursInput & { userId: string },
+): StoreProfile {
+  const hhmm = /^([01]\d|2[0-3]):([0-5]\d)$/;
+  if (
+    !hhmm.test(input.businessOpeningTime.trim()) ||
+    !hhmm.test(input.businessClosingTime.trim())
+  ) {
+    throw new Error("Default opening and closing times must use HH:MM format.");
+  }
+  if (!Array.isArray(input.businessHoursSchedule) || input.businessHoursSchedule.length !== 7) {
+    throw new Error("Weekly schedule must include all 7 days.");
+  }
+  for (const d of input.businessHoursSchedule) {
+    if (!hhmm.test(d.openTime.trim()) || !hhmm.test(d.closeTime.trim())) {
+      throw new Error(`Invalid time format on ${d.label || d.day}.`);
+    }
+  }
+
+  const nowIso = new Date().toISOString();
+  db.transaction((tx) => {
+    const existing = tx.select({ id: settings.id }).from(settings).limit(1).get();
+    const values = {
+      business247: input.business247 ? 1 : 0,
+      businessOpeningTime: input.businessOpeningTime.trim(),
+      businessClosingTime: input.businessClosingTime.trim(),
+      businessHoursSchedule: JSON.stringify(input.businessHoursSchedule),
+      businessHoursNotes: (input.businessHoursNotes || "").trim(),
+      updatedAt: nowIso,
+    };
+
+    if (existing) {
+      tx.update(settings).set(values).where(eq(settings.id, existing.id)).run();
+    } else {
+      tx.insert(settings)
+        .values({
+          id: generateId("settings"),
+          userId: input.userId,
+          ...values,
+          createdAt: nowIso,
         })
         .run();
     }
@@ -4283,6 +4513,214 @@ export async function changeOwnPassword(
       })
       .run();
   });
+}
+
+function mapLocalTwoFactorAccount(
+  row: typeof users.$inferSelect,
+  currentUserId?: string,
+): StaffTwoFactorAccount {
+  const firstname = (row.firstname || "").trim();
+  const lastname = (row.lastname || "").trim();
+  const fullname = `${firstname} ${lastname}`.trim() || row.username;
+  return {
+    id: row.id,
+    username: row.username,
+    email: row.email || "",
+    firstname,
+    lastname,
+    fullname,
+    phonenumber: row.phonenumber || "",
+    role: row.role === "admin" ? "admin" : "member",
+    twoFactorEnabled: row.twoFactorEnabled === 1,
+    twoFactorMethod: row.twoFactorMethod === "sms" ? "sms" : "email",
+    twoFactorUpdatedAt: row.twoFactorUpdatedAt ?? null,
+    lastLoginAt: row.lastLoginAt ?? null,
+    isCurrentUser: Boolean(currentUserId && row.id === currentUserId),
+  };
+}
+
+export function getTwoFactorOverviewLocal(
+  db: ExpoSqliteDrizzleDb,
+  currentUserId: string,
+): TwoFactorOverviewResponse {
+  const current = db
+    .select()
+    .from(users)
+    .where(eq(users.id, currentUserId))
+    .limit(1)
+    .get();
+
+  if (!current) {
+    throw new Error("Current account not found.");
+  }
+
+  const isAdmin = current.role === "admin";
+  const rows = isAdmin
+    ? db.select().from(users).orderBy(asc(users.role), asc(users.firstname), asc(users.username)).all()
+    : [current];
+
+  const accounts = rows.map((r) => mapLocalTwoFactorAccount(r, currentUserId));
+  const currentUserAccount =
+    accounts.find((a) => a.id === currentUserId) ??
+    mapLocalTwoFactorAccount(current, currentUserId);
+
+  return {
+    currentUserAccount,
+    accounts,
+    emailConfigured: true,
+    smsConfigured: true,
+  };
+}
+
+export function updateUserTwoFactorLocal(
+  db: ExpoSqliteDrizzleDb,
+  input: UpdateTwoFactorInput & { actorUserId: string },
+): StaffTwoFactorAccount {
+  const actor = db
+    .select()
+    .from(users)
+    .where(eq(users.id, input.actorUserId))
+    .limit(1)
+    .get();
+  if (!actor) {
+    throw new Error("Actor account not found.");
+  }
+
+  const targetUserId = (input.userId || input.actorUserId).trim();
+  if (targetUserId !== actor.id && actor.role !== "admin") {
+    throw new Error("Administrator privileges required to modify another user's 2FA policy.");
+  }
+
+  const target = db
+    .select()
+    .from(users)
+    .where(eq(users.id, targetUserId))
+    .limit(1)
+    .get();
+  if (!target) {
+    throw new Error("Staff account not found.");
+  }
+
+  const enabled =
+    input.enabled !== undefined ? Boolean(input.enabled) : target.twoFactorEnabled === 1;
+  const nextMethod: TwoFactorMethod =
+    input.method === "sms" || input.method === "email"
+      ? input.method
+      : target.twoFactorMethod === "sms"
+        ? "sms"
+        : "email";
+
+  if (enabled) {
+    if (nextMethod === "email" && !String(target.email || "").trim()) {
+      throw new Error(`${target.username} does not have an email address on file for Email 2FA.`);
+    }
+    if (nextMethod === "sms" && !String(target.phonenumber || "").trim()) {
+      throw new Error(`${target.username} does not have a phone number on file for SMS 2FA.`);
+    }
+  }
+
+  const nowIso = new Date().toISOString();
+  db.transaction((tx) => {
+    tx.update(users)
+      .set({
+        twoFactorEnabled: enabled ? 1 : 0,
+        twoFactorMethod: nextMethod,
+        twoFactorUpdatedAt: nowIso,
+        updatedAt: nowIso,
+      })
+      .where(eq(users.id, target.id))
+      .run();
+
+    tx.insert(auditLogs)
+      .values({
+        id: generateId("aud"),
+        userId: actor.id,
+        entityType: "user",
+        entityId: target.id,
+        action: "update",
+        oldValues: JSON.stringify({
+          two_factor_enabled: target.twoFactorEnabled === 1,
+          two_factor_method: target.twoFactorMethod,
+        }),
+        newValues: JSON.stringify({
+          two_factor_enabled: enabled,
+          two_factor_method: nextMethod,
+        }),
+      })
+      .run();
+  });
+
+  const updated = db.select().from(users).where(eq(users.id, target.id)).limit(1).get();
+  if (!updated) {
+    throw new Error("Failed to reload updated 2FA settings.");
+  }
+  return mapLocalTwoFactorAccount(updated, actor.id);
+}
+
+export function bulkUpdateStaffTwoFactorLocal(
+  db: ExpoSqliteDrizzleDb,
+  input: BulkUpdateTwoFactorInput & { actorUserId: string },
+): { updatedCount: number; skippedUsernames: string[] } {
+  const actor = db
+    .select({ id: users.id, role: users.role })
+    .from(users)
+    .where(eq(users.id, input.actorUserId))
+    .limit(1)
+    .get();
+  if (!actor || actor.role !== "admin") {
+    throw new Error("Administrator privileges required for bulk 2FA policy updates.");
+  }
+
+  const uniqueIds = Array.from(new Set(input.userIds.filter(Boolean)));
+  const allTargets = db.select().from(users).all().filter((u) => uniqueIds.includes(u.id));
+
+  const eligibleIds: string[] = [];
+  const skippedUsernames: string[] = [];
+
+  for (const u of allTargets) {
+    if (u.id === actor.id) continue;
+    const method: TwoFactorMethod = u.twoFactorMethod === "sms" ? "sms" : "email";
+    if (input.enabled) {
+      const hasTarget =
+        method === "sms" ? Boolean(String(u.phonenumber || "").trim()) : Boolean(String(u.email || "").trim());
+      if (!hasTarget) {
+        skippedUsernames.push(u.username);
+        continue;
+      }
+    }
+    eligibleIds.push(u.id);
+  }
+
+  const nowIso = new Date().toISOString();
+  if (eligibleIds.length > 0) {
+    db.transaction((tx) => {
+      for (const uid of eligibleIds) {
+        tx.update(users)
+          .set({
+            twoFactorEnabled: input.enabled ? 1 : 0,
+            twoFactorUpdatedAt: nowIso,
+            updatedAt: nowIso,
+          })
+          .where(eq(users.id, uid))
+          .run();
+      }
+      tx.insert(auditLogs)
+        .values({
+          id: generateId("aud"),
+          userId: actor.id,
+          entityType: "user",
+          entityId: eligibleIds.join(","),
+          action: "update",
+          newValues: JSON.stringify({
+            two_factor_enabled: input.enabled,
+            affected_count: eligibleIds.length,
+          }),
+        })
+        .run();
+    });
+  }
+
+  return { updatedCount: eligibleIds.length, skippedUsernames };
 }
 
 

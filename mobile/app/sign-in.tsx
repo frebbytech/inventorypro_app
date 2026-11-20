@@ -24,7 +24,6 @@ import {
   User,
 } from "lucide-react-native";
 import { useAuth } from "@/api/AuthProvider";
-import { resolveApiBaseUrl } from "@/api/httpAdapter";
 import {
   Badge,
   Button,
@@ -42,17 +41,13 @@ export default function SignInScreen() {
     workspaceMode,
     setWorkspaceModePreference,
     serverUrl,
-    setServerUrl,
+    isResolvingServerUrl,
+    refreshPlatformServerUrl,
     signIn,
     verifyTwoFactorSignIn,
     resendTwoFactorCode,
   } = useAuth();
   const { colors, spacing, radii, typography, fontFamilies } = theme;
-
-  const [serverInput, setServerInput] = useState(
-    serverUrl || resolveApiBaseUrl(),
-  );
-  const [showServerConfig, setShowServerConfig] = useState(false);
 
   // Sign-in state
   const [identifier, setIdentifier] = useState(
@@ -73,8 +68,10 @@ export default function SignInScreen() {
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    setServerInput(serverUrl || resolveApiBaseUrl());
-  }, [serverUrl]);
+    if (workspaceMode === "synced") {
+      void refreshPlatformServerUrl();
+    }
+  }, [workspaceMode, refreshPlatformServerUrl]);
 
   const handleSelectWorkspaceMode = async (
     nextMode: "mobile_only" | "synced",
@@ -104,9 +101,6 @@ export default function SignInScreen() {
     setSubmitting(true);
     setError(null);
     try {
-      if (workspaceMode === "synced" && serverInput.trim()) {
-        await setServerUrl(serverInput.trim());
-      }
       const res = await signIn(trimmed, passValue, {
         workspaceSlug: workspaceSlug.trim() || undefined,
       });
@@ -332,20 +326,17 @@ export default function SignInScreen() {
                     : "Staff sign in"}
                 </CardTitle>
                 {workspaceMode === "synced" && !challengeToken ? (
-                  <Pressable
-                    onPress={() => setShowServerConfig((v) => !v)}
-                    style={{ flexDirection: "row", alignItems: "center", gap: 4 }}
-                  >
+                  <View style={{ flexDirection: "row", alignItems: "center", gap: 4 }}>
                     <Server size={13} color={colors.primary} />
                     <Text
                       style={[
                         typography.micro,
-                        { color: colors.primary, fontFamily: fontFamilies.semibold },
+                        { color: colors.mutedForeground, fontFamily: fontFamilies.medium },
                       ]}
                     >
-                      {showServerConfig ? "Hide Server" : "Server URL"}
+                      {isResolvingServerUrl ? "Connecting..." : "Auto-Configured"}
                     </Text>
-                  </Pressable>
+                  </View>
                 ) : null}
               </View>
             </CardHeader>
@@ -375,24 +366,34 @@ export default function SignInScreen() {
                 </View>
               ) : null}
 
-              {workspaceMode === "synced" && showServerConfig && !challengeToken ? (
-                <View style={{ gap: spacing.xs }}>
+              {workspaceMode === "synced" && !challengeToken ? (
+                <View
+                  style={{
+                    flexDirection: "row",
+                    alignItems: "center",
+                    gap: 8,
+                    backgroundColor: colors.muted,
+                    borderColor: colors.border,
+                    borderWidth: 1,
+                    borderRadius: radii.lg,
+                    paddingHorizontal: spacing.md,
+                    paddingVertical: spacing.sm,
+                  }}
+                >
+                  <Server size={14} color={colors.primary} />
                   <Text
+                    numberOfLines={1}
                     style={[
-                      typography.caption,
-                      { color: colors.foreground, fontFamily: fontFamilies.semibold },
+                      typography.micro,
+                      { color: colors.mutedForeground, flex: 1 },
                     ]}
                   >
-                    Web Backend URL
+                    {isResolvingServerUrl
+                      ? "Fetching platform server URL..."
+                      : serverUrl
+                        ? `Platform Server: ${serverUrl}`
+                        : "Connected to managed cloud platform"}
                   </Text>
-                  <Input
-                    value={serverInput}
-                    onChangeText={setServerInput}
-                    placeholder="http://192.168.1.10:3000"
-                    autoCapitalize="none"
-                    autoCorrect={false}
-                    leftIcon={<Server size={16} color={colors.mutedForeground} />}
-                  />
                 </View>
               ) : null}
 

@@ -7,8 +7,10 @@ export const dynamic = "force-dynamic";
 export async function GET(req: Request) {
   return withMobileAuth(req, async ({ session, tenantId, token }) => {
     const rows = await db("user_sessions")
-      .where({ tenant_id: tenantId, user_id: session.id, is_active: 1 })
+      .where({ tenant_id: tenantId, user_id: session.id })
+      .orderBy("is_active", "desc")
       .orderBy("created_at", "desc")
+      .limit(25)
       .select("*");
 
     return NextResponse.json(

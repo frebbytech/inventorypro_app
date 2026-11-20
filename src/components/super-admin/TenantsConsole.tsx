@@ -26,10 +26,12 @@ import {
   updateTenantBySuperAdmin,
 } from "@/actions/super-admin";
 import type {
+  PlatformMobileServerConfig,
   SuperAdminOverviewMetrics,
   TenantGrowthPoint,
   TenantSummaryItem,
 } from "@/types/super-admin";
+import PlatformServerUrlCard from "@/components/super-admin/PlatformServerUrlCard";
 import TenantGrowthChart from "@/components/super-admin/TenantGrowthChart";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -47,6 +49,7 @@ interface TenantsConsoleProps {
   initialMetrics: SuperAdminOverviewMetrics;
   initialTenants: TenantSummaryItem[];
   initialGrowthSeries?: TenantGrowthPoint[];
+  initialPlatformConfig?: PlatformMobileServerConfig;
   showGrowthChart?: boolean;
   heading?: string;
   subheading?: string;
@@ -75,6 +78,7 @@ export default function TenantsConsole({
   initialMetrics,
   initialTenants,
   initialGrowthSeries = [],
+  initialPlatformConfig,
   showGrowthChart = false,
   heading = "Tenants & Business Workspaces",
   subheading = "Provision, inspect, suspend, or configure isolated multi-tenant store workspaces and their teams.",
@@ -86,6 +90,9 @@ export default function TenantsConsole({
   const [tenants, setTenants] = useState<TenantSummaryItem[]>(initialTenants);
   const [growthSeries, setGrowthSeries] =
     useState<TenantGrowthPoint[]>(initialGrowthSeries);
+  const [platformConfig, setPlatformConfig] = useState<
+    PlatformMobileServerConfig | undefined
+  >(initialPlatformConfig);
   const [searchQuery, setSearchQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState<
     "all" | "active" | "suspended"
@@ -157,6 +164,9 @@ export default function TenantsConsole({
       setMetrics(res.data.metrics);
       setTenants(res.data.tenants);
       setGrowthSeries(res.data.growthSeries);
+      if (res.data.platformConfig) {
+        setPlatformConfig(res.data.platformConfig);
+      }
       router.refresh();
     } finally {
       setRefreshing(false);
@@ -465,6 +475,10 @@ export default function TenantsConsole({
           </p>
         </div>
       </section>
+
+      {platformConfig && (
+        <PlatformServerUrlCard initialConfig={platformConfig} />
+      )}
 
       {showGrowthChart && <TenantGrowthChart data={growthSeries} />}
 

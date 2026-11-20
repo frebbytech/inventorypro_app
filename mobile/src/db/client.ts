@@ -26,6 +26,22 @@ export function getDrizzleDb(): ExpoSqliteDrizzleDb {
   return drizzleDb;
 }
 
+function ensureColumnExists(
+  sqlite: SQLite.SQLiteDatabase,
+  table: string,
+  column: string,
+  definitionSql: string,
+): void {
+  try {
+    const cols = sqlite.getAllSync<{ name: string }>(`PRAGMA table_info(${table});`);
+    if (!cols.some((c) => c.name === column)) {
+      sqlite.execSync(`ALTER TABLE ${table} ADD COLUMN ${column} ${definitionSql};`);
+    }
+  } catch {
+    // Ignore if table not created yet or column already added concurrently
+  }
+}
+
 function ensureTablesSync(sqlite: SQLite.SQLiteDatabase): void {
   try {
     sqlite.execSync("PRAGMA journal_mode = WAL;");
@@ -48,6 +64,9 @@ function ensureTablesSync(sqlite: SQLite.SQLiteDatabase): void {
       failed_login_attempts INTEGER NOT NULL DEFAULT 0,
       locked_until TEXT DEFAULT NULL,
       last_login_at TEXT DEFAULT NULL,
+      two_factor_enabled INTEGER NOT NULL DEFAULT 0,
+      two_factor_method TEXT NOT NULL DEFAULT 'email',
+      two_factor_updated_at TEXT DEFAULT NULL,
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
       updated_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
@@ -80,6 +99,24 @@ function ensureTablesSync(sqlite: SQLite.SQLiteDatabase): void {
       currency TEXT NOT NULL DEFAULT 'GHS',
       tax_rate REAL NOT NULL DEFAULT 0.01,
       stock_alert_threshold INTEGER NOT NULL DEFAULT 5,
+      language TEXT NOT NULL DEFAULT 'en',
+      notification_email INTEGER NOT NULL DEFAULT 0,
+      notification_push INTEGER NOT NULL DEFAULT 0,
+      notification_sms INTEGER NOT NULL DEFAULT 0,
+      stock_audio_alert INTEGER NOT NULL DEFAULT 1,
+      stock_audio_tone TEXT NOT NULL DEFAULT 'chime',
+      stock_audio_volume REAL NOT NULL DEFAULT 0.5,
+      eod_report_enabled INTEGER NOT NULL DEFAULT 0,
+      eod_business_closing_time TEXT NOT NULL DEFAULT '18:00',
+      eod_admin_email TEXT NOT NULL DEFAULT '',
+      eod_admin_phone TEXT NOT NULL DEFAULT '',
+      business_24_7 INTEGER NOT NULL DEFAULT 0,
+      business_opening_time TEXT NOT NULL DEFAULT '08:00',
+      business_closing_time TEXT NOT NULL DEFAULT '18:00',
+      business_hours_schedule TEXT NOT NULL DEFAULT '[]',
+      business_hours_notes TEXT NOT NULL DEFAULT '',
+      print_after_sale INTEGER NOT NULL DEFAULT 1,
+      paper_size TEXT NOT NULL DEFAULT 'thermal_80mm',
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
       updated_at TEXT NOT NULL DEFAULT (datetime('now')),
       FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
@@ -292,6 +329,30 @@ function ensureTablesSync(sqlite: SQLite.SQLiteDatabase): void {
 
     CREATE INDEX IF NOT EXISTS sync_outbox_idx_status_created ON sync_outbox(status, created_at);
   `);
+
+  // Idempotent schema migrations for pre-existing local SQLite databases
+  ensureColumnExists(sqlite, "users", "two_factor_enabled", "INTEGER NOT NULL DEFAULT 0");
+  ensureColumnExists(sqlite, "users", "two_factor_method", "TEXT NOT NULL DEFAULT 'email'");
+  ensureColumnExists(sqlite, "users", "two_factor_updated_at", "TEXT DEFAULT NULL");
+
+  ensureColumnExists(sqlite, "settings", "language", "TEXT NOT NULL DEFAULT 'en'");
+  ensureColumnExists(sqlite, "settings", "notification_email", "INTEGER NOT NULL DEFAULT 0");
+  ensureColumnExists(sqlite, "settings", "notification_push", "INTEGER NOT NULL DEFAULT 0");
+  ensureColumnExists(sqlite, "settings", "notification_sms", "INTEGER NOT NULL DEFAULT 0");
+  ensureColumnExists(sqlite, "settings", "stock_audio_alert", "INTEGER NOT NULL DEFAULT 1");
+  ensureColumnExists(sqlite, "settings", "stock_audio_tone", "TEXT NOT NULL DEFAULT 'chime'");
+  ensureColumnExists(sqlite, "settings", "stock_audio_volume", "REAL NOT NULL DEFAULT 0.5");
+  ensureColumnExists(sqlite, "settings", "eod_report_enabled", "INTEGER NOT NULL DEFAULT 0");
+  ensureColumnExists(sqlite, "settings", "eod_business_closing_time", "TEXT NOT NULL DEFAULT '18:00'");
+  ensureColumnExists(sqlite, "settings", "eod_admin_email", "TEXT NOT NULL DEFAULT ''");
+  ensureColumnExists(sqlite, "settings", "eod_admin_phone", "TEXT NOT NULL DEFAULT ''");
+  ensureColumnExists(sqlite, "settings", "business_24_7", "INTEGER NOT NULL DEFAULT 0");
+  ensureColumnExists(sqlite, "settings", "business_opening_time", "TEXT NOT NULL DEFAULT '08:00'");
+  ensureColumnExists(sqlite, "settings", "business_closing_time", "TEXT NOT NULL DEFAULT '18:00'");
+  ensureColumnExists(sqlite, "settings", "business_hours_schedule", "TEXT NOT NULL DEFAULT '[]'");
+  ensureColumnExists(sqlite, "settings", "business_hours_notes", "TEXT NOT NULL DEFAULT ''");
+  ensureColumnExists(sqlite, "settings", "print_after_sale", "INTEGER NOT NULL DEFAULT 1");
+  ensureColumnExists(sqlite, "settings", "paper_size", "TEXT NOT NULL DEFAULT 'thermal_80mm'");
 }
 
 function isoDaysAgoAt(daysAgo: number, hour: number, minute: number): string {

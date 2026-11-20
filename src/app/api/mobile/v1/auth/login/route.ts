@@ -252,7 +252,10 @@ export async function POST(req: Request) {
     return NextResponse.json({
       token,
       expiresAt,
-      user: mapSessionUserToMobile(sessionUser),
+      user: mapSessionUserToMobile(sessionUser, {
+        twoFactorEnabled: Boolean(user.two_factor_enabled),
+        twoFactorMethod: user.two_factor_method === "sms" ? "sms" : "email",
+      }),
       store,
       tenant: { id: tenantId, name: tenantName, slug: tenantSlug },
     });

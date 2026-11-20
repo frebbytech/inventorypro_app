@@ -14,13 +14,16 @@ import { DEFAULT_TENANT_ID, normalizeSlug } from "@/lib/tenant";
 import {
   createSuperAdminJWT,
   ensureSuperAdminSchema,
+  getPlatformMobileConfig,
   getSuperAdminSession,
   removeSuperAdminCookie,
+  setPlatformMobileServerUrl,
   setSuperAdminCookie,
   type SuperAdminSession,
 } from "@/lib/super-admin";
 import { Result } from "@/types/globals";
 import type {
+  PlatformMobileServerConfig,
   SuperAdminOverviewMetrics,
   TenantDetailData,
   TenantGrowthPoint,
@@ -111,6 +114,36 @@ export async function getCurrentSuperAdmin(): Promise<SuperAdminSession | null> 
     return await getSuperAdminSession();
   } catch {
     return null;
+  }
+}
+
+export async function getPlatformMobileServerConfig(): Promise<
+  Result<PlatformMobileServerConfig>
+> {
+  try {
+    await requireSuperAdmin();
+    const config = await getPlatformMobileConfig();
+    return Result.ok(config);
+  } catch (error: any) {
+    return Result.fail(
+      error?.message || "Failed to load mobile server URL configuration.",
+    );
+  }
+}
+
+export async function updatePlatformMobileServerUrl(
+  serverUrl: string,
+): Promise<Result<PlatformMobileServerConfig>> {
+  try {
+    const session = await requireSuperAdmin();
+    const updated = await setPlatformMobileServerUrl(serverUrl, session.id);
+    revalidatePath("/super-admin");
+    revalidatePath("/super-admin/tenants");
+    return Result.ok(updated);
+  } catch (error: any) {
+    return Result.fail(
+      error?.message || "Failed to update mobile server URL configuration.",
+    );
   }
 }
 
@@ -336,11 +369,15 @@ export async function getSuperAdminOverviewAndTenants(): Promise<
     metrics: SuperAdminOverviewMetrics;
     tenants: TenantSummaryItem[];
     growthSeries: TenantGrowthPoint[];
+    platformConfig: PlatformMobileServerConfig;
   }>
 > {
   try {
     await requireSuperAdmin();
-    const tenants = await fetchTenantAggregateRows();
+    const [tenants, platformConfig] = await Promise.all([
+      fetchTenantAggregateRows(),
+      getPlatformMobileConfig(),
+    ]);
 
     const metrics: SuperAdminOverviewMetrics = {
       totalTenants: tenants.length,
@@ -353,7 +390,7 @@ export async function getSuperAdminOverviewAndTenants(): Promise<
 
     const growthSeries = buildTenantGrowthSeries(tenants);
 
-    return Result.ok({ metrics, tenants, growthSeries });
+    return Result.ok({ metrics, tenants, growthSeries, platformConfig });
   } catch (error: any) {
     return Result.fail(error?.message || "Failed to load tenant overview.");
   }

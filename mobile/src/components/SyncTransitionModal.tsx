@@ -23,7 +23,6 @@ import {
   X,
 } from "lucide-react-native";
 import { useAuth } from "@/api/AuthProvider";
-import { resolveApiBaseUrl } from "@/api/httpAdapter";
 import { ensureDbReady } from "@/db/client";
 import { getLocalDataSummary, type LocalDataSummary } from "@/db/syncStore";
 import { Button, Input } from "@/components/ui";
@@ -44,7 +43,8 @@ export function SyncTransitionModal({
   const { theme } = useTheme();
   const {
     serverUrl,
-    setServerUrl,
+    isResolvingServerUrl,
+    refreshPlatformServerUrl,
     authenticateCloudPreview,
     verifyTwoFactorPreview,
     resendTwoFactorCode,
@@ -53,9 +53,6 @@ export function SyncTransitionModal({
   const { colors, spacing, radii, typography, fontFamilies } = theme;
 
   const [step, setStep] = useState<ModalStep>("auth");
-  const [serverInput, setServerInput] = useState(
-    serverUrl || resolveApiBaseUrl(),
-  );
 
   // Sign-in fields
   const [identifier, setIdentifier] = useState("");
@@ -80,21 +77,11 @@ export function SyncTransitionModal({
     setError(null);
     setPendingAuth(null);
     setOtpCode("");
-    setServerInput(serverUrl || resolveApiBaseUrl());
+    void refreshPlatformServerUrl();
     void ensureDbReady().then((db) => {
       setLocalSummary(getLocalDataSummary(db));
     });
-  }, [visible, serverUrl]);
-
-  const applyServerUrl = async () => {
-    const cleaned = serverInput.trim().replace(/\/+$/, "");
-    if (!cleaned && Platform.OS !== "web") {
-      throw new Error("Enter the web backend URL (e.g. http://192.168.1.10:3000).");
-    }
-    if (cleaned) {
-      await setServerUrl(cleaned);
-    }
-  };
+  }, [visible, refreshPlatformServerUrl]);
 
   const handleCloudSignIn = async () => {
     if (!identifier.trim() || !password) {
@@ -104,7 +91,6 @@ export function SyncTransitionModal({
     setLoading(true);
     setError(null);
     try {
-      await applyServerUrl();
       const res = await authenticateCloudPreview({
         identifier: identifier.trim(),
         password,
@@ -271,23 +257,33 @@ export function SyncTransitionModal({
 
             {step === "auth" ? (
               <>
-                <View style={{ gap: 6 }}>
+                <View
+                  style={{
+                    flexDirection: "row",
+                    alignItems: "center",
+                    gap: 8,
+                    backgroundColor: colors.muted,
+                    borderColor: colors.border,
+                    borderWidth: 1,
+                    borderRadius: radii.lg,
+                    paddingHorizontal: spacing.md,
+                    paddingVertical: spacing.sm,
+                  }}
+                >
+                  <Server size={14} color={colors.primary} />
                   <Text
+                    numberOfLines={1}
                     style={[
-                      typography.caption,
-                      { color: colors.foreground, fontFamily: fontFamilies.semibold },
+                      typography.micro,
+                      { color: colors.mutedForeground, flex: 1 },
                     ]}
                   >
-                    Web Server URL
+                    {isResolvingServerUrl
+                      ? "Fetching platform server URL..."
+                      : serverUrl
+                        ? `Platform Server: ${serverUrl}`
+                        : "Connected to managed cloud platform"}
                   </Text>
-                  <Input
-                    value={serverInput}
-                    onChangeText={setServerInput}
-                    placeholder="http://192.168.1.10:3000"
-                    autoCapitalize="none"
-                    autoCorrect={false}
-                    leftIcon={<Server size={16} color={colors.mutedForeground} />}
-                  />
                 </View>
                 <View style={{ gap: 6 }}>
                       <Text

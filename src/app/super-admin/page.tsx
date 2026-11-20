@@ -22,12 +22,19 @@ export default async function SuperAdminOverviewPage() {
   };
   const initialTenants = res.data?.tenants ?? [];
   const initialGrowthSeries = res.data?.growthSeries ?? [];
+  const initialPlatformConfig = res.data?.platformConfig ?? {
+    serverUrl: "",
+    configuredBySuperAdmin: false,
+    updatedAt: null,
+    updatedBy: null,
+  };
 
   return (
     <TenantsConsole
       initialMetrics={initialMetrics}
       initialTenants={initialTenants}
       initialGrowthSeries={initialGrowthSeries}
+      initialPlatformConfig={initialPlatformConfig}
       showGrowthChart
       heading="Platform Overview & Tenants"
       subheading="Monitor active businesses across InventoryPro, provision new tenant workspaces, and manage staff teams."

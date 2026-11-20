@@ -1,4 +1,4 @@
-import { asc, eq, inArray } from "drizzle-orm";
+import { and, asc, eq, inArray, ne } from "drizzle-orm";
 import type { ExpoSqliteDrizzleDb } from "./client";
 import { generateId } from "./crypto";
 import {
@@ -19,6 +19,9 @@ import {
   users,
 } from "./schema";
 import type {
+  BroadcastChannel,
+  BroadcastRecipientGroup,
+  BroadcastStatus,
   PaymentMode,
   SaleStatus,
   SyncBootstrapResponse,
@@ -26,6 +29,7 @@ import type {
   SyncMergePayload,
   SyncOutboxItem,
 } from "@/types/domain";
+import { DEFAULT_WEEKLY_SCHEDULE } from "@/types/domain";
 
 export interface LocalDataSummary {
   categoriesCount: number;
@@ -183,7 +187,11 @@ export function replaceLocalSnapshotWithCloud(
     tx.delete(settings).run();
     tx.delete(syncOutbox).run();
 
-    // Ensure authenticated cloud user exists locally for FK references
+    // Ensure authenticated cloud user & synced tenant staff exist locally for FK references
+    const currentUserEmail =
+      (snapshot.user.email || `${snapshot.user.username}@local`).trim() ||
+      `${snapshot.user.username}@local`;
+
     const existingUser = tx
       .select({ id: users.id })
       .from(users)
@@ -192,14 +200,17 @@ export function replaceLocalSnapshotWithCloud(
       .get();
 
     if (existingUser) {
+      tx.delete(users).where(ne(users.id, snapshot.user.id)).run();
       tx.update(users)
         .set({
           username: snapshot.user.username,
-          email: snapshot.user.email || `${snapshot.user.username}@local`,
+          email: currentUserEmail,
           firstname: snapshot.user.firstname || "",
           lastname: snapshot.user.lastname || "",
           phonenumber: snapshot.user.phonenumber ?? null,
           role: snapshot.user.role,
+          twoFactorEnabled: snapshot.user.twoFactorEnabled ? 1 : 0,
+          twoFactorMethod: snapshot.user.twoFactorMethod === "sms" ? "sms" : "email",
           lastLoginAt: snapshot.user.lastLoginAt ?? nowIso,
           updatedAt: nowIso,
         })
@@ -212,12 +223,14 @@ export function replaceLocalSnapshotWithCloud(
         .values({
           id: snapshot.user.id,
           username: snapshot.user.username,
-          email: snapshot.user.email || `${snapshot.user.username}@local`,
+          email: currentUserEmail,
           passwordHash: "synced-cloud-account",
           firstname: snapshot.user.firstname || "",
           lastname: snapshot.user.lastname || "",
           phonenumber: snapshot.user.phonenumber ?? null,
           role: snapshot.user.role,
+          twoFactorEnabled: snapshot.user.twoFactorEnabled ? 1 : 0,
+          twoFactorMethod: snapshot.user.twoFactorMethod === "sms" ? "sms" : "email",
           lastLoginAt: snapshot.user.lastLoginAt ?? nowIso,
           createdAt: nowIso,
           updatedAt: nowIso,
@@ -226,6 +239,65 @@ export function replaceLocalSnapshotWithCloud(
     }
 
     const ownerId = snapshot.user.id;
+    const knownUserIds = new Set<string>([ownerId]);
+    const usedUsernames = new Set<string>([
+      snapshot.user.username.trim().toLowerCase(),
+    ]);
+    const usedEmails = new Set<string>([currentUserEmail.toLowerCase()]);
+
+    for (const emp of snapshot.employees ?? []) {
+      if (!emp.id) continue;
+      if (emp.id === ownerId) {
+        tx.update(users)
+          .set({
+            ...(emp.lockedUntil !== undefined ? { lockedUntil: emp.lockedUntil ?? null } : {}),
+            ...(emp.twoFactorEnabled !== undefined
+              ? { twoFactorEnabled: emp.twoFactorEnabled ? 1 : 0 }
+              : {}),
+            ...(emp.twoFactorMethod !== undefined
+              ? { twoFactorMethod: emp.twoFactorMethod === "sms" ? "sms" : "email" }
+              : {}),
+          })
+          .where(eq(users.id, ownerId))
+          .run();
+        continue;
+      }
+      if (knownUserIds.has(emp.id)) continue;
+
+      let uname = (emp.username || "").trim() || `user-${emp.id.slice(0, 6)}`;
+      if (usedUsernames.has(uname.toLowerCase())) {
+        uname = `${uname}-${emp.id.slice(0, 4)}`;
+      }
+      usedUsernames.add(uname.toLowerCase());
+
+      let uemail =
+        (emp.email || "").trim().toLowerCase() ||
+        `${uname.toLowerCase()}@local`;
+      if (usedEmails.has(uemail)) {
+        uemail = `${emp.id.slice(0, 6)}+${uemail}`;
+      }
+      usedEmails.add(uemail);
+
+      knownUserIds.add(emp.id);
+      tx.insert(users)
+        .values({
+          id: emp.id,
+          username: uname,
+          email: uemail,
+          passwordHash: "synced-cloud-account",
+          firstname: emp.firstname || "",
+          lastname: emp.lastname || "",
+          phonenumber: emp.phonenumber ?? null,
+          role: emp.role === "admin" ? "admin" : "member",
+          twoFactorEnabled: emp.twoFactorEnabled ? 1 : 0,
+          twoFactorMethod: emp.twoFactorMethod === "sms" ? "sms" : "email",
+          lockedUntil: emp.lockedUntil ?? null,
+          lastLoginAt: emp.lastLoginAt ?? null,
+          createdAt: emp.createdAt || nowIso,
+          updatedAt: emp.updatedAt || emp.createdAt || nowIso,
+        })
+        .run();
+    }
 
     // Store settings
     tx.insert(settings)
@@ -242,6 +314,32 @@ export function replaceLocalSnapshotWithCloud(
           1,
           Math.trunc(Number(snapshot.store.stockAlertThreshold ?? 5)),
         ),
+        language: snapshot.store.language || "en",
+        notificationEmail: snapshot.store.notificationEmail ? 1 : 0,
+        notificationPush: snapshot.store.notificationPush ? 1 : 0,
+        notificationSms: snapshot.store.notificationSms ? 1 : 0,
+        stockAudioAlert: snapshot.store.stockAudioAlert === false ? 0 : 1,
+        stockAudioTone: snapshot.store.stockAudioTone || "chime",
+        stockAudioVolume:
+          typeof snapshot.store.stockAudioVolume === "number"
+            ? snapshot.store.stockAudioVolume
+            : 0.5,
+        eodReportEnabled: snapshot.store.eodReportEnabled ? 1 : 0,
+        eodBusinessClosingTime: snapshot.store.eodBusinessClosingTime || "18:00",
+        eodAdminEmail: snapshot.store.eodAdminEmail || "",
+        eodAdminPhone: snapshot.store.eodAdminPhone || "",
+        business247: snapshot.store.business247 ? 1 : 0,
+        businessOpeningTime: snapshot.store.businessOpeningTime || "08:00",
+        businessClosingTime: snapshot.store.businessClosingTime || "18:00",
+        businessHoursSchedule: JSON.stringify(
+          Array.isArray(snapshot.store.businessHoursSchedule) &&
+            snapshot.store.businessHoursSchedule.length === 7
+            ? snapshot.store.businessHoursSchedule
+            : DEFAULT_WEEKLY_SCHEDULE,
+        ),
+        businessHoursNotes: snapshot.store.businessHoursNotes || "",
+        printAfterSale: snapshot.store.printAfterSale === false ? 0 : 1,
+        paperSize: snapshot.store.paperSize === "a4" ? "a4" : "thermal_80mm",
         createdAt: nowIso,
         updatedAt: nowIso,
       })
@@ -310,7 +408,9 @@ export function replaceLocalSnapshotWithCloud(
     }
 
     // Suppliers
+    const knownSupplierIds = new Set<string>();
     for (const s of snapshot.suppliers) {
+      knownSupplierIds.add(s.id);
       tx.insert(suppliers)
         .values({
           id: s.id,
@@ -323,6 +423,49 @@ export function replaceLocalSnapshotWithCloud(
           isActive: s.isActive ? 1 : 0,
           createdAt: s.createdAt || nowIso,
           updatedAt: s.updatedAt || nowIso,
+        })
+        .run();
+    }
+
+    // Supplier Transactions
+    const usedSupplierTxNos = new Set<string>();
+    for (const t of snapshot.supplierTransactions ?? []) {
+      if (!t.id || !knownSupplierIds.has(t.supplierId)) continue;
+      let txNo = (t.transactionNo || "").trim() || `SUP-${t.id.slice(0, 8)}`;
+      if (usedSupplierTxNos.has(txNo)) {
+        txNo = `${txNo}-${t.id.slice(0, 4)}`;
+      }
+      usedSupplierTxNos.add(txNo);
+
+      const txUserId =
+        t.userId && knownUserIds.has(t.userId) ? t.userId : ownerId;
+      const paymentMode = (
+        ["cash", "momo", "bank", "cheque"].includes(t.paymentMode)
+          ? t.paymentMode
+          : "cash"
+      ) as PaymentMode;
+      const status = (
+        ["completed", "pending", "cancelled"].includes(t.status)
+          ? t.status
+          : "completed"
+      ) as "completed" | "pending" | "cancelled";
+
+      tx.insert(supplierTransactions)
+        .values({
+          id: t.id,
+          transactionNo: txNo,
+          supplierId: t.supplierId,
+          userId: txUserId,
+          deliveredBy: t.deliveredBy ?? null,
+          transactionDate: t.transactionDate || t.createdAt || nowIso,
+          totalAmount: Math.max(0, Number(t.totalAmount) || 0),
+          amountPaid: Math.max(0, Number(t.amountPaid) || 0),
+          balance: Math.max(0, Number(t.balance) || 0),
+          paymentMode,
+          status,
+          notes: t.notes || "",
+          createdAt: t.createdAt || t.transactionDate || nowIso,
+          updatedAt: t.updatedAt || t.createdAt || nowIso,
         })
         .run();
     }
@@ -413,11 +556,13 @@ export function replaceLocalSnapshotWithCloud(
       usedReceipts.add(receiptNumber);
 
       knownSaleIds.add(s.id);
+      const saleUserId =
+        s.userId && knownUserIds.has(s.userId) ? s.userId : ownerId;
       tx.insert(sales)
         .values({
           id: s.id,
           customerId: custId,
-          userId: ownerId,
+          userId: saleUserId,
           receiptNumber,
           date: s.saleDate || nowIso,
           details: s.notes || "",
@@ -451,6 +596,98 @@ export function replaceLocalSnapshotWithCloud(
           unitPrice: Math.max(0, Number(it.unitPrice) || 0),
           createdAt: nowIso,
           updatedAt: nowIso,
+        })
+        .run();
+    }
+
+    // Notifications (user-scoped)
+    for (const n of snapshot.notifications ?? []) {
+      if (!n.id) continue;
+      const notifUserId =
+        n.userId && knownUserIds.has(n.userId) ? n.userId : ownerId;
+      tx.insert(notifications)
+        .values({
+          id: n.id,
+          userId: notifUserId,
+          type: n.type || "system",
+          title: n.title || "Notification",
+          message: n.message ?? null,
+          isRead: n.isRead ? 1 : 0,
+          referenceType: n.referenceType ?? null,
+          referenceId: n.referenceId ?? null,
+          createdAt: n.createdAt || nowIso,
+          updatedAt: n.updatedAt || n.createdAt || nowIso,
+        })
+        .run();
+    }
+
+    // Broadcast Messages
+    for (const m of snapshot.broadcastMessages ?? []) {
+      if (!m.id) continue;
+      const senderId =
+        m.senderId && knownUserIds.has(m.senderId) ? m.senderId : ownerId;
+      const recipientGroup = (
+        ["employees", "customers", "suppliers"].includes(m.recipientGroup)
+          ? m.recipientGroup
+          : "employees"
+      ) as BroadcastRecipientGroup;
+      const channel = (
+        ["in_app", "sms", "email"].includes(m.channel)
+          ? m.channel
+          : "in_app"
+      ) as BroadcastChannel;
+      const status = (
+        ["sent", "queued", "partial", "failed"].includes(m.status)
+          ? m.status
+          : "sent"
+      ) as BroadcastStatus;
+
+      tx.insert(broadcastMessages)
+        .values({
+          id: m.id,
+          senderId,
+          senderName: m.senderName || "Admin",
+          recipientGroup,
+          channel,
+          subject: m.subject ?? null,
+          content: m.content || "",
+          recipientCount: Math.max(0, Math.trunc(Number(m.recipientCount) || 0)),
+          status,
+          createdAt: m.createdAt || nowIso,
+          updatedAt: m.createdAt || nowIso,
+        })
+        .run();
+    }
+
+    // Audit Logs (admin-scoped)
+    const validAuditActions = new Set([
+      "create",
+      "update",
+      "delete",
+      "restore",
+      "approve",
+      "cancel",
+      "login",
+      "logout",
+    ]);
+    for (const a of snapshot.auditLogs ?? []) {
+      if (!a.id) continue;
+      const auditUserId =
+        a.userId && knownUserIds.has(a.userId) ? a.userId : null;
+      const action = (
+        validAuditActions.has(a.action) ? a.action : "update"
+      ) as typeof auditLogs.$inferInsert.action;
+
+      tx.insert(auditLogs)
+        .values({
+          id: a.id,
+          userId: auditUserId,
+          entityType: a.entityType || "system",
+          entityId: a.entityId || "",
+          action,
+          oldValues: a.oldValues ?? null,
+          newValues: a.newValues ?? null,
+          createdAt: a.createdAt || nowIso,
         })
         .run();
     }
@@ -557,11 +794,127 @@ export function applyRemoteSyncEvent(
         if (typeof payload.stockAlertThreshold === "number") {
           patch.stockAlertThreshold = payload.stockAlertThreshold;
         }
+        if (typeof payload.language === "string") patch.language = payload.language;
+        if (typeof payload.notificationEmail === "boolean") {
+          patch.notificationEmail = payload.notificationEmail ? 1 : 0;
+        }
+        if (typeof payload.notificationPush === "boolean") {
+          patch.notificationPush = payload.notificationPush ? 1 : 0;
+        }
+        if (typeof payload.notificationSms === "boolean") {
+          patch.notificationSms = payload.notificationSms ? 1 : 0;
+        }
+        if (typeof payload.stockAudioAlert === "boolean") {
+          patch.stockAudioAlert = payload.stockAudioAlert ? 1 : 0;
+        }
+        if (typeof payload.stockAudioTone === "string") {
+          patch.stockAudioTone = payload.stockAudioTone;
+        }
+        if (typeof payload.stockAudioVolume === "number") {
+          patch.stockAudioVolume = payload.stockAudioVolume;
+        }
+        if (typeof payload.eodReportEnabled === "boolean") {
+          patch.eodReportEnabled = payload.eodReportEnabled ? 1 : 0;
+        }
+        if (typeof payload.eodBusinessClosingTime === "string") {
+          patch.eodBusinessClosingTime = payload.eodBusinessClosingTime;
+        }
+        if (typeof payload.eodAdminEmail === "string") {
+          patch.eodAdminEmail = payload.eodAdminEmail;
+        }
+        if (typeof payload.eodAdminPhone === "string") {
+          patch.eodAdminPhone = payload.eodAdminPhone;
+        }
+        if (typeof payload.business247 === "boolean") {
+          patch.business247 = payload.business247 ? 1 : 0;
+        }
+        if (typeof payload.businessOpeningTime === "string") {
+          patch.businessOpeningTime = payload.businessOpeningTime;
+        }
+        if (typeof payload.businessClosingTime === "string") {
+          patch.businessClosingTime = payload.businessClosingTime;
+        }
+        if (Array.isArray(payload.businessHoursSchedule)) {
+          patch.businessHoursSchedule = JSON.stringify(payload.businessHoursSchedule);
+        }
+        if (typeof payload.businessHoursNotes === "string") {
+          patch.businessHoursNotes = payload.businessHoursNotes;
+        }
+        if (typeof payload.printAfterSale === "boolean") {
+          patch.printAfterSale = payload.printAfterSale ? 1 : 0;
+        }
+        if (typeof payload.paperSize === "string") {
+          patch.paperSize = payload.paperSize;
+        }
         tx.update(settings)
           .set(patch)
           .where(eq(settings.id, existingSetting.id))
           .run();
       }
+    } else if (
+      event.entityType === "employee" &&
+      event.action === "upsert" &&
+      event.entityId
+    ) {
+      const empPatch: Partial<typeof users.$inferInsert> = {
+        updatedAt: nowIso,
+      };
+      if (typeof payload.twoFactorEnabled === "boolean") {
+        empPatch.twoFactorEnabled = payload.twoFactorEnabled ? 1 : 0;
+      }
+      if (payload.twoFactorMethod === "email" || payload.twoFactorMethod === "sms") {
+        empPatch.twoFactorMethod = payload.twoFactorMethod;
+      }
+      if (Object.keys(empPatch).length > 1) {
+        tx.update(users)
+          .set(empPatch)
+          .where(eq(users.id, event.entityId))
+          .run();
+      }
+    } else if (event.entityType === "notification") {
+      const targetUserId =
+        typeof payload.user_id === "string" ? payload.user_id : null;
+      if (event.action === "upsert" && event.entityId && payload.is_read === true) {
+        tx.update(notifications)
+          .set({ isRead: 1, updatedAt: nowIso })
+          .where(eq(notifications.id, event.entityId))
+          .run();
+      } else if (event.action === "refresh" && event.entityId === "all") {
+        if (targetUserId) {
+          tx.update(notifications)
+            .set({ isRead: 1, updatedAt: nowIso })
+            .where(and(eq(notifications.userId, targetUserId), eq(notifications.isRead, 0)))
+            .run();
+        }
+      } else if (event.action === "delete") {
+        if (event.entityId === "all") {
+          if (targetUserId) {
+            tx.delete(notifications)
+              .where(eq(notifications.userId, targetUserId))
+              .run();
+          } else {
+            tx.delete(notifications).run();
+          }
+        } else if (event.entityId) {
+          tx.delete(notifications)
+            .where(eq(notifications.id, event.entityId))
+            .run();
+        }
+      }
+    } else if (
+      event.entityType === "message" &&
+      event.action === "upsert" &&
+      event.entityId &&
+      typeof payload.status === "string" &&
+      ["sent", "queued", "partial", "failed"].includes(payload.status)
+    ) {
+      tx.update(broadcastMessages)
+        .set({
+          status: payload.status as BroadcastStatus,
+          updatedAt: nowIso,
+        })
+        .where(eq(broadcastMessages.id, event.entityId))
+        .run();
     }
 
     if (event.cursor > 0) {

@@ -14,6 +14,7 @@ import {
   type BroadcastRecipient,
   type BroadcastRecipientGroup,
   type BulkImportProductsResult,
+  type BulkUpdateTwoFactorInput,
   type CategoryItem,
   type ChangePasswordInput,
   type CreateCategoryInput,
@@ -46,7 +47,9 @@ import {
   type SalesReportData,
   type SaleTransactionSummary,
   type SendBroadcastInput,
+  type SendDailyReportResult,
   type SessionUser,
+  type StaffTwoFactorAccount,
   type StockAlertItem,
   type StoreProfile,
   type SupplierDetailResponse,
@@ -54,13 +57,17 @@ import {
   type SupplierTransactionSummary,
   type TodayDashboardData,
   type TopSellingProductItem,
+  type TwoFactorOverviewResponse,
+  type UpdateBusinessHoursInput,
   type UpdateBusinessSettingsInput,
   type UpdateCategoryInput,
   type UpdateCustomerInput,
   type UpdateEmployeeInput,
   type UpdateMyProfileInput,
+  type UpdateNotificationSettingsInput,
   type UpdateProductInput,
   type UpdateSupplierInput,
+  type UpdateTwoFactorInput,
   type UserSessionItem,
 } from "@/types/domain";
 
@@ -662,6 +669,48 @@ export class DemoDataAdapter implements InventoryProApiClient {
     throw new Error("Changing password requires the on-device SQLite backend.");
   }
 
+  async getTwoFactorOverview(): Promise<TwoFactorOverviewResponse> {
+    await this.simulateLatency(40);
+    const demoSelf: StaffTwoFactorAccount = {
+      id: "demo-admin",
+      username: "admin",
+      email: DEMO_STORE_PROFILE.storeEmail,
+      firstname: "Demo",
+      lastname: "Admin",
+      fullname: "Demo Admin",
+      phonenumber: DEMO_STORE_PROFILE.storePhone,
+      role: "admin",
+      twoFactorEnabled: false,
+      twoFactorMethod: "email",
+      twoFactorUpdatedAt: null,
+      lastLoginAt: null,
+      isCurrentUser: true,
+    };
+    return {
+      currentUserAccount: demoSelf,
+      accounts: [demoSelf],
+      emailConfigured: false,
+      smsConfigured: false,
+    };
+  }
+
+  async updateUserTwoFactor(
+    _input: UpdateTwoFactorInput,
+  ): Promise<StaffTwoFactorAccount> {
+    throw new Error("Managing 2FA requires a local SQLite or Cloud Synced workspace.");
+  }
+
+  async bulkUpdateStaffTwoFactor(
+    _input: BulkUpdateTwoFactorInput,
+  ): Promise<{ updatedCount: number; skippedUsernames: string[] }> {
+    throw new Error("Managing 2FA requires a local SQLite or Cloud Synced workspace.");
+  }
+
+  async getStoreSettings(): Promise<StoreProfile> {
+    await this.simulateLatency(40);
+    return { ...DEMO_STORE_PROFILE };
+  }
+
   async updateStockAlertThreshold(threshold: number): Promise<StoreProfile> {
     return {
       ...DEMO_STORE_PROFILE,
@@ -674,14 +723,41 @@ export class DemoDataAdapter implements InventoryProApiClient {
   ): Promise<StoreProfile> {
     return {
       ...DEMO_STORE_PROFILE,
-      stockAlertThreshold: 5,
       storeName: input.storeName.trim() || DEMO_STORE_PROFILE.storeName,
       storeAddress: input.storeAddress.trim() || DEMO_STORE_PROFILE.storeAddress,
       storePhone: input.storePhone.trim(),
       storeEmail: input.storeEmail.trim(),
       currency: input.currency?.trim() || DEMO_STORE_PROFILE.currency,
       taxRate: Number(input.taxRate) || 0,
+      stockAlertThreshold:
+        input.stockAlertThreshold !== undefined
+          ? Math.max(1, Math.trunc(input.stockAlertThreshold))
+          : DEMO_STORE_PROFILE.stockAlertThreshold,
+      printAfterSale: input.printAfterSale ?? DEMO_STORE_PROFILE.printAfterSale,
+      paperSize: input.paperSize ?? DEMO_STORE_PROFILE.paperSize,
     };
+  }
+
+  async updateNotificationSettings(
+    input: UpdateNotificationSettingsInput,
+  ): Promise<StoreProfile> {
+    return {
+      ...DEMO_STORE_PROFILE,
+      ...input,
+    };
+  }
+
+  async updateBusinessHours(
+    input: UpdateBusinessHoursInput,
+  ): Promise<StoreProfile> {
+    return {
+      ...DEMO_STORE_PROFILE,
+      ...input,
+    };
+  }
+
+  async sendDailyReportNow(_dateStr?: string): Promise<SendDailyReportResult> {
+    throw new Error("Sending daily EOD reports requires a synced Cloud Workspace connection.");
   }
 }
 

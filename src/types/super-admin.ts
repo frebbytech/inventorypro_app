@@ -66,3 +66,10 @@ export interface TenantDetailData {
   };
   members: TenantMemberItem[];
 }
+
+export interface PlatformMobileServerConfig {
+  serverUrl: string;
+  configuredBySuperAdmin: boolean;
+  updatedAt: string | null;
+  updatedBy: string | null;
+}

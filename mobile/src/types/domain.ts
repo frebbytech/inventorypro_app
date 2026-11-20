@@ -29,6 +29,29 @@ export interface TenantInfo {
   slug: string;
 }
 
+export type TwoFactorMethod = "email" | "sms";
+export type StockAudioTone = "chime" | "bell" | "marimba" | "ping";
+export type PaperSize = "thermal_80mm" | "a4";
+
+export interface DaySchedule {
+  day: string;
+  label: string;
+  closed: boolean;
+  openTime: string;
+  closeTime: string;
+  is24Hours?: boolean;
+}
+
+export const DEFAULT_WEEKLY_SCHEDULE: DaySchedule[] = [
+  { day: "monday", label: "Monday", closed: false, openTime: "08:00", closeTime: "18:00" },
+  { day: "tuesday", label: "Tuesday", closed: false, openTime: "08:00", closeTime: "18:00" },
+  { day: "wednesday", label: "Wednesday", closed: false, openTime: "08:00", closeTime: "18:00" },
+  { day: "thursday", label: "Thursday", closed: false, openTime: "08:00", closeTime: "18:00" },
+  { day: "friday", label: "Friday", closed: false, openTime: "08:00", closeTime: "18:00" },
+  { day: "saturday", label: "Saturday", closed: false, openTime: "09:00", closeTime: "16:00" },
+  { day: "sunday", label: "Sunday", closed: true, openTime: "09:00", closeTime: "16:00" },
+];
+
 export interface SessionUser {
   id: string;
   username: string;
@@ -41,6 +64,42 @@ export interface SessionUser {
   tenantId?: string;
   tenantName?: string;
   tenantSlug?: string;
+  twoFactorEnabled?: boolean;
+  twoFactorMethod?: TwoFactorMethod;
+}
+
+export interface StaffTwoFactorAccount {
+  id: string;
+  username: string;
+  email: string;
+  firstname: string;
+  lastname: string;
+  fullname: string;
+  phonenumber: string;
+  role: "admin" | "member";
+  twoFactorEnabled: boolean;
+  twoFactorMethod: TwoFactorMethod;
+  twoFactorUpdatedAt: string | null;
+  lastLoginAt: string | null;
+  isCurrentUser: boolean;
+}
+
+export interface TwoFactorOverviewResponse {
+  currentUserAccount: StaffTwoFactorAccount;
+  accounts: StaffTwoFactorAccount[];
+  emailConfigured: boolean;
+  smsConfigured: boolean;
+}
+
+export interface UpdateTwoFactorInput {
+  userId?: string;
+  enabled?: boolean;
+  method?: TwoFactorMethod;
+}
+
+export interface BulkUpdateTwoFactorInput {
+  userIds: string[];
+  enabled: boolean;
 }
 
 export interface StoreProfile {
@@ -51,6 +110,24 @@ export interface StoreProfile {
   currency: string;
   taxRate: number;
   stockAlertThreshold: number;
+  language?: string;
+  notificationEmail?: boolean;
+  notificationPush?: boolean;
+  notificationSms?: boolean;
+  stockAudioAlert?: boolean;
+  stockAudioTone?: StockAudioTone;
+  stockAudioVolume?: number;
+  eodReportEnabled?: boolean;
+  eodBusinessClosingTime?: string;
+  eodAdminEmail?: string;
+  eodAdminPhone?: string;
+  business247?: boolean;
+  businessOpeningTime?: string;
+  businessClosingTime?: string;
+  businessHoursSchedule?: DaySchedule[];
+  businessHoursNotes?: string;
+  printAfterSale?: boolean;
+  paperSize?: PaperSize;
 }
 
 export interface UpdateBusinessSettingsInput {
@@ -60,6 +137,39 @@ export interface UpdateBusinessSettingsInput {
   storeEmail: string;
   currency?: string;
   taxRate: number;
+  stockAlertThreshold?: number;
+  language?: string;
+  printAfterSale?: boolean;
+  paperSize?: PaperSize;
+}
+
+export interface UpdateNotificationSettingsInput {
+  notificationEmail?: boolean;
+  notificationPush?: boolean;
+  notificationSms?: boolean;
+  stockAlertThreshold?: number;
+  stockAudioAlert?: boolean;
+  stockAudioTone?: StockAudioTone;
+  stockAudioVolume?: number;
+  eodReportEnabled?: boolean;
+  eodBusinessClosingTime?: string;
+  eodAdminEmail?: string;
+  eodAdminPhone?: string;
+}
+
+export interface UpdateBusinessHoursInput {
+  business247: boolean;
+  businessOpeningTime: string;
+  businessClosingTime: string;
+  businessHoursSchedule: DaySchedule[];
+  businessHoursNotes: string;
+}
+
+export interface SendDailyReportResult {
+  ok: boolean;
+  sentAt: string;
+  reportDate: string;
+  dispatchSummary?: Record<string, unknown>;
 }
 
 export interface AuthLoginPayload {
@@ -710,6 +820,7 @@ export interface SyncBootstrapSupplier {
 
 export interface SyncBootstrapSale {
   id: string;
+  userId?: string;
   receiptNo: string;
   customerId: string;
   customerName: string;
@@ -737,6 +848,50 @@ export interface SyncBootstrapSaleItem {
   subtotal: number;
 }
 
+export interface SyncBootstrapEmployee {
+  id: string;
+  username: string;
+  email: string;
+  firstname: string;
+  lastname: string;
+  phonenumber?: string;
+  role: "admin" | "member";
+  twoFactorEnabled?: boolean;
+  twoFactorMethod?: TwoFactorMethod;
+  lockedUntil?: string | null;
+  lastLoginAt?: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface SyncBootstrapSupplierTransaction {
+  id: string;
+  transactionNo: string;
+  supplierId: string;
+  userId?: string;
+  deliveredBy?: string;
+  transactionDate: string;
+  totalAmount: number;
+  amountPaid: number;
+  balance: number;
+  paymentMode: PaymentMode;
+  status: "completed" | "pending" | "cancelled";
+  notes?: string;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export interface SyncBootstrapAuditLog {
+  id: string;
+  userId?: string | null;
+  entityType: string;
+  entityId: string;
+  action: string;
+  oldValues?: string | null;
+  newValues?: string | null;
+  createdAt: string;
+}
+
 export interface SyncBootstrapResponse {
   latestCursor: number;
   syncedAt: string;
@@ -750,6 +905,11 @@ export interface SyncBootstrapResponse {
   restocks: RestockLogItem[];
   sales: SyncBootstrapSale[];
   saleItems: SyncBootstrapSaleItem[];
+  employees?: SyncBootstrapEmployee[];
+  supplierTransactions?: SyncBootstrapSupplierTransaction[];
+  notifications?: NotificationItem[];
+  broadcastMessages?: BroadcastMessageItem[];
+  auditLogs?: SyncBootstrapAuditLog[];
 }
 
 export interface SyncDeltaResponse {

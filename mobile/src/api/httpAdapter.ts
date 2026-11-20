@@ -14,6 +14,7 @@ import type {
   BroadcastRecipient,
   BroadcastRecipientGroup,
   BulkImportProductsResult,
+  BulkUpdateTwoFactorInput,
   CategoryItem,
   ChangePasswordInput,
   CreateCategoryInput,
@@ -44,7 +45,9 @@ import type {
   SalesReportData,
   SaleTransactionSummary,
   SendBroadcastInput,
+  SendDailyReportResult,
   SessionUser,
+  StaffTwoFactorAccount,
   StoreProfile,
   SupplierDetailResponse,
   SupplierItem,
@@ -54,23 +57,62 @@ import type {
   SyncMergePayload,
   SyncMergeResponse,
   TodayDashboardData,
+  TwoFactorOverviewResponse,
+  UpdateBusinessHoursInput,
   UpdateBusinessSettingsInput,
   UpdateCategoryInput,
   UpdateCustomerInput,
   UpdateEmployeeInput,
   UpdateMyProfileInput,
+  UpdateNotificationSettingsInput,
   UpdateProductInput,
   UpdateSupplierInput,
+  UpdateTwoFactorInput,
   UserSessionItem,
 } from "@/types/domain";
 
+export interface PlatformServerConfigResponse {
+  ok: boolean;
+  serverUrl: string;
+  configuredBySuperAdmin: boolean;
+  updatedAt: string | null;
+}
+
+function normalizeHostUriToBackendUrl(hostUri: string): string {
+  const cleaned = hostUri.replace(/^https?:\/\//i, "").replace(/\/.*$/, "").trim();
+  if (!cleaned) return "";
+
+  const colonIdx = cleaned.lastIndexOf(":");
+  if (colonIdx > 0) {
+    const host = cleaned.slice(0, colonIdx);
+    const port = cleaned.slice(colonIdx + 1);
+    if (["8081", "19000", "19001", "19006"].includes(port)) {
+      return `http://${host}:3000`;
+    }
+    return `http://${cleaned}`;
+  }
+
+  return `http://${cleaned}`;
+}
+
 export function resolveApiBaseUrl(): string {
-  const configured = process.env.EXPO_PUBLIC_API_BASE_URL?.trim();
-  if (configured) {
-    return configured.replace(/\/+$/, "");
+  const envConfigured = process.env.EXPO_PUBLIC_API_BASE_URL?.trim();
+  if (envConfigured) {
+    return envConfigured.replace(/\/+$/, "");
+  }
+
+  const extraConfig = (
+    Constants.expoConfig?.extra as { apiBaseUrl?: unknown } | undefined
+  )?.apiBaseUrl;
+  if (typeof extraConfig === "string" && extraConfig.trim()) {
+    return extraConfig.trim().replace(/\/+$/, "");
   }
 
   if (Platform.OS === "web" && typeof window !== "undefined" && window.location?.origin) {
+    const port = window.location.port;
+    if (port === "8081" || port === "19006") {
+      return `${window.location.protocol}//${window.location.hostname}:3000`;
+    }
     return "";
   }
 
@@ -80,13 +122,13 @@ export function resolveApiBaseUrl(): string {
       .manifest2?.extra?.expoGo?.debuggerHost;
 
   if (hostUri) {
-    const cleaned = hostUri.replace(/^https?:\/\//i, "").replace(/\/.*$/, "");
-    return `http://${cleaned}`;
+    const normalized = normalizeHostUriToBackendUrl(hostUri);
+    if (normalized) return normalized;
   }
 
   return Platform.OS === "android"
-    ? "http://10.0.2.2:8081"
-    : "http://localhost:8081";
+    ? "http://10.0.2.2:3000"
+    : "http://localhost:3000";
 }
 
 export class ApiError extends Error {
@@ -127,6 +169,7 @@ export class HttpApiClient implements AuthenticatedApiClient {
       allowNotFound?: boolean;
       skipAuthCheck?: boolean;
       clientMutationId?: string;
+      baseUrlOverride?: string;
     },
   ): Promise<T> {
     return this.request<T>(path, init);
@@ -138,11 +181,17 @@ export class HttpApiClient implements AuthenticatedApiClient {
       allowNotFound?: boolean;
       skipAuthCheck?: boolean;
       clientMutationId?: string;
+      baseUrlOverride?: string;
     },
   ): Promise<T> {
     const token = this.config.getAccessToken();
-    const { allowNotFound, skipAuthCheck, clientMutationId, ...fetchInit } =
-      init ?? {};
+    const {
+      allowNotFound,
+      skipAuthCheck,
+      clientMutationId,
+      baseUrlOverride,
+      ...fetchInit
+    } = init ?? {};
 
     const isFormDataBody =
       typeof FormData !== "undefined" && fetchInit.body instanceof FormData;
@@ -157,7 +206,12 @@ export class HttpApiClient implements AuthenticatedApiClient {
       ...((fetchInit.headers as Record<string, string> | undefined) ?? {}),
     };
 
-    const res = await fetch(`${this.getResolvedBaseUrl()}${path}`, {
+    const resolvedBase =
+      baseUrlOverride !== undefined
+        ? baseUrlOverride.trim().replace(/\/+$/, "")
+        : this.getResolvedBaseUrl();
+
+    const res = await fetch(`${resolvedBase}${path}`, {
       ...fetchInit,
       headers,
     });
@@ -170,11 +224,20 @@ export class HttpApiClient implements AuthenticatedApiClient {
       this.config.onUnauthorized?.();
     }
 
+    if (res.status === 204) {
+      return undefined as T;
+    }
+
+    const rawText = await res.text().catch(() => "");
     let payload: unknown = null;
-    try {
-      payload = await res.json();
-    } catch {
-      payload = null;
+    let parsedJson = false;
+    if (rawText.trim()) {
+      try {
+        payload = JSON.parse(rawText);
+        parsedJson = true;
+      } catch {
+        payload = null;
+      }
     }
 
     if (!res.ok) {
@@ -188,29 +251,98 @@ export class HttpApiClient implements AuthenticatedApiClient {
       throw new ApiError(errorMsg, res.status);
     }
 
+    if (rawText.trim() && !parsedJson) {
+      throw new ApiError(
+        "Unable to reach the InventoryPro web server (invalid JSON response). Verify the Super Admin Mobile Sync Server URL.",
+        res.status || 502,
+      );
+    }
+
     return payload as T;
   }
 
-  login(payload: AuthLoginPayload): Promise<AuthLoginResult> {
-    return this.request<AuthLoginResult>("/api/mobile/v1/auth/login", {
+  getPlatformConfig(
+    baseUrlOverride?: string,
+  ): Promise<PlatformServerConfigResponse> {
+    return this.request<PlatformServerConfigResponse>(
+      "/api/mobile/v1/platform/config",
+      {
+        method: "GET",
+        skipAuthCheck: true,
+        baseUrlOverride,
+      },
+    );
+  }
+
+  async login(payload: AuthLoginPayload): Promise<AuthLoginResult> {
+    const res = await this.request<AuthLoginResult>("/api/mobile/v1/auth/login", {
       method: "POST",
       body: JSON.stringify(payload),
       skipAuthCheck: true,
     });
+
+    if (!res || typeof res !== "object") {
+      throw new ApiError(
+        "Web server returned an empty login response. Verify the Super Admin Mobile Sync Server URL.",
+        502,
+      );
+    }
+
+    if ("twoFactorRequired" in res && res.twoFactorRequired) {
+      if (typeof res.challengeToken !== "string" || !res.challengeToken.trim()) {
+        throw new ApiError(
+          "Web server returned an invalid two-factor challenge.",
+          502,
+        );
+      }
+      return res;
+    }
+
+    if (
+      !("token" in res) ||
+      typeof res.token !== "string" ||
+      !res.token.trim() ||
+      !res.user
+    ) {
+      throw new ApiError(
+        "Web server did not return a valid session token. Verify the Super Admin Mobile Sync Server URL.",
+        502,
+      );
+    }
+
+    return res;
   }
 
-  verifyTwoFactor(payload: {
+  async verifyTwoFactor(payload: {
     challengeToken: string;
     code: string;
     deviceName?: string;
     deviceType?: string;
     operatingSystem?: string;
   }): Promise<AuthLoginResponse> {
-    return this.request<AuthLoginResponse>("/api/mobile/v1/auth/2fa/verify", {
-      method: "POST",
-      body: JSON.stringify(payload),
-      skipAuthCheck: true,
-    });
+    const res = await this.request<AuthLoginResponse>(
+      "/api/mobile/v1/auth/2fa/verify",
+      {
+        method: "POST",
+        body: JSON.stringify(payload),
+        skipAuthCheck: true,
+      },
+    );
+
+    if (
+      !res ||
+      typeof res !== "object" ||
+      typeof res.token !== "string" ||
+      !res.token.trim() ||
+      !res.user
+    ) {
+      throw new ApiError(
+        "Web server did not return a valid session token after verification.",
+        502,
+      );
+    }
+
+    return res;
   }
 
   resendTwoFactor(challengeToken: string): Promise<{
@@ -758,6 +890,40 @@ export class HttpApiClient implements AuthenticatedApiClient {
     });
   }
 
+  getTwoFactorOverview(): Promise<TwoFactorOverviewResponse> {
+    return this.request<TwoFactorOverviewResponse>(
+      "/api/mobile/v1/security/two-factor",
+    );
+  }
+
+  updateUserTwoFactor(
+    input: UpdateTwoFactorInput,
+  ): Promise<StaffTwoFactorAccount> {
+    return this.request<StaffTwoFactorAccount>(
+      "/api/mobile/v1/security/two-factor",
+      {
+        method: "PATCH",
+        body: JSON.stringify(input),
+      },
+    );
+  }
+
+  bulkUpdateStaffTwoFactor(
+    input: BulkUpdateTwoFactorInput,
+  ): Promise<{ updatedCount: number; skippedUsernames: string[] }> {
+    return this.request<{ updatedCount: number; skippedUsernames: string[] }>(
+      "/api/mobile/v1/security/two-factor/bulk",
+      {
+        method: "POST",
+        body: JSON.stringify(input),
+      },
+    );
+  }
+
+  getStoreSettings(): Promise<StoreProfile> {
+    return this.request<StoreProfile>("/api/mobile/v1/settings");
+  }
+
   updateStockAlertThreshold(threshold: number): Promise<StoreProfile> {
     return this.request<StoreProfile>("/api/mobile/v1/settings/stock-threshold", {
       method: "PATCH",
@@ -770,5 +936,34 @@ export class HttpApiClient implements AuthenticatedApiClient {
       method: "PATCH",
       body: JSON.stringify(input),
     });
+  }
+
+  updateNotificationSettings(
+    input: UpdateNotificationSettingsInput,
+  ): Promise<StoreProfile> {
+    return this.request<StoreProfile>(
+      "/api/mobile/v1/settings/notifications",
+      {
+        method: "PATCH",
+        body: JSON.stringify(input),
+      },
+    );
+  }
+
+  updateBusinessHours(input: UpdateBusinessHoursInput): Promise<StoreProfile> {
+    return this.request<StoreProfile>("/api/mobile/v1/settings/hours", {
+      method: "PATCH",
+      body: JSON.stringify(input),
+    });
+  }
+
+  sendDailyReportNow(dateStr?: string): Promise<SendDailyReportResult> {
+    return this.request<SendDailyReportResult>(
+      "/api/mobile/v1/reports/daily/send",
+      {
+        method: "POST",
+        body: JSON.stringify(dateStr ? { dateStr } : {}),
+      },
+    );
   }
 }

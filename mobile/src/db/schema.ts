@@ -27,6 +27,11 @@ export const users = sqliteTable("users", {
   failedLoginAttempts: integer("failed_login_attempts").notNull().default(0),
   lockedUntil: text("locked_until"),
   lastLoginAt: text("last_login_at"),
+  twoFactorEnabled: integer("two_factor_enabled").notNull().default(0),
+  twoFactorMethod: text("two_factor_method", { enum: ["email", "sms"] })
+    .notNull()
+    .default("email"),
+  twoFactorUpdatedAt: text("two_factor_updated_at"),
   createdAt: text("created_at")
     .notNull()
     .default(sql`(datetime('now'))`),
@@ -77,6 +82,26 @@ export const settings = sqliteTable("settings", {
   currency: text("currency").notNull().default("GHS"),
   taxRate: real("tax_rate").notNull().default(0.01),
   stockAlertThreshold: integer("stock_alert_threshold").notNull().default(5),
+  language: text("language").notNull().default("en"),
+  notificationEmail: integer("notification_email").notNull().default(0),
+  notificationPush: integer("notification_push").notNull().default(0),
+  notificationSms: integer("notification_sms").notNull().default(0),
+  stockAudioAlert: integer("stock_audio_alert").notNull().default(1),
+  stockAudioTone: text("stock_audio_tone").notNull().default("chime"),
+  stockAudioVolume: real("stock_audio_volume").notNull().default(0.5),
+  eodReportEnabled: integer("eod_report_enabled").notNull().default(0),
+  eodBusinessClosingTime: text("eod_business_closing_time")
+    .notNull()
+    .default("18:00"),
+  eodAdminEmail: text("eod_admin_email").notNull().default(""),
+  eodAdminPhone: text("eod_admin_phone").notNull().default(""),
+  business247: integer("business_24_7").notNull().default(0),
+  businessOpeningTime: text("business_opening_time").notNull().default("08:00"),
+  businessClosingTime: text("business_closing_time").notNull().default("18:00"),
+  businessHoursSchedule: text("business_hours_schedule").notNull().default("[]"),
+  businessHoursNotes: text("business_hours_notes").notNull().default(""),
+  printAfterSale: integer("print_after_sale").notNull().default(1),
+  paperSize: text("paper_size").notNull().default("thermal_80mm"),
   createdAt: text("created_at")
     .notNull()
     .default(sql`(datetime('now'))`),

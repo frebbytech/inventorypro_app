@@ -282,7 +282,7 @@ export async function POST(req: Request) {
           const taxableBase = Math.max(0, subtotal - discountAmount);
           const taxRate = applyTax ? Number(store.taxRate ?? 0) : 0;
           const taxAmount = applyTax
-            ? Math.round(taxableBase * (taxRate / 100) * 100) / 100
+            ? Math.round(taxableBase * taxRate * 100) / 100
             : 0;
           const totalAmount = Math.round((taxableBase + taxAmount) * 100) / 100;
 

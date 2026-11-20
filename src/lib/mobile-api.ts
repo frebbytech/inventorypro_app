@@ -24,6 +24,27 @@ export class HttpStatusError extends Error {
   }
 }
 
+export type MobileTwoFactorMethod = "email" | "sms";
+
+export interface MobileDaySchedule {
+  day: string;
+  label: string;
+  closed: boolean;
+  openTime: string;
+  closeTime: string;
+  is24Hours?: boolean;
+}
+
+export const DEFAULT_MOBILE_WEEKLY_SCHEDULE: MobileDaySchedule[] = [
+  { day: "monday", label: "Monday", closed: false, openTime: "08:00", closeTime: "18:00" },
+  { day: "tuesday", label: "Tuesday", closed: false, openTime: "08:00", closeTime: "18:00" },
+  { day: "wednesday", label: "Wednesday", closed: false, openTime: "08:00", closeTime: "18:00" },
+  { day: "thursday", label: "Thursday", closed: false, openTime: "08:00", closeTime: "18:00" },
+  { day: "friday", label: "Friday", closed: false, openTime: "08:00", closeTime: "18:00" },
+  { day: "saturday", label: "Saturday", closed: false, openTime: "09:00", closeTime: "16:00" },
+  { day: "sunday", label: "Sunday", closed: true, openTime: "09:00", closeTime: "16:00" },
+];
+
 export interface MobileSessionUser {
   id: string;
   tenantId: string;
@@ -36,6 +57,24 @@ export interface MobileSessionUser {
   phonenumber?: string;
   role: "admin" | "member";
   lastLoginAt?: string | null;
+  twoFactorEnabled?: boolean;
+  twoFactorMethod?: MobileTwoFactorMethod;
+}
+
+export interface MobileStaffTwoFactorAccount {
+  id: string;
+  username: string;
+  email: string;
+  firstname: string;
+  lastname: string;
+  fullname: string;
+  phonenumber: string;
+  role: "admin" | "member";
+  twoFactorEnabled: boolean;
+  twoFactorMethod: MobileTwoFactorMethod;
+  twoFactorUpdatedAt: string | null;
+  lastLoginAt: string | null;
+  isCurrentUser: boolean;
 }
 
 export interface MobileStoreProfile {
@@ -46,10 +85,93 @@ export interface MobileStoreProfile {
   currency: string;
   taxRate: number;
   stockAlertThreshold: number;
+  language: string;
+  notificationEmail: boolean;
+  notificationPush: boolean;
+  notificationSms: boolean;
+  stockAudioAlert: boolean;
+  stockAudioTone: "chime" | "bell" | "marimba" | "ping";
+  stockAudioVolume: number;
+  eodReportEnabled: boolean;
+  eodBusinessClosingTime: string;
+  eodAdminEmail: string;
+  eodAdminPhone: string;
+  business247: boolean;
+  businessOpeningTime: string;
+  businessClosingTime: string;
+  businessHoursSchedule: MobileDaySchedule[];
+  businessHoursNotes: string;
+  printAfterSale: boolean;
+  paperSize: "thermal_80mm" | "a4";
+}
+
+export function parseDbBool(val: unknown, fallback = false): boolean {
+  if (val === null || val === undefined) return fallback;
+  if (typeof val === "boolean") return val;
+  if (typeof val === "number") return val !== 0;
+  const s = String(val).trim().toLowerCase();
+  if (s === "true" || s === "1" || s === "yes") return true;
+  if (s === "false" || s === "0" || s === "no") return false;
+  return fallback;
+}
+
+export function parseBusinessHoursSchedule(raw?: unknown): MobileDaySchedule[] {
+  if (Array.isArray(raw) && raw.length === 7) {
+    return raw.map((d: any, idx: number) => ({
+      day: String(d?.day || DEFAULT_MOBILE_WEEKLY_SCHEDULE[idx].day),
+      label: String(d?.label || DEFAULT_MOBILE_WEEKLY_SCHEDULE[idx].label),
+      closed: Boolean(d?.closed),
+      openTime: String(d?.openTime || "08:00"),
+      closeTime: String(d?.closeTime || "18:00"),
+      ...(d?.is24Hours !== undefined ? { is24Hours: Boolean(d.is24Hours) } : {}),
+    }));
+  }
+  if (typeof raw === "string" && raw.trim()) {
+    try {
+      const parsed = JSON.parse(raw);
+      if (
+        Array.isArray(parsed) &&
+        parsed.length === 7 &&
+        parsed.every(
+          (d) =>
+            typeof d?.day === "string" &&
+            typeof d?.openTime === "string" &&
+            typeof d?.closeTime === "string",
+        )
+      ) {
+        return parsed.map((d: any, idx: number) => ({
+          day: String(d.day || DEFAULT_MOBILE_WEEKLY_SCHEDULE[idx].day),
+          label: String(d.label || DEFAULT_MOBILE_WEEKLY_SCHEDULE[idx].label),
+          closed: Boolean(d.closed),
+          openTime: String(d.openTime || "08:00"),
+          closeTime: String(d.closeTime || "18:00"),
+          ...(d.is24Hours !== undefined ? { is24Hours: Boolean(d.is24Hours) } : {}),
+        }));
+      }
+    } catch {
+      // fall through to default
+    }
+  }
+  return DEFAULT_MOBILE_WEEKLY_SCHEDULE.map((d) => ({ ...d }));
+}
+
+export function normalizeTone(
+  val: unknown,
+): "chime" | "bell" | "marimba" | "ping" {
+  if (val === "bell" || val === "marimba" || val === "ping") return val;
+  return "chime";
+}
+
+export function normalizePaperSize(val: unknown): "thermal_80mm" | "a4" {
+  return val === "a4" ? "a4" : "thermal_80mm";
 }
 
 export function mapSessionUserToMobile(
   session: ServerSessionUser,
+  twoFactor?: {
+    twoFactorEnabled?: boolean;
+    twoFactorMethod?: MobileTwoFactorMethod;
+  },
 ): MobileSessionUser {
   return {
     id: session.id,
@@ -63,7 +185,89 @@ export function mapSessionUserToMobile(
     phonenumber: session.phonenumber || "",
     role: session.role === "admin" ? "admin" : "member",
     lastLoginAt: session.last_login_at ?? null,
+    ...(twoFactor?.twoFactorEnabled !== undefined
+      ? { twoFactorEnabled: twoFactor.twoFactorEnabled }
+      : {}),
+    ...(twoFactor?.twoFactorMethod !== undefined
+      ? { twoFactorMethod: twoFactor.twoFactorMethod }
+      : {}),
   };
+}
+
+export async function getUserTwoFactorFlags(
+  userId: string,
+): Promise<{
+  twoFactorEnabled: boolean;
+  twoFactorMethod: MobileTwoFactorMethod;
+}> {
+  try {
+    const row = await db("users")
+      .where("id", userId)
+      .select("two_factor_enabled", "two_factor_method")
+      .first();
+    return {
+      twoFactorEnabled: parseDbBool(row?.two_factor_enabled, false),
+      twoFactorMethod: row?.two_factor_method === "sms" ? "sms" : "email",
+    };
+  } catch {
+    return { twoFactorEnabled: false, twoFactorMethod: "email" };
+  }
+}
+
+export function mapTwoFactorAccountRow(
+  row: any,
+  currentUserId?: string,
+): MobileStaffTwoFactorAccount {
+  const firstname = String(row.firstname || "").trim();
+  const lastname = String(row.lastname || "").trim();
+  const fullname =
+    `${firstname} ${lastname}`.trim() || String(row.username || "");
+  return {
+    id: String(row.id),
+    username: String(row.username || ""),
+    email: String(row.email || ""),
+    firstname,
+    lastname,
+    fullname,
+    phonenumber: String(row.phonenumber || ""),
+    role: row.role === "admin" ? "admin" : "member",
+    twoFactorEnabled: parseDbBool(row.two_factor_enabled, false),
+    twoFactorMethod: row.two_factor_method === "sms" ? "sms" : "email",
+    twoFactorUpdatedAt: row.two_factor_updated_at
+      ? new Date(row.two_factor_updated_at).toISOString()
+      : null,
+    lastLoginAt: row.last_login_at
+      ? new Date(row.last_login_at).toISOString()
+      : null,
+    isCurrentUser: Boolean(currentUserId && String(row.id) === currentUserId),
+  };
+}
+
+export async function getTwoFactorChannelStatus(
+  tenantId: string,
+): Promise<{ emailConfigured: boolean; smsConfigured: boolean }> {
+  try {
+    const rows = await db("api_settings")
+      .leftJoin("users", "api_settings.user_id", "users.id")
+      .where("api_settings.tenant_id", tenantId)
+      .select(
+        "api_settings.smtp_user",
+        "api_settings.smtp_password",
+        "api_settings.arkessel_api_key",
+      )
+      .orderByRaw("CASE WHEN users.role = 'admin' THEN 0 ELSE 1 END");
+
+    const row = rows[0];
+    if (!row) {
+      return { emailConfigured: false, smsConfigured: false };
+    }
+    return {
+      emailConfigured: Boolean(row.smtp_user && row.smtp_password),
+      smsConfigured: Boolean(row.arkessel_api_key),
+    };
+  } catch {
+    return { emailConfigured: false, smsConfigured: false };
+  }
 }
 
 export async function getTenantStoreProfile(
@@ -91,6 +295,15 @@ export async function getTenantStoreProfile(
     settings = defaults;
   }
 
+  // Postgres/Web stores tax_rate as percentage (0..100, e.g. 1.0 = 1%).
+  // Mobile POS and Mobile StoreProfile standardize taxRate as decimal (0..1, e.g. 0.01 = 1%).
+  const taxRatePercent = Math.max(0, Number(settings?.tax_rate ?? 0));
+  const taxRateDecimal = Number((taxRatePercent / 100).toFixed(4));
+  const rawVolume = Number(settings?.stock_audio_volume ?? 0.5);
+  const volume = Number.isFinite(rawVolume)
+    ? Math.min(1, Math.max(0, rawVolume))
+    : 0.5;
+
   return {
     storeName:
       settings?.business_name ||
@@ -100,8 +313,26 @@ export async function getTenantStoreProfile(
     storePhone: settings?.business_phone || "",
     storeEmail: settings?.business_email || "",
     currency: settings?.currency || "GHS",
-    taxRate: Number(settings?.tax_rate ?? 0),
-    stockAlertThreshold: Number(settings?.stock_alert_threshold ?? 5),
+    taxRate: taxRateDecimal,
+    stockAlertThreshold: Math.max(1, Number(settings?.stock_alert_threshold ?? 5)),
+    language: String(settings?.language || "en"),
+    notificationEmail: parseDbBool(settings?.notification_email, false),
+    notificationPush: parseDbBool(settings?.notification_push, false),
+    notificationSms: parseDbBool(settings?.notification_sms, false),
+    stockAudioAlert: parseDbBool(settings?.stock_audio_alert, true),
+    stockAudioTone: normalizeTone(settings?.stock_audio_tone),
+    stockAudioVolume: volume,
+    eodReportEnabled: parseDbBool(settings?.eod_report_enabled, false),
+    eodBusinessClosingTime: String(settings?.eod_business_closing_time || "18:00"),
+    eodAdminEmail: String(settings?.eod_admin_email || ""),
+    eodAdminPhone: String(settings?.eod_admin_phone || ""),
+    business247: parseDbBool(settings?.business_24_7, false),
+    businessOpeningTime: String(settings?.business_opening_time || "08:00"),
+    businessClosingTime: String(settings?.business_closing_time || "18:00"),
+    businessHoursSchedule: parseBusinessHoursSchedule(settings?.business_hours_schedule),
+    businessHoursNotes: String(settings?.business_hours_notes || ""),
+    printAfterSale: parseDbBool(settings?.print_after_sale, true),
+    paperSize: normalizePaperSize(settings?.paper_size),
   };
 }
 

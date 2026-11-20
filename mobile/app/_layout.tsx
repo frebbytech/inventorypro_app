@@ -187,7 +187,7 @@ function ThemedNavigator() {
           <Stack.Screen
             name="security"
             options={{
-              title: "Security & Sessions",
+              title: "Security & 2FA",
               headerBackTitle: "Account",
             }}
           />

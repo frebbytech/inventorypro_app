@@ -5,6 +5,7 @@ import {
   adjustProductStock as dbAdjustProductStock,
   authenticateWithCredentials,
   bulkCreateProducts as dbBulkCreateProducts,
+  bulkUpdateStaffTwoFactorLocal,
   changeOwnPassword as dbChangeOwnPassword,
   clearAllNotifications as dbClearAllNotifications,
   createCategory as dbCreateCategory,
@@ -21,8 +22,10 @@ import {
   getProductDetail as dbGetProductDetail,
   getSaleReceipt as dbGetSaleReceipt,
   getSalesReport as dbGetSalesReport,
+  getStoreProfile,
   getSupplierDetail as dbGetSupplierDetail,
   getTodayDashboard as dbGetTodayDashboard,
+  getTwoFactorOverviewLocal,
   getUnreadNotificationCount as dbGetUnreadNotificationCount,
   listAuditLogs as dbListAuditLogs,
   listBroadcastMessages as dbListBroadcastMessages,
@@ -53,9 +56,12 @@ import {
   updateEmployee as dbUpdateEmployee,
   updateOwnProfile as dbUpdateOwnProfile,
   updateProduct as dbUpdateProduct,
+  updateStoreBusinessHours,
   updateStoreBusinessProfile,
+  updateStoreNotificationSettings,
   updateStoreStockThreshold,
   updateSupplier as dbUpdateSupplier,
+  updateUserTwoFactorLocal,
 } from "@/db/queries";
 import type {
   AdjustStockInput,
@@ -69,6 +75,7 @@ import type {
   BroadcastRecipient,
   BroadcastRecipientGroup,
   BulkImportProductsResult,
+  BulkUpdateTwoFactorInput,
   CategoryItem,
   ChangePasswordInput,
   CreateCategoryInput,
@@ -99,19 +106,25 @@ import type {
   SalesReportData,
   SaleTransactionSummary,
   SendBroadcastInput,
+  SendDailyReportResult,
   SessionUser,
+  StaffTwoFactorAccount,
   StoreProfile,
   SupplierDetailResponse,
   SupplierItem,
   SupplierTransactionSummary,
   TodayDashboardData,
+  TwoFactorOverviewResponse,
+  UpdateBusinessHoursInput,
   UpdateBusinessSettingsInput,
   UpdateCategoryInput,
   UpdateCustomerInput,
   UpdateEmployeeInput,
   UpdateMyProfileInput,
+  UpdateNotificationSettingsInput,
   UpdateProductInput,
   UpdateSupplierInput,
+  UpdateTwoFactorInput,
   UserSessionItem,
 } from "@/types/domain";
 
@@ -543,6 +556,36 @@ export class ExpoSqliteDrizzleClient implements AuthenticatedApiClient {
     });
   }
 
+  async getTwoFactorOverview(): Promise<TwoFactorOverviewResponse> {
+    const { db, session } = await this.requireSession();
+    return getTwoFactorOverviewLocal(db, session.user.id);
+  }
+
+  async updateUserTwoFactor(
+    input: UpdateTwoFactorInput,
+  ): Promise<StaffTwoFactorAccount> {
+    const { db, session } = await this.requireSession();
+    return updateUserTwoFactorLocal(db, {
+      ...input,
+      actorUserId: session.user.id,
+    });
+  }
+
+  async bulkUpdateStaffTwoFactor(
+    input: BulkUpdateTwoFactorInput,
+  ): Promise<{ updatedCount: number; skippedUsernames: string[] }> {
+    const { db, session } = await this.requireSession();
+    return bulkUpdateStaffTwoFactorLocal(db, {
+      ...input,
+      actorUserId: session.user.id,
+    });
+  }
+
+  async getStoreSettings(): Promise<StoreProfile> {
+    const { db } = await this.requireSession();
+    return getStoreProfile(db);
+  }
+
   async updateStockAlertThreshold(threshold: number): Promise<StoreProfile> {
     const { db, session } = await this.requireSession();
     return updateStoreStockThreshold(db, {
@@ -559,5 +602,31 @@ export class ExpoSqliteDrizzleClient implements AuthenticatedApiClient {
       ...input,
       userId: session.user.id,
     });
+  }
+
+  async updateNotificationSettings(
+    input: UpdateNotificationSettingsInput,
+  ): Promise<StoreProfile> {
+    const { db, session } = await this.requireSession();
+    return updateStoreNotificationSettings(db, {
+      ...input,
+      userId: session.user.id,
+    });
+  }
+
+  async updateBusinessHours(
+    input: UpdateBusinessHoursInput,
+  ): Promise<StoreProfile> {
+    const { db, session } = await this.requireSession();
+    return updateStoreBusinessHours(db, {
+      ...input,
+      userId: session.user.id,
+    });
+  }
+
+  async sendDailyReportNow(_dateStr?: string): Promise<SendDailyReportResult> {
+    throw new Error(
+      "Sending daily EOD reports requires a synced Cloud Workspace connection.",
+    );
   }
 }

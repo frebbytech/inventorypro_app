@@ -12,7 +12,25 @@ const SUPER_ADMIN_COOKIE_NAME = "super_admin_session";
 export default async function proxy(request: NextRequest) {
   const { pathname } = request.nextUrl;
 
-  // Ignore static assets, next internal files, and APIs
+  // Allow cross-origin calls from mobile / Expo Web to /api/mobile/* and /api/upload
+  if (pathname.startsWith("/api/mobile") || pathname === "/api/upload") {
+    const corsHeaders: Record<string, string> = {
+      "Access-Control-Allow-Origin": "*",
+      "Access-Control-Allow-Methods": "GET, POST, PUT, PATCH, DELETE, OPTIONS",
+      "Access-Control-Allow-Headers":
+        "Content-Type, Authorization, X-Client-Mutation-Id",
+    };
+    if (request.method === "OPTIONS") {
+      return new NextResponse(null, { status: 204, headers: corsHeaders });
+    }
+    const res = NextResponse.next();
+    for (const [k, v] of Object.entries(corsHeaders)) {
+      res.headers.set(k, v);
+    }
+    return res;
+  }
+
+  // Ignore static assets, next internal files, and other APIs
   if (
     pathname.startsWith("/_next") ||
     pathname.startsWith("/api") ||

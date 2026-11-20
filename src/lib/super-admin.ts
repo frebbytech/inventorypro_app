@@ -44,6 +44,38 @@ async function initSuperAdminSchema(): Promise<void> {
     });
   }
 
+  const hasPlatformSettings = await db.schema.hasTable("platform_settings");
+  if (!hasPlatformSettings) {
+    await db.schema.createTable("platform_settings", (table) => {
+      table.string("key", 100).primary();
+      table.text("value").nullable();
+      table.string("updated_by_super_admin_id", 64).nullable();
+      table.timestamp("updated_at").nullable();
+    });
+  }
+
+  const envMobileUrl = process.env.MOBILE_API_BASE_URL?.trim();
+  if (envMobileUrl) {
+    const existingPlatformUrl = await db("platform_settings")
+      .where("key", "mobile_server_url")
+      .first("key");
+    if (!existingPlatformUrl) {
+      try {
+        const normalizedEnvUrl = normalizePlatformServerUrl(envMobileUrl);
+        if (normalizedEnvUrl) {
+          await db("platform_settings").insert({
+            key: "mobile_server_url",
+            value: normalizedEnvUrl,
+            updated_by_super_admin_id: ROOT_SUPER_ADMIN_ID,
+            updated_at: new Date().toISOString(),
+          });
+        }
+      } catch {
+        // ignore invalid env fallback during schema bootstrap
+      }
+    }
+  }
+
   const configuredEmail = (
     process.env.SUPER_ADMIN_EMAIL?.trim() || "superadmin@inventorypro.app"
   ).toLowerCase();
@@ -114,6 +146,113 @@ export async function ensureSuperAdminSchema(): Promise<void> {
     throw err;
   });
   return superAdminSchemaPromise;
+}
+
+const MOBILE_SERVER_URL_KEY = "mobile_server_url";
+
+export function normalizePlatformServerUrl(raw: string): string {
+  const trimmed = raw.trim().replace(/\/+$/, "");
+  if (!trimmed) return "";
+  let parsed: URL;
+  try {
+    parsed = new URL(trimmed);
+  } catch {
+    throw new Error(
+      "Enter a valid server URL starting with http:// or https://.",
+    );
+  }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    throw new Error("Server URL must start with http:// or https://.");
+  }
+  const cleanPath =
+    parsed.pathname && parsed.pathname !== "/"
+      ? parsed.pathname.replace(/\/+$/, "")
+      : "";
+  return `${parsed.origin}${cleanPath}`;
+}
+
+export async function getPlatformMobileConfig(): Promise<{
+  serverUrl: string;
+  configuredBySuperAdmin: boolean;
+  updatedAt: string | null;
+  updatedBy: string | null;
+}> {
+  await ensureSuperAdminSchema();
+  const row = await db("platform_settings as ps")
+    .leftJoin("super_admins as sa", "ps.updated_by_super_admin_id", "sa.id")
+    .select("ps.value", "ps.updated_at", "sa.username as updated_by_username")
+    .where("ps.key", MOBILE_SERVER_URL_KEY)
+    .first();
+
+  const savedValue = typeof row?.value === "string" ? row.value.trim() : "";
+  if (savedValue) {
+    return {
+      serverUrl: savedValue.replace(/\/+$/, ""),
+      configuredBySuperAdmin: true,
+      updatedAt: row?.updated_at ? String(row.updated_at) : null,
+      updatedBy: row?.updated_by_username
+        ? String(row.updated_by_username)
+        : null,
+    };
+  }
+
+  const envFallback =
+    process.env.MOBILE_API_BASE_URL?.trim() ||
+    process.env.NEXT_PUBLIC_APP_URL?.trim() ||
+    "";
+
+  return {
+    serverUrl: envFallback.replace(/\/+$/, ""),
+    configuredBySuperAdmin: false,
+    updatedAt: null,
+    updatedBy: null,
+  };
+}
+
+export async function setPlatformMobileServerUrl(
+  rawUrl: string,
+  superAdminId: string,
+): Promise<{
+  serverUrl: string;
+  configuredBySuperAdmin: boolean;
+  updatedAt: string | null;
+  updatedBy: string | null;
+}> {
+  await ensureSuperAdminSchema();
+  const normalized = normalizePlatformServerUrl(rawUrl);
+  const nowIso = new Date().toISOString();
+
+  const existing = await db("platform_settings")
+    .where("key", MOBILE_SERVER_URL_KEY)
+    .first("key");
+
+  if (!normalized) {
+    if (existing) {
+      await db("platform_settings")
+        .where("key", MOBILE_SERVER_URL_KEY)
+        .del();
+    }
+    return getPlatformMobileConfig();
+  }
+
+  if (existing) {
+    await db("platform_settings")
+      .where("key", MOBILE_SERVER_URL_KEY)
+      .update({
+        value: normalized,
+        updated_by_super_admin_id: superAdminId,
+        updated_at: nowIso,
+      });
+  } else {
+    await db("platform_settings").insert({
+      key: MOBILE_SERVER_URL_KEY,
+      value: normalized,
+      updated_by_super_admin_id: superAdminId,
+      updated_at: nowIso,
+    });
+  }
+
+  return getPlatformMobileConfig();
 }
 
 export async function createSuperAdminJWT(payload: {

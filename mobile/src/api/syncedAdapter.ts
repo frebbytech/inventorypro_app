@@ -2,6 +2,7 @@ import { ensureDbReady } from "@/db/client";
 import {
   adjustProductStock as dbAdjustProductStock,
   bulkCreateProducts as dbBulkCreateProducts,
+  bulkUpdateStaffTwoFactorLocal,
   clearAllNotifications as dbClearAllNotifications,
   createCategory as dbCreateCategory,
   createCustomer as dbCreateCustomer,
@@ -16,8 +17,10 @@ import {
   getProductDetail as dbGetProductDetail,
   getSaleReceipt as dbGetSaleReceipt,
   getSalesReport as dbGetSalesReport,
+  getStoreProfile,
   getSupplierDetail as dbGetSupplierDetail,
   getTodayDashboard as dbGetTodayDashboard,
+  getTwoFactorOverviewLocal,
   getUnreadNotificationCount as dbGetUnreadNotificationCount,
   listAuditLogs as dbListAuditLogs,
   listBroadcastMessages as dbListBroadcastMessages,
@@ -41,9 +44,12 @@ import {
   updateCategory as dbUpdateCategory,
   updateCustomer as dbUpdateCustomer,
   updateProduct as dbUpdateProduct,
+  updateStoreBusinessHours,
   updateStoreBusinessProfile,
+  updateStoreNotificationSettings,
   updateStoreStockThreshold,
   updateSupplier as dbUpdateSupplier,
+  updateUserTwoFactorLocal,
 } from "@/db/queries";
 import { enqueueOutboxMutation } from "@/db/syncStore";
 import {
@@ -64,6 +70,7 @@ import type {
   BroadcastRecipient,
   BroadcastRecipientGroup,
   BulkImportProductsResult,
+  BulkUpdateTwoFactorInput,
   CategoryItem,
   ChangePasswordInput,
   CreateCategoryInput,
@@ -94,19 +101,25 @@ import type {
   SalesReportData,
   SaleTransactionSummary,
   SendBroadcastInput,
+  SendDailyReportResult,
   SessionUser,
+  StaffTwoFactorAccount,
   StoreProfile,
   SupplierDetailResponse,
   SupplierItem,
   SupplierTransactionSummary,
   TodayDashboardData,
+  TwoFactorOverviewResponse,
+  UpdateBusinessHoursInput,
   UpdateBusinessSettingsInput,
   UpdateCategoryInput,
   UpdateCustomerInput,
   UpdateEmployeeInput,
   UpdateMyProfileInput,
+  UpdateNotificationSettingsInput,
   UpdateProductInput,
   UpdateSupplierInput,
+  UpdateTwoFactorInput,
   UserSessionItem,
 } from "@/types/domain";
 
@@ -851,6 +864,60 @@ export class SyncedApiClient implements AuthenticatedApiClient {
     return this.http.changeMyPassword(input);
   }
 
+  getTwoFactorOverview(): Promise<TwoFactorOverviewResponse> {
+    return this.readWithOfflineFallback(
+      () => this.http.getTwoFactorOverview(),
+      async () =>
+        getTwoFactorOverviewLocal(
+          await ensureDbReady(),
+          await this.requireLocalActorUserId(),
+        ),
+    );
+  }
+
+  async updateUserTwoFactor(
+    input: UpdateTwoFactorInput,
+  ): Promise<StaffTwoFactorAccount> {
+    const updated = await this.http.updateUserTwoFactor(input);
+    try {
+      const db = await ensureDbReady();
+      updateUserTwoFactorLocal(db, {
+        userId: updated.id,
+        enabled: updated.twoFactorEnabled,
+        method: updated.twoFactorMethod,
+        actorUserId: await this.requireLocalActorUserId(),
+      });
+    } catch {
+      // ignore local cache update errors
+    }
+    this.onLocalDataChanged?.();
+    return updated;
+  }
+
+  async bulkUpdateStaffTwoFactor(
+    input: BulkUpdateTwoFactorInput,
+  ): Promise<{ updatedCount: number; skippedUsernames: string[] }> {
+    const res = await this.http.bulkUpdateStaffTwoFactor(input);
+    try {
+      const db = await ensureDbReady();
+      bulkUpdateStaffTwoFactorLocal(db, {
+        ...input,
+        actorUserId: await this.requireLocalActorUserId(),
+      });
+    } catch {
+      // ignore local cache update errors
+    }
+    this.onLocalDataChanged?.();
+    return res;
+  }
+
+  getStoreSettings(): Promise<StoreProfile> {
+    return this.readWithOfflineFallback(
+      () => this.http.getStoreSettings(),
+      async () => getStoreProfile(await ensureDbReady()),
+    );
+  }
+
   async updateStockAlertThreshold(threshold: number): Promise<StoreProfile> {
     const updated = await this.http.updateStockAlertThreshold(threshold);
     try {
@@ -881,5 +948,43 @@ export class SyncedApiClient implements AuthenticatedApiClient {
     }
     this.onLocalDataChanged?.();
     return updated;
+  }
+
+  async updateNotificationSettings(
+    input: UpdateNotificationSettingsInput,
+  ): Promise<StoreProfile> {
+    const updated = await this.http.updateNotificationSettings(input);
+    try {
+      const db = await ensureDbReady();
+      updateStoreNotificationSettings(db, {
+        ...input,
+        userId: await this.requireLocalActorUserId(),
+      });
+    } catch {
+      // ignore local cache update errors
+    }
+    this.onLocalDataChanged?.();
+    return updated;
+  }
+
+  async updateBusinessHours(
+    input: UpdateBusinessHoursInput,
+  ): Promise<StoreProfile> {
+    const updated = await this.http.updateBusinessHours(input);
+    try {
+      const db = await ensureDbReady();
+      updateStoreBusinessHours(db, {
+        ...input,
+        userId: await this.requireLocalActorUserId(),
+      });
+    } catch {
+      // ignore local cache update errors
+    }
+    this.onLocalDataChanged?.();
+    return updated;
+  }
+
+  sendDailyReportNow(dateStr?: string): Promise<SendDailyReportResult> {
+    return this.http.sendDailyReportNow(dateStr);
   }
 }

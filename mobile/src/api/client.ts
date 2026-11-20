@@ -6,6 +6,7 @@ import type {
   BroadcastRecipient,
   BroadcastRecipientGroup,
   BulkImportProductsResult,
+  BulkUpdateTwoFactorInput,
   CategoryItem,
   ChangePasswordInput,
   CreateCategoryInput,
@@ -36,19 +37,25 @@ import type {
   SalesReportData,
   SaleTransactionSummary,
   SendBroadcastInput,
+  SendDailyReportResult,
   SessionUser,
+  StaffTwoFactorAccount,
   StoreProfile,
   SupplierDetailResponse,
   SupplierItem,
   SupplierTransactionSummary,
   TodayDashboardData,
+  TwoFactorOverviewResponse,
+  UpdateBusinessHoursInput,
   UpdateBusinessSettingsInput,
   UpdateCategoryInput,
   UpdateCustomerInput,
   UpdateEmployeeInput,
   UpdateMyProfileInput,
+  UpdateNotificationSettingsInput,
   UpdateProductInput,
   UpdateSupplierInput,
+  UpdateTwoFactorInput,
   UserSessionItem,
 } from "@/types/domain";
 
@@ -58,6 +65,7 @@ import type {
  */
 export const API_ENDPOINTS = {
   health: "GET /api/mobile/v1/health",
+  platformConfig: "GET /api/mobile/v1/platform/config",
   authLogin: "POST /api/mobile/v1/auth/login",
   authMe: "GET /api/mobile/v1/auth/me",
   authLogout: "POST /api/mobile/v1/auth/logout",
@@ -95,6 +103,7 @@ export const API_ENDPOINTS = {
   employeeCreate: "POST /api/mobile/v1/employees",
   employeeUpdate: "PATCH /api/mobile/v1/employees/:id",
   dailyReport: "GET /api/mobile/v1/reports/daily?date=",
+  dailyReportSendNow: "POST /api/mobile/v1/reports/daily/send",
   auditLogs: "GET /api/mobile/v1/audit-logs?q=&action=&limit=",
   notificationsList: "GET /api/mobile/v1/notifications?unreadOnly=&limit=",
   notificationsUnreadCount: "GET /api/mobile/v1/notifications/unread-count",
@@ -110,8 +119,14 @@ export const API_ENDPOINTS = {
   securitySessionsRevokeOthers: "POST /api/mobile/v1/security/sessions/revoke-others",
   securityProfileUpdate: "PATCH /api/mobile/v1/security/profile",
   securityPasswordChange: "POST /api/mobile/v1/security/password",
+  securityTwoFactorGet: "GET /api/mobile/v1/security/two-factor",
+  securityTwoFactorUpdate: "PATCH /api/mobile/v1/security/two-factor",
+  securityTwoFactorBulk: "POST /api/mobile/v1/security/two-factor/bulk",
+  storeSettingsGet: "GET /api/mobile/v1/settings",
   storeThresholdUpdate: "PATCH /api/mobile/v1/settings/stock-threshold",
   storeBusinessUpdate: "PATCH /api/mobile/v1/settings/business",
+  storeNotificationsUpdate: "PATCH /api/mobile/v1/settings/notifications",
+  storeHoursUpdate: "PATCH /api/mobile/v1/settings/hours",
 } as const;
 
 export const PROPOSED_ENDPOINTS = API_ENDPOINTS;
@@ -196,6 +211,17 @@ export interface InventoryProApiClient {
   revokeOtherUserSessions(): Promise<{ revokedCount: number }>;
   updateMyProfile(input: UpdateMyProfileInput): Promise<SessionUser>;
   changeMyPassword(input: ChangePasswordInput): Promise<void>;
+  getTwoFactorOverview(): Promise<TwoFactorOverviewResponse>;
+  updateUserTwoFactor(input: UpdateTwoFactorInput): Promise<StaffTwoFactorAccount>;
+  bulkUpdateStaffTwoFactor(
+    input: BulkUpdateTwoFactorInput,
+  ): Promise<{ updatedCount: number; skippedUsernames: string[] }>;
+  getStoreSettings(): Promise<StoreProfile>;
   updateStockAlertThreshold(threshold: number): Promise<StoreProfile>;
   updateBusinessSettings(input: UpdateBusinessSettingsInput): Promise<StoreProfile>;
+  updateNotificationSettings(
+    input: UpdateNotificationSettingsInput,
+  ): Promise<StoreProfile>;
+  updateBusinessHours(input: UpdateBusinessHoursInput): Promise<StoreProfile>;
+  sendDailyReportNow(dateStr?: string): Promise<SendDailyReportResult>;
 }
