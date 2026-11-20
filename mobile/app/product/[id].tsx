@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
+  Image,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -30,6 +31,7 @@ import {
   CardHeader,
   CardTitle,
   Input,
+  useToast,
 } from "@/components/ui";
 import { useTheme } from "@/theme";
 import { LOW_STOCK_THRESHOLD, type ProductDetailResponse } from "@/types/domain";
@@ -39,12 +41,14 @@ import {
   formatCurrency,
   formatDateTime,
 } from "@/utils/formatters";
+import { resolveProductImageUri } from "@/utils/productImage";
 
 export default function ProductDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const { theme } = useTheme();
   const api = useApiClient();
-  const { store } = useAuth();
+  const { store, serverUrl } = useAuth();
+  const toast = useToast();
   const router = useRouter();
   const { colors, spacing, radii, typography, fontFamilies } = theme;
 
@@ -56,6 +60,7 @@ export default function ProductDetailScreen() {
   const [adjustReason, setAdjustReason] = useState("");
   const [adjustError, setAdjustError] = useState<string | null>(null);
   const [adjustSuccess, setAdjustSuccess] = useState<string | null>(null);
+  const [imageError, setImageError] = useState(false);
   const hasLoadedRef = useRef(false);
 
   const loadDetail = useCallback(
@@ -80,6 +85,10 @@ export default function ProductDetailScreen() {
     hasLoadedRef.current = false;
     void loadDetail();
   }, [loadDetail]);
+
+  useEffect(() => {
+    setImageError(false);
+  }, [detail?.product.photoUrl]);
 
   useFocusEffect(
     useCallback(() => {
@@ -130,13 +139,13 @@ export default function ProductDetailScreen() {
       });
       setDetail({ ...detail, product: updated });
       setCustomQty("");
-      setAdjustSuccess(
-        `Stock updated (${delta >= 0 ? `+${delta}` : delta}) → ${updated.stockQuantity} units`,
-      );
+      const successMsg = `Stock updated (${delta >= 0 ? `+${delta}` : delta}) → ${updated.stockQuantity} units`;
+      setAdjustSuccess(successMsg);
+      toast.success("Stock adjusted", `${detail.product.name}: ${successMsg}`);
     } catch (err) {
-      setAdjustError(
-        err instanceof Error ? err.message : "Failed to update stock.",
-      );
+      const msg = err instanceof Error ? err.message : "Failed to update stock.";
+      setAdjustError(msg);
+      toast.error("Stock adjustment failed", msg);
     } finally {
       setAdjusting(false);
     }
@@ -152,15 +161,19 @@ export default function ProductDetailScreen() {
         active: !detail.product.active,
       });
       setDetail({ ...detail, product: updated });
-      setAdjustSuccess(
-        updated.active
-          ? "Product is now Active and visible in POS."
-          : "Product disabled and hidden from New Sale.",
+      const statusMsg = updated.active
+        ? "Product is now Active and visible in POS."
+        : "Product disabled and hidden from New Sale.";
+      setAdjustSuccess(statusMsg);
+      toast.success(
+        updated.active ? "Product activated" : "Product disabled",
+        `${updated.name}: ${statusMsg}`,
       );
     } catch (err) {
-      setAdjustError(
-        err instanceof Error ? err.message : "Failed to update product status.",
-      );
+      const msg =
+        err instanceof Error ? err.message : "Failed to update product status.";
+      setAdjustError(msg);
+      toast.error("Status update failed", msg);
     } finally {
       setTogglingActive(false);
     }
@@ -182,11 +195,13 @@ export default function ProductDetailScreen() {
       });
       setDetail({ ...detail, product: updated });
       setCustomQty("");
-      setAdjustSuccess(`Stock count set to ${updated.stockQuantity} units`);
+      const countMsg = `Stock count set to ${updated.stockQuantity} units`;
+      setAdjustSuccess(countMsg);
+      toast.success("Stock count updated", `${detail.product.name}: ${countMsg}`);
     } catch (err) {
-      setAdjustError(
-        err instanceof Error ? err.message : "Failed to set stock count.",
-      );
+      const msg = err instanceof Error ? err.message : "Failed to set stock count.";
+      setAdjustError(msg);
+      toast.error("Stock update failed", msg);
     } finally {
       setAdjusting(false);
     }
@@ -229,6 +244,33 @@ export default function ProductDetailScreen() {
             />
             {api.isDemo ? <Badge label="DEMO" variant="outline" /> : null}
           </View>
+
+          {(() => {
+            const resolvedPhotoUri = resolveProductImageUri(
+              product.photoUrl,
+              serverUrl,
+            );
+            if (!resolvedPhotoUri || imageError) return null;
+            return (
+              <View
+                style={[
+                  styles.heroPhotoWrap,
+                  {
+                    backgroundColor: colors.muted,
+                    borderColor: colors.border,
+                    borderRadius: radii.lg,
+                  },
+                ]}
+              >
+                <Image
+                  source={{ uri: resolvedPhotoUri }}
+                  style={styles.heroPhoto}
+                  resizeMode="cover"
+                  onError={() => setImageError(true)}
+                />
+              </View>
+            );
+          })()}
 
           <View>
             <Text style={[typography.caption, { color: colors.mutedForeground }]}>
@@ -615,6 +657,16 @@ const styles = StyleSheet.create({
     alignItems: "center",
     flexWrap: "wrap",
     gap: 8,
+  },
+  heroPhotoWrap: {
+    width: "100%",
+    height: 184,
+    borderWidth: 1,
+    overflow: "hidden",
+  },
+  heroPhoto: {
+    width: "100%",
+    height: "100%",
   },
   barcodePill: {
     flexDirection: "row",

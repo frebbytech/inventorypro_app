@@ -616,6 +616,10 @@ export async function updateProduct(
       entityType: "product",
       entityId: productData.id,
       action: "upsert",
+      payload:
+        productData.photo_url !== undefined
+          ? { photoUrl: updateFields.photo_url ?? "" }
+          : undefined,
       actorUserId: userId,
     });
 

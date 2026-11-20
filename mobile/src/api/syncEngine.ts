@@ -1,5 +1,7 @@
+import { eq } from "drizzle-orm";
 import { AppState, type AppStateStatus } from "react-native";
 import { ensureDbReady } from "@/db/client";
+import { products } from "@/db/schema";
 import {
   applyRemoteSyncEvent,
   clearFailedOutboxItems,
@@ -12,6 +14,10 @@ import {
   replaceLocalSnapshotWithCloud,
   setSyncMetaValue,
 } from "@/db/syncStore";
+import {
+  deleteLocalProductImageIfManaged,
+  isLocalDeviceImageUri,
+} from "@/utils/productImage";
 import { ApiError, type HttpApiClient } from "./httpAdapter";
 import {
   getStoredSyncCursor,
@@ -187,6 +193,20 @@ export class SyncEngine {
     this.setState({ status: "syncing", lastError: null });
     const db = await ensureDbReady();
     const payload = exportLocalDataForMerge(db);
+
+    for (const product of payload.products) {
+      if (product.photoUrl && isLocalDeviceImageUri(product.photoUrl)) {
+        const localUri = product.photoUrl;
+        try {
+          product.photoUrl = await this.httpClient.uploadProductImage(localUri);
+          deleteLocalProductImageIfManaged(localUri);
+        } catch {
+          // Skip unuploadable local URI rather than aborting merge
+          product.photoUrl = undefined;
+        }
+      }
+    }
+
     const mutationId = `merge-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     const merge = await this.httpClient.syncMerge(payload, mutationId);
     const snapshot = await this.bootstrapAndHydrate();
@@ -225,11 +245,48 @@ export class SyncEngine {
       for (const item of items) {
         markOutboxItemState(db, item.id, "processing");
         try {
+          let bodyToSend = item.payloadJson;
+          let uploadedPhotoUrl: string | null = null;
+          let originalLocalPhotoUri: string | null = null;
+
+          if (
+            item.entityType === "product" &&
+            (item.operation === "create" || item.operation === "update")
+          ) {
+            try {
+              const parsed = JSON.parse(item.payloadJson) as Record<string, unknown>;
+              if (
+                typeof parsed?.photoUrl === "string" &&
+                isLocalDeviceImageUri(parsed.photoUrl)
+              ) {
+                originalLocalPhotoUri = parsed.photoUrl;
+                uploadedPhotoUrl = await this.httpClient.uploadProductImage(
+                  originalLocalPhotoUri,
+                );
+                parsed.photoUrl = uploadedPhotoUrl;
+                bodyToSend = JSON.stringify(parsed);
+              }
+            } catch (uploadOrParseErr) {
+              if (originalLocalPhotoUri) {
+                throw uploadOrParseErr;
+              }
+            }
+          }
+
           await this.httpClient.rawRequest(item.endpoint, {
             method: item.method,
-            body: item.payloadJson,
+            body: bodyToSend,
             clientMutationId: item.clientMutationId,
           });
+
+          if (uploadedPhotoUrl && originalLocalPhotoUri) {
+            db.update(products)
+              .set({ photoUrl: uploadedPhotoUrl })
+              .where(eq(products.photoUrl, originalLocalPhotoUri))
+              .run();
+            deleteLocalProductImageIfManaged(originalLocalPhotoUri);
+          }
+
           removeOutboxItem(db, item.id);
         } catch (err) {
           if (err instanceof ApiError && err.status >= 400 && err.status < 500 && err.status !== 408 && err.status !== 429) {

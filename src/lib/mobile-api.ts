@@ -214,6 +214,7 @@ export function mapProductRow(row: any) {
     categoryId: String(row.category_id ?? ""),
     categoryName: String(row.category_name ?? "General"),
     barcode: String(row.barcode ?? ""),
+    photoUrl: String(row.photo_url ?? ""),
     costPrice,
     unitPrice,
     stockQuantity,

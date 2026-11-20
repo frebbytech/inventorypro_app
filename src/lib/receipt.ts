@@ -421,10 +421,10 @@ export function generateReceiptPDF(saleData: SaleData, items: SaleItem[]) {
   // Auto‑print and iframe handling (kept as in your original)
   doc.autoPrint();
 
-  var blob = doc.output("blob");
-  var blobUrl = URL.createObjectURL(blob);
+  const blob = doc.output("blob");
+  const blobUrl = URL.createObjectURL(blob);
 
-  var iframe = document.createElement("iframe");
+  const iframe = document.createElement("iframe");
   iframe.style.position = "fixed";
   iframe.style.width = "0";
   iframe.style.height = "0";

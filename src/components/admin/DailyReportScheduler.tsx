@@ -8,12 +8,10 @@ import { useEffect } from "react";
  */
 export function DailyReportScheduler() {
   useEffect(() => {
-    let timerId: NodeJS.Timeout;
-
     const runCheck = async () => {
       try {
         // await checkAndSendEODReportAuto();
-      } catch (err) {
+      } catch {
         // Silent background check
       }
     };
@@ -22,10 +20,10 @@ export function DailyReportScheduler() {
     runCheck();
 
     // Re-check every 15 minutes (900,000 ms)
-    timerId = setInterval(runCheck, 15 * 60 * 1000);
+    const timerId = setInterval(runCheck, 15 * 60 * 1000);
 
     return () => {
-      if (timerId) clearInterval(timerId);
+      clearInterval(timerId);
     };
   }, []);
 

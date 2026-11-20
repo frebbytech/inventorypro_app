@@ -19,7 +19,7 @@ export type ButtonVariant =
   | "ghost"
   | "link";
 
-export type ButtonSize = "default" | "sm" | "lg" | "icon";
+export type ButtonSize = "default" | "md" | "sm" | "lg" | "icon";
 
 export interface ButtonProps extends Omit<PressableProps, "style"> {
   title?: string;
@@ -92,13 +92,14 @@ export function Button({
     { height: number; paddingHorizontal: number; fontSize: number; width?: number }
   > = {
     default: { height: 44, paddingHorizontal: spacing.lg, fontSize: 14 },
+    md: { height: 44, paddingHorizontal: spacing.lg, fontSize: 14 },
     sm: { height: 34, paddingHorizontal: spacing.md + 2, fontSize: 12 },
     lg: { height: 48, paddingHorizontal: spacing["2xl"], fontSize: 16 },
     icon: { height: 40, width: 40, paddingHorizontal: 0, fontSize: 14 },
   };
 
-  const v = variantStyles[variant];
-  const s = sizeStyles[size];
+  const v = variantStyles[variant] ?? variantStyles.default;
+  const s = sizeStyles[size] ?? sizeStyles.default;
 
   return (
     <Pressable

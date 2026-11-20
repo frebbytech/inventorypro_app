@@ -110,6 +110,7 @@ export function exportLocalDataForMerge(db: ExpoSqliteDrizzleDb): SyncMergePaylo
       name: p.name,
       description: p.description ?? "",
       barcode: p.barcode ?? "",
+      photoUrl: p.photoUrl || undefined,
       costPrice: Number(p.costPrice) || 0,
       unitPrice: Number(p.unitPrice) || 0,
       stockQuantity: Math.max(0, Math.trunc(Number(p.stockQuantity) || 0)),
@@ -347,7 +348,7 @@ export function replaceLocalSnapshotWithCloud(
           userId: ownerId,
           categoryId: resolvedCategoryId,
           name: p.name,
-          photoUrl: "",
+          photoUrl: p.photoUrl || "",
           barcode: p.barcode || "",
           description: p.description || "",
           costPrice: Math.max(0, Number(p.costPrice) || 0),
@@ -518,13 +519,23 @@ export function applyRemoteSyncEvent(
       event.entityType === "product" &&
       (event.action === "stock_delta" || event.action === "upsert") &&
       event.entityId &&
-      typeof payload.stockQuantity === "number"
+      (typeof payload.stockQuantity === "number" ||
+        typeof payload.photoUrl === "string")
     ) {
+      const productPatch: Partial<typeof products.$inferInsert> = {
+        updatedAt: nowIso,
+      };
+      if (typeof payload.stockQuantity === "number") {
+        productPatch.stockQuantity = Math.max(
+          0,
+          Math.trunc(Number(payload.stockQuantity)),
+        );
+      }
+      if (typeof payload.photoUrl === "string") {
+        productPatch.photoUrl = payload.photoUrl;
+      }
       tx.update(products)
-        .set({
-          stockQuantity: Math.max(0, Math.trunc(Number(payload.stockQuantity))),
-          updatedAt: nowIso,
-        })
+        .set(productPatch)
         .where(eq(products.id, event.entityId))
         .run();
     } else if (event.entityType === "settings" && event.action === "upsert") {

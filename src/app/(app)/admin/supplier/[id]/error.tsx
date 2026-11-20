@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect } from "react";
+import Link from "next/link";
 
 export default function Error({ error, reset }: { error: Error; reset: () => void }) {
   useEffect(() => {
@@ -21,9 +22,9 @@ export default function Error({ error, reset }: { error: Error; reset: () => voi
         >
           Try again
         </button>
-        <a href="/admin/supplier" style={{ padding: "0.75rem 1.25rem", textDecoration: "none" }}>
+        <Link href="/admin/supplier" style={{ padding: "0.75rem 1.25rem", textDecoration: "none" }}>
           Back to suppliers
-        </a>
+        </Link>
       </div>
     </div>
   );

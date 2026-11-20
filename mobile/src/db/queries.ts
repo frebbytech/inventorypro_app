@@ -91,6 +91,7 @@ interface JoinedProductRow {
   categoryId: string;
   categoryName: string;
   barcode: string | null;
+  photoUrl: string | null;
   costPrice: number;
   unitPrice: number;
   stockQuantity: number;
@@ -109,6 +110,7 @@ function mapProductRow(row: JoinedProductRow): ProductItem {
     categoryId: row.categoryId,
     categoryName: row.categoryName,
     barcode: row.barcode || "",
+    photoUrl: row.photoUrl || "",
     costPrice: Number(row.costPrice) || 0,
     unitPrice,
     stockQuantity,
@@ -656,6 +658,7 @@ export function listProducts(
       categoryId: products.categoryId,
       categoryName: productCategories.name,
       barcode: products.barcode,
+      photoUrl: products.photoUrl,
       costPrice: products.costPrice,
       unitPrice: products.unitPrice,
       stockQuantity: products.stockQuantity,
@@ -691,6 +694,7 @@ export function getProductDetail(
       categoryId: products.categoryId,
       categoryName: productCategories.name,
       barcode: products.barcode,
+      photoUrl: products.photoUrl,
       costPrice: products.costPrice,
       unitPrice: products.unitPrice,
       stockQuantity: products.stockQuantity,
@@ -758,6 +762,7 @@ export function findProductByBarcode(
       categoryId: products.categoryId,
       categoryName: productCategories.name,
       barcode: products.barcode,
+      photoUrl: products.photoUrl,
       costPrice: products.costPrice,
       unitPrice: products.unitPrice,
       stockQuantity: products.stockQuantity,
@@ -851,6 +856,7 @@ export function adjustProductStock(
         categoryId: products.categoryId,
         categoryName: productCategories.name,
         barcode: products.barcode,
+        photoUrl: products.photoUrl,
         costPrice: products.costPrice,
         unitPrice: products.unitPrice,
         stockQuantity: products.stockQuantity,
@@ -1609,6 +1615,7 @@ export function bulkCreateProducts(
       }
 
       const barcode = raw.barcode?.trim() || "";
+      const photoUrl = raw.photoUrl?.trim() || "";
       const description = raw.description?.trim() || "";
       const isActive = raw.active !== false ? 1 : 0;
       const productId = generateId("prod");
@@ -1619,6 +1626,7 @@ export function bulkCreateProducts(
           userId: input.userId,
           categoryId: category.id,
           name,
+          photoUrl,
           barcode,
           description,
           costPrice: Number(costPrice.toFixed(2)),
@@ -1655,6 +1663,7 @@ export function bulkCreateProducts(
         categoryId: category.id,
         categoryName: category.name,
         barcode,
+        photoUrl,
         costPrice: Number(costPrice.toFixed(2)),
         unitPrice: Number(unitPrice.toFixed(2)),
         stockQuantity,
@@ -1779,6 +1788,7 @@ export function updateProduct(
         name: products.name,
         description: products.description,
         barcode: products.barcode,
+        photoUrl: products.photoUrl,
         costPrice: products.costPrice,
         unitPrice: products.unitPrice,
         lowStockThreshold: products.lowStockThreshold,
@@ -1881,6 +1891,10 @@ export function updateProduct(
       input.description !== undefined
         ? input.description.trim()
         : existing.description || "";
+    const nextPhotoUrl =
+      input.photoUrl !== undefined
+        ? input.photoUrl.trim()
+        : existing.photoUrl || "";
     const nextIsActive =
       input.active !== undefined ? (input.active ? 1 : 0) : existing.isActive;
 
@@ -1892,6 +1906,7 @@ export function updateProduct(
         name: nextName,
         categoryId: nextCategoryId,
         barcode: nextBarcode,
+        photoUrl: nextPhotoUrl,
         description: nextDescription,
         costPrice: cleanCost,
         unitPrice: cleanUnit,
@@ -1913,6 +1928,7 @@ export function updateProduct(
           name: existing.name,
           category_id: existing.categoryId,
           barcode: existing.barcode || "",
+          photo_url: existing.photoUrl || "",
           cost_price: Number(existing.costPrice),
           unit_price: Number(existing.unitPrice),
           low_stock_threshold: existing.lowStockThreshold,
@@ -1922,6 +1938,7 @@ export function updateProduct(
           name: nextName,
           category_id: nextCategoryId,
           barcode: nextBarcode,
+          photo_url: nextPhotoUrl,
           cost_price: cleanCost,
           unit_price: cleanUnit,
           low_stock_threshold: nextThreshold,
@@ -1938,6 +1955,7 @@ export function updateProduct(
         categoryId: products.categoryId,
         categoryName: productCategories.name,
         barcode: products.barcode,
+        photoUrl: products.photoUrl,
         costPrice: products.costPrice,
         unitPrice: products.unitPrice,
         stockQuantity: products.stockQuantity,

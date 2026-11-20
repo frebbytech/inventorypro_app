@@ -30,7 +30,7 @@ import { useApiClient } from "@/api/ApiProvider";
 import { useAuth } from "@/api/AuthProvider";
 import { EmptyState } from "@/components/EmptyState";
 import { LoadingState } from "@/components/LoadingState";
-import { Badge, Button, Card, Input } from "@/components/ui";
+import { Badge, Button, Card, Input, useToast } from "@/components/ui";
 import { useTheme } from "@/theme";
 import type {
   BroadcastChannel,
@@ -62,6 +62,7 @@ export default function MessagesScreen() {
   const { theme } = useTheme();
   const api = useApiClient();
   const { refreshUnreadNotifications } = useAuth();
+  const toast = useToast();
   const { colors, spacing, radii, typography, fontFamilies } = theme;
 
   const [messages, setMessages] = useState<BroadcastMessageItem[]>([]);
@@ -220,6 +221,12 @@ export default function MessagesScreen() {
       setMessages((prev) => [created, ...prev]);
       setComposeOpen(false);
       await refreshUnreadNotifications();
+      toast.success(
+        "Broadcast sent",
+        `Delivered to ${created.recipientCount} ${
+          created.recipientCount === 1 ? "recipient" : "recipients"
+        }.`,
+      );
     } catch (err) {
       setFormError(
         err instanceof Error ? err.message : "Failed to send broadcast.",

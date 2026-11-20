@@ -1,10 +1,12 @@
-import React from "react";
-import { Pressable, StyleSheet, Text, View } from "react-native";
+import React, { useEffect, useState } from "react";
+import { Image, Pressable, StyleSheet, Text, View } from "react-native";
 import { AlertTriangle, Barcode, ChevronRight, Package } from "lucide-react-native";
+import { useAuth } from "@/api/AuthProvider";
 import { useTheme } from "@/theme";
 import type { ProductItem } from "@/types/domain";
 import { LOW_STOCK_THRESHOLD } from "@/types/domain";
 import { formatCurrency } from "@/utils/formatters";
+import { resolveProductImageUri } from "@/utils/productImage";
 import { StockMeter } from "./StockMeter";
 import { Badge, Card } from "./ui";
 
@@ -18,7 +20,17 @@ export function ProductCard({
   onPress: () => void;
 }) {
   const { theme } = useTheme();
+  const { serverUrl } = useAuth();
   const { colors, radii, spacing, typography, fontFamilies } = theme;
+  const [imageError, setImageError] = useState(false);
+
+  const resolvedPhotoUri = resolveProductImageUri(product.photoUrl, serverUrl);
+
+  useEffect(() => {
+    setImageError(false);
+  }, [resolvedPhotoUri]);
+
+  const showImage = Boolean(resolvedPhotoUri) && !imageError;
 
   const threshold =
     typeof alertThreshold === "number" && alertThreshold >= 1
@@ -121,31 +133,40 @@ export function ProductCard({
 
             {/* Identity row */}
             <View style={styles.identityRow}>
-              <View
-                style={[
-                  styles.thumb,
-                  {
-                    backgroundColor: isFlagged
-                      ? isOut
-                        ? colors.dangerTint
-                        : colors.warningTint
-                      : colors.muted,
-                    borderColor: isFlagged ? highlightBorderColor : colors.border,
-                    borderRadius: radii.lg,
-                  },
-                ]}
-              >
-                <Package
-                  size={20}
-                  color={
-                    isOut
-                      ? colors.dangerText
-                      : isLow
-                        ? colors.warningText
-                        : colors.mutedForeground
-                  }
-                />
-              </View>
+                <View
+                  style={[
+                    styles.thumb,
+                    {
+                      backgroundColor: isFlagged
+                        ? isOut
+                          ? colors.dangerTint
+                          : colors.warningTint
+                        : colors.muted,
+                      borderColor: isFlagged ? highlightBorderColor : colors.border,
+                      borderRadius: radii.lg,
+                    },
+                  ]}
+                >
+                  {showImage ? (
+                    <Image
+                      source={{ uri: resolvedPhotoUri }}
+                      style={styles.thumbImage}
+                      resizeMode="cover"
+                      onError={() => setImageError(true)}
+                    />
+                  ) : (
+                    <Package
+                      size={20}
+                      color={
+                        isOut
+                          ? colors.dangerText
+                          : isLow
+                            ? colors.warningText
+                            : colors.mutedForeground
+                      }
+                    />
+                  )}
+                </View>
 
               <View style={styles.nameBlock}>
                 <Text
@@ -282,6 +303,11 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     alignItems: "center",
     justifyContent: "center",
+    overflow: "hidden",
+  },
+  thumbImage: {
+    width: "100%",
+    height: "100%",
   },
   nameBlock: {
     flex: 1,

@@ -100,6 +100,10 @@ interface AuthContextValue {
   ) => Promise<StoreProfile>;
   updateMyProfile: (input: UpdateMyProfileInput) => Promise<SessionUser>;
   changePassword: (input: ChangePasswordInput) => Promise<void>;
+  uploadProductImage: (
+    localUri: string,
+    opts?: { mimeType?: string; fileName?: string; webFile?: Blob },
+  ) => Promise<string>;
 }
 
 const AuthContext = createContext<AuthContextValue | null>(null);
@@ -572,6 +576,16 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     [apiClient, refreshUnreadNotifications],
   );
 
+  const uploadProductImage = useCallback(
+    async (
+      localUri: string,
+      opts?: { mimeType?: string; fileName?: string; webFile?: Blob },
+    ): Promise<string> => {
+      return httpClient.uploadProductImage(localUri, opts);
+    },
+    [httpClient],
+  );
+
   const value = useMemo<AuthContextValue>(
     () => ({
       workspaceMode,
@@ -609,6 +623,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       updateBusinessSettings,
       updateMyProfile,
       changePassword,
+      uploadProductImage,
     }),
     [
       workspaceMode,
@@ -645,6 +660,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       updateBusinessSettings,
       updateMyProfile,
       changePassword,
+      uploadProductImage,
     ],
   );
 

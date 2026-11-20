@@ -85,11 +85,11 @@ export default function MemberDashboardSkeleton() {
             </CardHeader>
             <CardContent>
               <div className="h-[300px] w-full flex items-end justify-around gap-2 p-4">
-                {Array.from({ length: 7 }).map((_, i) => (
+                {[42, 68, 54, 78, 36, 62, 70].map((heightPct, i) => (
                   <Skeleton
                     key={i}
                     className="h-20 w-10 rounded-t-md"
-                    style={{ height: `${20 + Math.random() * 60}%` }}
+                    style={{ height: `${heightPct}%` }}
                   />
                 ))}
               </div>
@@ -122,11 +122,11 @@ export default function MemberDashboardSkeleton() {
             </CardHeader>
             <CardContent>
               <div className="h-[300px] w-full flex items-end justify-around gap-2 p-4">
-                {Array.from({ length: 12 }).map((_, i) => (
+                {[32, 48, 40, 62, 54, 68, 44, 58, 66, 38, 52, 60].map((heightPct, i) => (
                   <Skeleton
                     key={i}
                     className="h-10 w-8 rounded-t-md"
-                    style={{ height: `${20 + Math.random() * 50}%` }}
+                    style={{ height: `${heightPct}%` }}
                   />
                 ))}
               </div>

@@ -5,6 +5,7 @@ import { v7 as uuid } from "uuid";
 import sharp from "sharp";
 
 import { detectImageType } from "@/lib/file-signature";
+import { getAuthSession, getBearerAuthSession } from "@/lib/auth";
 
 export const runtime = "nodejs";
 
@@ -50,6 +51,15 @@ function getSafeFolder(folder: string): string | null {
 
 export async function POST(request: NextRequest) {
   try {
+    const session =
+      (await getAuthSession()) ??
+      (await getBearerAuthSession(request))?.session ??
+      null;
+
+    if (!session) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
+
     /*
      * -------------------------------------------------------
      * 1. Parse multipart/form-data
@@ -111,7 +121,10 @@ export async function POST(request: NextRequest) {
      * We still verify the actual binary signature below.
      */
 
-    if (!ALLOWED_MIME_TYPES.has(file.type)) {
+    const declaredMimeType =
+      file.type === "image/jpg" ? "image/jpeg" : file.type;
+
+    if (!ALLOWED_MIME_TYPES.has(declaredMimeType)) {
       return NextResponse.json(
         {
           error:
@@ -189,9 +202,9 @@ export async function POST(request: NextRequest) {
      * -------------------------------------------------------
      */
 
-    if (detectedFile.mimeType !== file.type) {
+    if (detectedFile.mimeType !== declaredMimeType) {
       console.warn("Image MIME mismatch", {
-        declared: file.type,
+        declared: declaredMimeType,
         detected: detectedFile.mimeType,
         name: file.name,
       });

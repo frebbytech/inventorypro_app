@@ -31,7 +31,7 @@ import { useApiClient } from "@/api/ApiProvider";
 import { useAuth } from "@/api/AuthProvider";
 import { EmptyState } from "@/components/EmptyState";
 import { LoadingState } from "@/components/LoadingState";
-import { Badge, Button, Card, Input } from "@/components/ui";
+import { Badge, Button, Card, Input, useToast } from "@/components/ui";
 import { useTheme } from "@/theme";
 import type { SupplierItem } from "@/types/domain";
 import { formatCurrency, formatDateTime } from "@/utils/formatters";
@@ -40,6 +40,7 @@ export default function SuppliersDirectoryScreen() {
   const { theme } = useTheme();
   const api = useApiClient();
   const { store } = useAuth();
+  const toast = useToast();
   const router = useRouter();
   const { colors, spacing, radii, typography, fontFamilies } = theme;
   const currency = store?.currency || "GHS";
@@ -167,6 +168,7 @@ export default function SuppliersDirectoryScreen() {
           address: addressInput.trim(),
           isActive: activeInput,
         });
+        toast.success("Supplier updated", `${cleanCompany} details saved.`);
       } else {
         await api.createSupplier({
           companyName: cleanCompany,
@@ -176,6 +178,7 @@ export default function SuppliersDirectoryScreen() {
           address: addressInput.trim() || undefined,
           isActive: activeInput,
         });
+        toast.success("Supplier created", `${cleanCompany} added to suppliers.`);
       }
       setModalOpen(false);
       await loadSuppliers(true);
@@ -197,10 +200,15 @@ export default function SuppliersDirectoryScreen() {
       setSuppliers((prev) =>
         prev.map((s) => (s.id === item.id ? updated : s)),
       );
-    } catch (err) {
-      setActionError(
-        err instanceof Error ? err.message : "Failed to update supplier status.",
+      toast.success(
+        updated.isActive ? "Supplier activated" : "Supplier deactivated",
+        `${updated.companyName} status updated.`,
       );
+    } catch (err) {
+      const msg =
+        err instanceof Error ? err.message : "Failed to update supplier status.";
+      setActionError(msg);
+      toast.error("Status update failed", msg);
     }
   };
 

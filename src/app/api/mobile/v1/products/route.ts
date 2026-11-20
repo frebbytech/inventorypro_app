@@ -91,6 +91,7 @@ export async function POST(req: Request) {
             Math.trunc(Number(body.lowStockThreshold ?? 5)),
           );
           const barcode = String(body.barcode ?? "").trim();
+          const photoUrl = body.photoUrl ? String(body.photoUrl).trim() : null;
           const description = String(body.description ?? "").trim();
           const isActive = body.active !== false ? 1 : 0;
           const nowIso = new Date().toISOString();
@@ -114,6 +115,7 @@ export async function POST(req: Request) {
               name,
               description,
               barcode,
+              photo_url: photoUrl,
               cost_price: costPrice,
               unit_price: unitPrice,
               stock_quantity: stockQuantity,

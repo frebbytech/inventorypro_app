@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   FlatList,
+  Image,
   KeyboardAvoidingView,
   Modal,
   Platform,
@@ -39,10 +40,12 @@ import {
   CardFooter,
   Input,
   SegmentedTabs,
+  useToast,
 } from "@/components/ui";
 import { useTheme } from "@/theme";
 import type { CustomerItem, PaymentMode, ProductItem } from "@/types/domain";
 import { formatCurrency } from "@/utils/formatters";
+import { resolveProductImageUri } from "@/utils/productImage";
 
 interface CartLine {
   product: ProductItem;
@@ -56,6 +59,62 @@ const PAYMENT_OPTIONS: { value: PaymentMode; label: string }[] = [
   { value: "cheque", label: "Cheque" },
 ];
 
+function SaleProductThumb({
+  photoUrl,
+  inCart,
+  size = 42,
+  iconSize = 18,
+  borderRadius,
+}: {
+  photoUrl?: string;
+  inCart?: boolean;
+  size?: number;
+  iconSize?: number;
+  borderRadius: number;
+}) {
+  const { theme } = useTheme();
+  const { serverUrl } = useAuth();
+  const { colors } = theme;
+  const [imageError, setImageError] = useState(false);
+
+  const resolvedPhotoUri = resolveProductImageUri(photoUrl, serverUrl);
+
+  useEffect(() => {
+    setImageError(false);
+  }, [resolvedPhotoUri]);
+
+  const showImage = Boolean(resolvedPhotoUri) && !imageError;
+
+  return (
+    <View
+      style={[
+        styles.productIconBox,
+        {
+          width: size,
+          height: size,
+          backgroundColor: inCart ? colors.primaryTint : colors.muted,
+          borderColor: inCart ? colors.primary : colors.border,
+          borderRadius,
+        },
+      ]}
+    >
+      {showImage ? (
+        <Image
+          source={{ uri: resolvedPhotoUri }}
+          style={styles.productThumbImage}
+          resizeMode="cover"
+          onError={() => setImageError(true)}
+        />
+      ) : (
+        <Package
+          size={iconSize}
+          color={inCart ? colors.primary : colors.mutedForeground}
+        />
+      )}
+    </View>
+  );
+}
+
 export default function NewSaleScreen() {
   const { productId, scan } = useLocalSearchParams<{
     productId?: string;
@@ -64,6 +123,7 @@ export default function NewSaleScreen() {
   const { theme } = useTheme();
   const api = useApiClient();
   const { store } = useAuth();
+  const toast = useToast();
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const { colors, spacing, radii, typography, fontFamilies } = theme;
@@ -264,12 +324,18 @@ export default function NewSaleScreen() {
         })),
       });
       setCartOpen(false);
+      toast.success(
+        "Sale completed",
+        `Receipt ${receipt.receiptNo} (${formatCurrency(receipt.totalAmount, currency)}) recorded.`,
+      );
       router.replace({
         pathname: "/sales/[id]",
         params: { id: receipt.id },
       });
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to record sale.");
+      const msg = err instanceof Error ? err.message : "Failed to record sale.";
+      setError(msg);
+      toast.error("Sale failed", msg);
     } finally {
       setSubmitting(false);
     }
@@ -410,22 +476,11 @@ export default function NewSaleScreen() {
                   },
                 ]}
               >
-                <View
-                  style={[
-                    styles.productIconBox,
-                    {
-                      backgroundColor:
-                        inCart > 0 ? colors.primaryTint : colors.muted,
-                      borderColor: inCart > 0 ? colors.primary : colors.border,
-                      borderRadius: radii.lg,
-                    },
-                  ]}
-                >
-                  <Package
-                    size={18}
-                    color={inCart > 0 ? colors.primary : colors.mutedForeground}
-                  />
-                </View>
+                <SaleProductThumb
+                  photoUrl={item.photoUrl}
+                  inCart={inCart > 0}
+                  borderRadius={radii.lg}
+                />
 
                 <View style={styles.productInfo}>
                   <Text
@@ -724,6 +779,12 @@ export default function NewSaleScreen() {
                           },
                         ]}
                       >
+                        <SaleProductThumb
+                          photoUrl={line.product.photoUrl}
+                          size={36}
+                          iconSize={16}
+                          borderRadius={radii.md}
+                        />
                         <View style={{ flex: 1 }}>
                           <Text
                             style={[
@@ -1263,6 +1324,11 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     alignItems: "center",
     justifyContent: "center",
+    overflow: "hidden",
+  },
+  productThumbImage: {
+    width: "100%",
+    height: "100%",
   },
   productInfo: {
     flex: 1,

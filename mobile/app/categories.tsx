@@ -24,7 +24,7 @@ import {
 import { useApiClient } from "@/api/ApiProvider";
 import { EmptyState } from "@/components/EmptyState";
 import { LoadingState } from "@/components/LoadingState";
-import { Badge, Button, Card, Input } from "@/components/ui";
+import { Badge, Button, Card, Input, useToast } from "@/components/ui";
 import { useTheme } from "@/theme";
 import type { CategoryItem } from "@/types/domain";
 import { formatDateTime } from "@/utils/formatters";
@@ -32,6 +32,7 @@ import { formatDateTime } from "@/utils/formatters";
 export default function CategoriesManagerScreen() {
   const { theme } = useTheme();
   const api = useApiClient();
+  const toast = useToast();
   const router = useRouter();
   const { colors, spacing, radii, typography, fontFamilies } = theme;
 
@@ -129,12 +130,14 @@ export default function CategoriesManagerScreen() {
           description: descInput.trim(),
           isActive: activeInput,
         });
+        toast.success("Category updated", `${cleanName} changes saved.`);
       } else {
         await api.createCategory({
           name: cleanName,
           description: descInput.trim(),
           isActive: activeInput,
         });
+        toast.success("Category created", `${cleanName} added to catalog.`);
       }
       setModalOpen(false);
       await loadCategories(true);
@@ -156,10 +159,15 @@ export default function CategoriesManagerScreen() {
       setCategories((prev) =>
         prev.map((c) => (c.id === item.id ? updated : c)),
       );
-    } catch (err) {
-      setActionError(
-        err instanceof Error ? err.message : "Failed to update category status.",
+      toast.success(
+        updated.isActive ? "Category activated" : "Category disabled",
+        `${updated.name} status updated.`,
       );
+    } catch (err) {
+      const msg =
+        err instanceof Error ? err.message : "Failed to update category status.";
+      setActionError(msg);
+      toast.error("Category update failed", msg);
     }
   };
 

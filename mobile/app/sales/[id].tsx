@@ -30,6 +30,7 @@ import {
   CardFooter,
   CardHeader,
   Input,
+  useToast,
 } from "@/components/ui";
 import { useTheme } from "@/theme";
 import type { SaleReceiptDetail } from "@/types/domain";
@@ -56,6 +57,7 @@ export default function ReceiptDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const { theme } = useTheme();
   const api = useApiClient();
+  const toast = useToast();
   const router = useRouter();
   const { colors, spacing, radii, typography, fontFamilies } = theme;
 
@@ -131,16 +133,18 @@ export default function ReceiptDetailScreen() {
       setReceipt(updated);
       setRefundModalOpen(false);
       setRefundReason("");
+      const refundMsg = restockItems
+        ? "Sale refunded and items restored to inventory."
+        : "Sale marked as refunded without restocking.";
       setFeedback({
         type: "success",
-        text: restockItems
-          ? "Sale refunded and items restored to inventory."
-          : "Sale marked as refunded without restocking.",
+        text: refundMsg,
       });
+      toast.success("Sale refunded", refundMsg);
     } catch (err) {
-      setRefundError(
-        err instanceof Error ? err.message : "Failed to process refund.",
-      );
+      const msg = err instanceof Error ? err.message : "Failed to process refund.";
+      setRefundError(msg);
+      toast.error("Refund failed", msg);
     } finally {
       setRefunding(false);
     }

@@ -29,7 +29,7 @@ import { useApiClient } from "@/api/ApiProvider";
 import { useAuth } from "@/api/AuthProvider";
 import { EmptyState } from "@/components/EmptyState";
 import { LoadingState } from "@/components/LoadingState";
-import { Badge, Button, Card, Input } from "@/components/ui";
+import { Badge, Button, Card, Input, useToast } from "@/components/ui";
 import { useTheme } from "@/theme";
 import type { CustomerItem } from "@/types/domain";
 import { formatCurrency, formatDateTime } from "@/utils/formatters";
@@ -38,6 +38,7 @@ export default function CustomersDirectoryScreen() {
   const { theme } = useTheme();
   const api = useApiClient();
   const { store } = useAuth();
+  const toast = useToast();
   const router = useRouter();
   const { colors, spacing, radii, typography, fontFamilies } = theme;
   const currency = store?.currency || "GHS";
@@ -144,6 +145,7 @@ export default function CustomersDirectoryScreen() {
           email: emailInput.trim(),
           address: addressInput.trim(),
         });
+        toast.success("Customer updated", `${cleanName} profile saved.`);
       } else {
         await api.createCustomer({
           name: cleanName,
@@ -151,6 +153,7 @@ export default function CustomersDirectoryScreen() {
           email: emailInput.trim() || undefined,
           address: addressInput.trim() || undefined,
         });
+        toast.success("Customer created", `${cleanName} added to customers.`);
       }
       setModalOpen(false);
       await loadCustomers(true);

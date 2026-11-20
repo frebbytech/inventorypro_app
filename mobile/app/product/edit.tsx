@@ -19,6 +19,7 @@ import {
 import { useApiClient } from "@/api/ApiProvider";
 import { EmptyState } from "@/components/EmptyState";
 import { LoadingState } from "@/components/LoadingState";
+import { LocalProductImagePicker } from "@/components/LocalProductImagePicker";
 import {
   Button,
   Card,
@@ -27,6 +28,7 @@ import {
   CardHeader,
   CardTitle,
   Input,
+  useToast,
 } from "@/components/ui";
 import { useTheme } from "@/theme";
 import { LOW_STOCK_THRESHOLD } from "@/types/domain";
@@ -36,6 +38,7 @@ export default function EditProductScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const { theme } = useTheme();
   const api = useApiClient();
+  const toast = useToast();
   const router = useRouter();
   const { colors, spacing, radii, typography, fontFamilies } = theme;
 
@@ -44,6 +47,7 @@ export default function EditProductScreen() {
   const [existingCategories, setExistingCategories] = useState<string[]>([]);
 
   const [name, setName] = useState("");
+  const [photoUrl, setPhotoUrl] = useState("");
   const [selectedCategory, setSelectedCategory] = useState("");
   const [customCategory, setCustomCategory] = useState("");
   const [barcode, setBarcode] = useState("");
@@ -87,6 +91,7 @@ export default function EditProductScreen() {
 
         const p = detail.product;
         setName(p.name);
+        setPhotoUrl(p.photoUrl || "");
         setSelectedCategory(p.categoryName);
         if (
           p.categoryName &&
@@ -171,17 +176,19 @@ export default function EditProductScreen() {
         name: cleanName,
         categoryName: effectiveCategory,
         barcode: barcode.trim(),
+        photoUrl: photoUrl.trim(),
         description: description.trim(),
         costPrice,
         unitPrice,
         lowStockThreshold,
         active: isActive,
       });
+      toast.success("Product updated", `${cleanName} changes saved.`);
       router.back();
     } catch (err) {
-      setError(
-        err instanceof Error ? err.message : "Failed to update product.",
-      );
+      const msg = err instanceof Error ? err.message : "Failed to update product.";
+      setError(msg);
+      toast.error("Could not update product", msg);
     } finally {
       setSaving(false);
     }
@@ -273,6 +280,11 @@ export default function EditProductScreen() {
                 autoCapitalize="words"
               />
             </View>
+
+            <LocalProductImagePicker
+              value={photoUrl}
+              onChange={setPhotoUrl}
+            />
 
             <View style={{ gap: spacing.xs }}>
               <Text

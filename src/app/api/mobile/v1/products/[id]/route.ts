@@ -129,6 +129,9 @@ export async function PATCH(
             if (body.barcode !== undefined) {
               updates.barcode = String(body.barcode ?? "").trim();
             }
+            if (body.photoUrl !== undefined) {
+              updates.photo_url = String(body.photoUrl ?? "").trim() || null;
+            }
             if (body.description !== undefined) {
               updates.description = String(body.description ?? "").trim();
             }
@@ -158,6 +161,10 @@ export async function PATCH(
                 entityType: "product",
                 entityId: id,
                 action: "upsert",
+                payload:
+                  body.photoUrl !== undefined
+                    ? { photoUrl: updates.photo_url ?? "" }
+                    : undefined,
                 actorUserId: session.id,
               }),
             );

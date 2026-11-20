@@ -4,7 +4,12 @@ import {
   getBroadcastHistory,
   sendBroadcastMessage,
 } from "@/actions/messages";
-import { HttpStatusError, withMobileAuth } from "@/lib/mobile-api";
+import { runWithIdempotency } from "@/lib/sync-bus";
+import {
+  extractClientMutationId,
+  HttpStatusError,
+  withMobileAuth,
+} from "@/lib/mobile-api";
 
 export const dynamic = "force-dynamic";
 
@@ -39,44 +44,55 @@ export async function GET(req: Request) {
 export async function POST(req: Request) {
   return withMobileAuth(
     req,
-    async ({ tenantId }) => {
+    async ({ tenantId, clientMutationId }) => {
       const body = await req.json().catch(() => ({}));
-      const res = await sendBroadcastMessage({
-        recipientGroup: body.recipientGroup,
-        channel: body.channel,
-        subject: body.subject,
-        content: body.content,
-        recipientIds: body.recipientIds,
+      const mutationId = extractClientMutationId(req, body) || clientMutationId;
+
+      const result = await runWithIdempotency({
+        tenantId,
+        clientMutationId: mutationId,
+        endpoint: "POST:/api/mobile/v1/messages",
+        handler: async () => {
+          const res = await sendBroadcastMessage({
+            recipientGroup: body.recipientGroup,
+            channel: body.channel,
+            subject: body.subject,
+            content: body.content,
+            recipientIds: body.recipientIds,
+          });
+
+          if (!res.success || !res.data) {
+            throw new HttpStatusError(
+              res.message || "Failed to send broadcast message.",
+              400,
+            );
+          }
+
+          const created = await db("broadcast_messages")
+            .where({ id: res.data.id, tenant_id: tenantId })
+            .first();
+
+          return {
+            statusCode: 201,
+            body: {
+              id: String(created?.id || res.data.id),
+              senderId: String(created?.sender_id || ""),
+              senderName: String(created?.sender_name || "Admin"),
+              recipientGroup: created?.recipient_group || body.recipientGroup,
+              channel: created?.channel || body.channel,
+              subject: created?.subject ?? body.subject ?? null,
+              content: String(created?.content || body.content),
+              recipientCount: Number(
+                created?.recipient_count ?? res.data.recipientCount,
+              ),
+              status: created?.status || res.data.status,
+              createdAt: String(created?.created_at || new Date().toISOString()),
+            },
+          };
+        },
       });
 
-      if (!res.success || !res.data) {
-        throw new HttpStatusError(
-          res.message || "Failed to send broadcast message.",
-          400,
-        );
-      }
-
-      const created = await db("broadcast_messages")
-        .where({ id: res.data.id, tenant_id: tenantId })
-        .first();
-
-      return NextResponse.json(
-        {
-          id: String(created?.id || res.data.id),
-          senderId: String(created?.sender_id || ""),
-          senderName: String(created?.sender_name || "Admin"),
-          recipientGroup: created?.recipient_group || body.recipientGroup,
-          channel: created?.channel || body.channel,
-          subject: created?.subject ?? body.subject ?? null,
-          content: String(created?.content || body.content),
-          recipientCount: Number(
-            created?.recipient_count ?? res.data.recipientCount,
-          ),
-          status: created?.status || res.data.status,
-          createdAt: String(created?.created_at || new Date().toISOString()),
-        },
-        { status: 201 },
-      );
+      return NextResponse.json(result.body, { status: result.statusCode });
     },
     { requireAdmin: true },
   );

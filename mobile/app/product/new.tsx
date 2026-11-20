@@ -24,6 +24,8 @@ import {
   Upload,
 } from "lucide-react-native";
 import { useApiClient } from "@/api/ApiProvider";
+import { useAuth } from "@/api/AuthProvider";
+import { LocalProductImagePicker } from "@/components/LocalProductImagePicker";
 import {
   Badge,
   Button,
@@ -34,6 +36,7 @@ import {
   CardTitle,
   Input,
   SegmentedTabs,
+  useToast,
 } from "@/components/ui";
 import { useTheme } from "@/theme";
 import { LOW_STOCK_THRESHOLD } from "@/types/domain";
@@ -57,6 +60,8 @@ export default function NewProductScreen() {
   const params = useLocalSearchParams<{ mode?: string; barcode?: string }>();
   const { theme } = useTheme();
   const api = useApiClient();
+  const { workspaceMode } = useAuth();
+  const toast = useToast();
   const router = useRouter();
   const { colors, spacing, radii, typography, fontFamilies } = theme;
 
@@ -66,6 +71,7 @@ export default function NewProductScreen() {
 
   // Manual Entry State
   const [name, setName] = useState("");
+  const [photoUrl, setPhotoUrl] = useState("");
   const [selectedCategory, setSelectedCategory] = useState("");
   const [customCategory, setCustomCategory] = useState("");
   const [barcode, setBarcode] = useState(params.barcode ? String(params.barcode) : "");
@@ -176,6 +182,7 @@ export default function NewProductScreen() {
         name: trimmedName,
         categoryName: effectiveCategory,
         barcode: barcode.trim(),
+        photoUrl: photoUrl.trim() || undefined,
         description: description.trim(),
         costPrice,
         unitPrice,
@@ -192,14 +199,15 @@ export default function NewProductScreen() {
         setExistingCategories((prev) => [...prev, created.categoryName].sort());
       }
 
+      toast.success("Product created", `${created.name} added to catalog.`);
       router.replace({
         pathname: "/product/[id]",
         params: { id: created.id },
       });
     } catch (err) {
-      setManualError(
-        err instanceof Error ? err.message : "Unable to save product.",
-      );
+      const msg = err instanceof Error ? err.message : "Unable to save product.";
+      setManualError(msg);
+      toast.error("Could not create product", msg);
     } finally {
       setManualSaving(false);
     }
@@ -306,15 +314,21 @@ export default function NewProductScreen() {
         createdCount: result.createdCount,
         newCategoriesCount: result.newCategoriesCount,
       });
+      toast.success(
+        "Products imported",
+        `${result.createdCount} ${
+          result.createdCount === 1 ? "product" : "products"
+        } added to catalog.`,
+      );
       setParsedImport(null);
       setCsvText("");
 
       const refreshedCats = await api.getCategories();
       setExistingCategories(refreshedCats.filter((c) => c !== "All"));
     } catch (err) {
-      setImportError(
-        err instanceof Error ? err.message : "Bulk import failed.",
-      );
+      const msg = err instanceof Error ? err.message : "Bulk import failed.";
+      setImportError(msg);
+      toast.error("Bulk import failed", msg);
     } finally {
       setImporting(false);
     }
@@ -408,6 +422,11 @@ export default function NewProductScreen() {
                     autoCapitalize="words"
                   />
                 </View>
+
+                <LocalProductImagePicker
+                  value={photoUrl}
+                  onChange={setPhotoUrl}
+                />
 
                 <View style={{ gap: spacing.xs }}>
                   <Text
@@ -694,7 +713,11 @@ export default function NewProductScreen() {
 
               <CardFooter style={{ gap: spacing.sm }}>
                 <Button
-                  title="Save Product to SQLite"
+                  title={
+                    workspaceMode === "synced"
+                      ? "Save Product"
+                      : "Save Product to SQLite"
+                  }
                   size="lg"
                   loading={manualSaving}
                   leftIcon={<PackagePlus size={17} color="#FFFFFF" />}

@@ -236,6 +236,7 @@ export async function POST(req: Request) {
               name,
               description: String(p.description || ""),
               barcode: barcode || "",
+              photo_url: p.photoUrl ? String(p.photoUrl).trim() : null,
               cost_price: Math.max(0, Number(p.costPrice ?? 0)),
               unit_price: Math.max(0, Number(p.unitPrice ?? 0)),
               stock_quantity: qty,

@@ -30,7 +30,7 @@ import { EmptyState } from "@/components/EmptyState";
 import { LoadingState } from "@/components/LoadingState";
 import { LowStockToast } from "@/components/LowStockToast";
 import { ProductCard } from "@/components/ProductCard";
-import { Button, Card, Input, SegmentedTabs } from "@/components/ui";
+import { Button, Card, Input, SegmentedTabs, useToast } from "@/components/ui";
 import { useTheme } from "@/theme";
 import {
   LOW_STOCK_THRESHOLD,
@@ -45,6 +45,7 @@ export default function InventoryScreen() {
   const { theme } = useTheme();
   const api = useApiClient();
   const { store, syncVersion, updateStockThreshold } = useAuth();
+  const toast = useToast();
   const router = useRouter();
   const { colors, spacing, radii, typography, fontFamilies } = theme;
 
@@ -236,10 +237,14 @@ export default function InventoryScreen() {
     try {
       await updateStockThreshold(clean);
       showLowStockToast(true);
-    } catch (err) {
-      setThresholdError(
-        err instanceof Error ? err.message : "Failed to save threshold.",
+      toast.success(
+        "Threshold updated",
+        `Low-stock alerts now trigger below ${clean} units.`,
       );
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "Failed to save threshold.";
+      setThresholdError(msg);
+      toast.error("Threshold update failed", msg);
     } finally {
       setSavingThreshold(false);
     }

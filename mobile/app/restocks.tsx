@@ -28,7 +28,7 @@ import {
 import { useApiClient } from "@/api/ApiProvider";
 import { EmptyState } from "@/components/EmptyState";
 import { LoadingState } from "@/components/LoadingState";
-import { Badge, Button, Card, Input } from "@/components/ui";
+import { Badge, Button, Card, Input, useToast } from "@/components/ui";
 import { useTheme } from "@/theme";
 import type { ProductItem, RestockLogItem } from "@/types/domain";
 import { formatDateTime } from "@/utils/formatters";
@@ -42,6 +42,7 @@ export default function RestocksHistoryScreen() {
   }>();
   const { theme } = useTheme();
   const api = useApiClient();
+  const toast = useToast();
   const router = useRouter();
   const { colors, spacing, radii, typography, fontFamilies } = theme;
 
@@ -178,13 +179,17 @@ export default function RestocksHistoryScreen() {
     setSaving(true);
     setFormError(null);
     try {
-      await api.recordRestock({
+      const created = await api.recordRestock({
         productId: selectedProductId,
         quantity,
         restockDate: cleanDate,
         notes: notesInput.trim() || undefined,
       });
       setModalOpen(false);
+      toast.success(
+        "Restock recorded",
+        `+${quantity} units added for ${created.productName}.`,
+      );
       await loadLogs(true);
     } catch (err) {
       setFormError(

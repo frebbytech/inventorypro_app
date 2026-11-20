@@ -1,7 +1,6 @@
 "use client";
 
 import React, { useState } from "react";
-// @ts-ignore - esc-pos-encoder lacks types
 import EscPosEncoder from "esc-pos-encoder";
 import { jsPDF } from "jspdf";
 import { generateReceiptPDF } from "@/lib/receipt";

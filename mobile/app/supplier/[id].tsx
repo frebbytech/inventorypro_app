@@ -37,6 +37,7 @@ import {
   CardHeader,
   CardTitle,
   Input,
+  useToast,
 } from "@/components/ui";
 import { useTheme } from "@/theme";
 import type {
@@ -62,6 +63,7 @@ export default function SupplierDetailScreen() {
   const { theme } = useTheme();
   const api = useApiClient();
   const { store } = useAuth();
+  const toast = useToast();
   const router = useRouter();
   const { colors, spacing, radii, typography, fontFamilies } = theme;
   const currency = store?.currency || "GHS";
@@ -178,6 +180,7 @@ export default function SupplierDetailScreen() {
       });
       setDetail({ ...detail, supplier: updated });
       setEditOpen(false);
+      toast.success("Supplier updated", `${updated.companyName} details saved.`);
     } catch (err) {
       setEditError(
         err instanceof Error ? err.message : "Failed to update supplier.",
@@ -196,10 +199,14 @@ export default function SupplierDetailScreen() {
         isActive: !detail.supplier.isActive,
       });
       setDetail({ ...detail, supplier: updated });
-    } catch (err) {
-      setActionError(
-        err instanceof Error ? err.message : "Failed to update status.",
+      toast.success(
+        updated.isActive ? "Supplier activated" : "Supplier deactivated",
+        `${updated.companyName} status updated.`,
       );
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "Failed to update status.";
+      setActionError(msg);
+      toast.error("Status update failed", msg);
     } finally {
       setTogglingActive(false);
     }
@@ -242,6 +249,10 @@ export default function SupplierDetailScreen() {
         notes: notesInput.trim() || undefined,
       });
       setTxModalOpen(false);
+      toast.success(
+        "Delivery recorded",
+        `${formatCurrency(parsedTotal, currency)} logged for ${detail.supplier.companyName}.`,
+      );
       await loadDetail(true);
     } catch (err) {
       setTxError(
@@ -277,7 +288,12 @@ export default function SupplierDetailScreen() {
         paymentMode: payModeInput,
         notes: payNotesInput.trim() || undefined,
       });
+      const paidTxNo = payTx.transactionNo;
       setPayTx(null);
+      toast.success(
+        "Payment recorded",
+        `${formatCurrency(parsedAmount, currency)} applied to ${paidTxNo}.`,
+      );
       await loadDetail(true);
     } catch (err) {
       setPayError(

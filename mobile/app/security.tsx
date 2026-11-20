@@ -33,6 +33,7 @@ import {
   CardHeader,
   CardTitle,
   Input,
+  useToast,
 } from "@/components/ui";
 import { useTheme } from "@/theme";
 import type { UserSessionItem } from "@/types/domain";
@@ -42,6 +43,7 @@ export default function SecurityScreen() {
   const { theme } = useTheme();
   const api = useApiClient();
   const { user, updateMyProfile, changePassword } = useAuth();
+  const toast = useToast();
   const { colors, spacing, radii, typography } = theme;
 
   // Profile form state
@@ -146,12 +148,15 @@ export default function SecurityScreen() {
         type: "success",
         text: "Your profile details were updated.",
       });
+      toast.success("Profile updated", "Your personal details were saved.");
     } catch (err) {
+      const msg =
+        err instanceof Error ? err.message : "Could not update your profile.";
       setProfileFeedback({
         type: "error",
-        text:
-          err instanceof Error ? err.message : "Could not update your profile.",
+        text: msg,
       });
+      toast.error("Profile update failed", msg);
     } finally {
       setSavingProfile(false);
     }
@@ -194,12 +199,15 @@ export default function SecurityScreen() {
         type: "success",
         text: "Password updated successfully.",
       });
+      toast.success("Password updated", "Your password has been changed.");
     } catch (err) {
+      const msg =
+        err instanceof Error ? err.message : "Could not change password.";
       setPasswordFeedback({
         type: "error",
-        text:
-          err instanceof Error ? err.message : "Could not change password.",
+        text: msg,
       });
+      toast.error("Password update failed", msg);
     } finally {
       setSavingPassword(false);
     }
@@ -215,10 +223,12 @@ export default function SecurityScreen() {
           s.id === sessionId ? { ...s, isActive: false } : s,
         ),
       );
+      toast.success("Session revoked", "Device session signed out.");
     } catch (err) {
-      setSessionError(
-        err instanceof Error ? err.message : "Failed to revoke session.",
-      );
+      const msg =
+        err instanceof Error ? err.message : "Failed to revoke session.";
+      setSessionError(msg);
+      toast.error("Revoke failed", msg);
     } finally {
       setRevokingId(null);
     }
@@ -233,12 +243,17 @@ export default function SecurityScreen() {
       setSessions((prev) =>
         prev.map((s) => (s.isCurrent ? s : { ...s, isActive: false })),
       );
+      toast.success(
+        "Other sessions revoked",
+        "All other device sessions signed out.",
+      );
     } catch (err) {
-      setSessionError(
+      const msg =
         err instanceof Error
           ? err.message
-          : "Failed to revoke other sessions.",
-      );
+          : "Failed to revoke other sessions.";
+      setSessionError(msg);
+      toast.error("Revoke failed", msg);
     } finally {
       setRevokingAll(false);
     }

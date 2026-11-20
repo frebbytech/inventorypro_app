@@ -1,11 +1,14 @@
 import { ensureDbReady } from "@/db/client";
 import {
   adjustProductStock as dbAdjustProductStock,
+  bulkCreateProducts as dbBulkCreateProducts,
+  clearAllNotifications as dbClearAllNotifications,
   createCategory as dbCreateCategory,
   createCustomer as dbCreateCustomer,
   createProduct as dbCreateProduct,
   createSale as dbCreateSale,
   createSupplier as dbCreateSupplier,
+  deleteNotificationById as dbDeleteNotificationById,
   findProductByBarcode as dbFindProductByBarcode,
   getCustomerDetail as dbGetCustomerDetail,
   getDailyReport as dbGetDailyReport,
@@ -28,8 +31,13 @@ import {
   listRestockLogs as dbListRestockLogs,
   listSales as dbListSales,
   listSuppliers as dbListSuppliers,
+  markAllNotificationsRead as dbMarkAllNotificationsRead,
+  markNotificationRead as dbMarkNotificationRead,
+  paySupplierTransactionBalance as dbPaySupplierTransactionBalance,
   recordRestock as dbRecordRestock,
+  recordSupplierTransaction as dbRecordSupplierTransaction,
   refundSale as dbRefundSale,
+  sendBroadcastMessage as dbSendBroadcastMessage,
   updateCategory as dbUpdateCategory,
   updateCustomer as dbUpdateCustomer,
   updateProduct as dbUpdateProduct,
@@ -38,6 +46,10 @@ import {
   updateSupplier as dbUpdateSupplier,
 } from "@/db/queries";
 import { enqueueOutboxMutation } from "@/db/syncStore";
+import {
+  deleteLocalProductImageIfManaged,
+  isLocalDeviceImageUri,
+} from "@/utils/productImage";
 import { ApiError, type HttpApiClient } from "./httpAdapter";
 import type { AuthenticatedApiClient } from "./sqliteAdapter";
 import type { SyncEngine } from "./syncEngine";
@@ -150,7 +162,7 @@ export class SyncedApiClient implements AuthenticatedApiClient {
     entityType: string;
     operation: string;
     endpoint: string;
-    method: "POST" | "PATCH";
+    method: "POST" | "PATCH" | "DELETE";
     payload: unknown;
     onlineCall: (mutationId: string) => Promise<T>;
     offlineCall?: () => Promise<T>;
@@ -264,6 +276,15 @@ export class SyncedApiClient implements AuthenticatedApiClient {
     );
   }
 
+  private async resolveCloudPhotoUrl(photoUrl?: string): Promise<string | undefined> {
+    if (!photoUrl || !isLocalDeviceImageUri(photoUrl)) {
+      return photoUrl;
+    }
+    const uploaded = await this.http.uploadProductImage(photoUrl);
+    deleteLocalProductImageIfManaged(photoUrl);
+    return uploaded;
+  }
+
   createProduct(input: CreateProductInput): Promise<ProductItem> {
     return this.writeWithOutbox({
       entityType: "product",
@@ -271,7 +292,13 @@ export class SyncedApiClient implements AuthenticatedApiClient {
       endpoint: "/api/mobile/v1/products",
       method: "POST",
       payload: input,
-      onlineCall: (id) => this.http.createProduct(input, id),
+      onlineCall: async (id) => {
+        const resolvedPhoto = await this.resolveCloudPhotoUrl(input.photoUrl);
+        return this.http.createProduct(
+          { ...input, photoUrl: resolvedPhoto },
+          id,
+        );
+      },
       offlineCall: async () =>
         dbCreateProduct(await ensureDbReady(), {
           ...input,
@@ -290,7 +317,14 @@ export class SyncedApiClient implements AuthenticatedApiClient {
       endpoint: `/api/mobile/v1/products/${encodeURIComponent(productId)}`,
       method: "PATCH",
       payload: input,
-      onlineCall: (id) => this.http.updateProduct(productId, input, id),
+      onlineCall: async (id) => {
+        const resolvedPhoto = await this.resolveCloudPhotoUrl(input.photoUrl);
+        return this.http.updateProduct(
+          productId,
+          { ...input, photoUrl: resolvedPhoto },
+          id,
+        );
+      },
       offlineCall: async () =>
         dbUpdateProduct(await ensureDbReady(), {
           ...input,
@@ -303,7 +337,19 @@ export class SyncedApiClient implements AuthenticatedApiClient {
   bulkCreateProducts(
     items: CreateProductInput[],
   ): Promise<BulkImportProductsResult> {
-    return this.http.bulkCreateProducts(items);
+    return this.writeWithOutbox({
+      entityType: "product",
+      operation: "bulk_create",
+      endpoint: "/api/mobile/v1/products/bulk",
+      method: "POST",
+      payload: { items },
+      onlineCall: (id) => this.http.bulkCreateProducts(items, id),
+      offlineCall: async () =>
+        dbBulkCreateProducts(await ensureDbReady(), {
+          items,
+          userId: await this.requireLocalActorUserId(),
+        }),
+    });
   }
 
   adjustProductStock(
@@ -516,13 +562,58 @@ export class SyncedApiClient implements AuthenticatedApiClient {
   recordSupplierTransaction(
     input: CreateSupplierTransactionInput,
   ): Promise<SupplierTransactionSummary> {
-    return this.http.recordSupplierTransaction(input);
+    return this.writeWithOutbox({
+      entityType: "supplier_transaction",
+      operation: "create",
+      endpoint: `/api/mobile/v1/suppliers/${encodeURIComponent(input.supplierId)}/transactions`,
+      method: "POST",
+      payload: input,
+      onlineCall: (id) => this.http.recordSupplierTransaction(input, id),
+      offlineCall: async () =>
+        dbRecordSupplierTransaction(await ensureDbReady(), {
+          ...input,
+          userId: await this.requireLocalActorUserId(),
+        }),
+    });
   }
 
   paySupplierTransactionBalance(
     input: PaySupplierBalanceInput,
   ): Promise<SupplierTransactionSummary> {
-    return this.http.paySupplierTransactionBalance(input);
+    return this.writeWithOutbox({
+      entityType: "supplier_transaction",
+      operation: "pay_balance",
+      endpoint: `/api/mobile/v1/suppliers/transactions/${encodeURIComponent(input.transactionId)}/pay`,
+      method: "POST",
+      payload: input,
+      onlineCall: (id) => this.http.paySupplierTransactionBalance(input, id),
+      offlineCall: async () => {
+        const db = await ensureDbReady();
+        const userId = await this.requireLocalActorUserId();
+        try {
+          return dbPaySupplierTransactionBalance(db, {
+            ...input,
+            userId,
+          });
+        } catch (err) {
+          if (err instanceof Error && err.message.includes("not found")) {
+            return {
+              id: input.transactionId,
+              transactionNo: `SUP-${input.transactionId.slice(0, 8)}`,
+              supplierId: "",
+              transactionDate: new Date().toISOString(),
+              totalAmount: input.paymentAmount,
+              amountPaid: input.paymentAmount,
+              balance: 0,
+              paymentMode: input.paymentMode || "cash",
+              status: "completed",
+              notes: input.notes,
+            };
+          }
+          throw err;
+        }
+      },
+    });
   }
 
   getEmployees(query?: string): Promise<EmployeeItem[]> {
@@ -589,19 +680,96 @@ export class SyncedApiClient implements AuthenticatedApiClient {
   }
 
   markNotificationRead(notificationId: string): Promise<NotificationItem> {
-    return this.http.markNotificationRead(notificationId);
+    return this.writeWithOutbox({
+      entityType: "notification",
+      operation: "mark_read",
+      endpoint: `/api/mobile/v1/notifications/${encodeURIComponent(notificationId)}/read`,
+      method: "PATCH",
+      payload: {},
+      onlineCall: (id) => this.http.markNotificationRead(notificationId, id),
+      offlineCall: async () => {
+        const db = await ensureDbReady();
+        const userId = await this.requireLocalActorUserId();
+        try {
+          return dbMarkNotificationRead(db, {
+            id: notificationId,
+            userId,
+          });
+        } catch (err) {
+          if (err instanceof Error && err.message.includes("not found")) {
+            const nowIso = new Date().toISOString();
+            return {
+              id: notificationId,
+              userId,
+              type: "system",
+              title: "Notification",
+              isRead: true,
+              createdAt: nowIso,
+              updatedAt: nowIso,
+            };
+          }
+          throw err;
+        }
+      },
+    });
   }
 
   markAllNotificationsRead(): Promise<{ updatedCount: number }> {
-    return this.http.markAllNotificationsRead();
+    return this.writeWithOutbox({
+      entityType: "notification",
+      operation: "mark_all_read",
+      endpoint: "/api/mobile/v1/notifications/read-all",
+      method: "POST",
+      payload: {},
+      onlineCall: (id) => this.http.markAllNotificationsRead(id),
+      offlineCall: async () =>
+        dbMarkAllNotificationsRead(
+          await ensureDbReady(),
+          await this.requireLocalActorUserId(),
+        ),
+    });
   }
 
   deleteNotification(notificationId: string): Promise<void> {
-    return this.http.deleteNotification(notificationId);
+    return this.writeWithOutbox({
+      entityType: "notification",
+      operation: "delete",
+      endpoint: `/api/mobile/v1/notifications/${encodeURIComponent(notificationId)}`,
+      method: "DELETE",
+      payload: {},
+      onlineCall: (id) => this.http.deleteNotification(notificationId, id),
+      offlineCall: async () => {
+        const db = await ensureDbReady();
+        const userId = await this.requireLocalActorUserId();
+        try {
+          dbDeleteNotificationById(db, {
+            id: notificationId,
+            userId,
+          });
+        } catch (err) {
+          if (err instanceof Error && err.message.includes("not found")) {
+            return;
+          }
+          throw err;
+        }
+      },
+    });
   }
 
   clearAllNotifications(): Promise<{ deletedCount: number }> {
-    return this.http.clearAllNotifications();
+    return this.writeWithOutbox({
+      entityType: "notification",
+      operation: "clear_all",
+      endpoint: "/api/mobile/v1/notifications",
+      method: "DELETE",
+      payload: {},
+      onlineCall: (id) => this.http.clearAllNotifications(id),
+      offlineCall: async () =>
+        dbClearAllNotifications(
+          await ensureDbReady(),
+          await this.requireLocalActorUserId(),
+        ),
+    });
   }
 
   getBroadcastRecipients(
@@ -623,7 +791,44 @@ export class SyncedApiClient implements AuthenticatedApiClient {
   sendBroadcastMessage(
     input: SendBroadcastInput,
   ): Promise<BroadcastMessageItem> {
-    return this.http.sendBroadcastMessage(input);
+    return this.writeWithOutbox({
+      entityType: "message",
+      operation: "broadcast",
+      endpoint: "/api/mobile/v1/messages",
+      method: "POST",
+      payload: input,
+      onlineCall: (id) => this.http.sendBroadcastMessage(input, id),
+      offlineCall: async () => {
+        const db = await ensureDbReady();
+        const senderId = await this.requireLocalActorUserId();
+        try {
+          return dbSendBroadcastMessage(db, {
+            ...input,
+            senderId,
+          });
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : "";
+          if (
+            msg.includes("No recipients") ||
+            msg.includes("None of the selected recipients")
+          ) {
+            return {
+              id: `queued-${createMutationId()}`,
+              senderId,
+              senderName: "Admin",
+              recipientGroup: input.recipientGroup,
+              channel: input.channel,
+              subject: input.subject?.trim() || null,
+              content: input.content.trim(),
+              recipientCount: input.recipientIds?.length ?? 0,
+              status: "queued",
+              createdAt: new Date().toISOString(),
+            };
+          }
+          throw err;
+        }
+      },
+    });
   }
 
   getUserSessions(): Promise<UserSessionItem[]> {

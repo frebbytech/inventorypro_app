@@ -517,7 +517,7 @@ export async function getActivityHeatmapData(
     }
 
     // 2. Fetch Inventory Updates & Restocks over the period
-    let inventoryEventRows: any[] = [];
+    const inventoryEventRows: any[] = [];
     try {
       const auditRows = await db("audit_logs")
         .select("id", "entity_type", "action", "created_at")

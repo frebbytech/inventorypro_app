@@ -1,5 +1,6 @@
-import React, { useCallback, useRef, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
+  Image,
   Linking,
   Pressable,
   ScrollView,
@@ -29,6 +30,7 @@ import {
   ShoppingCart,
 } from "lucide-react-native";
 import { useApiClient } from "@/api/ApiProvider";
+import { useAuth } from "@/api/AuthProvider";
 import { DEMO_SAMPLE_BARCODES } from "@/api/demoData";
 import { DemoBanner } from "@/components/DemoBanner";
 import {
@@ -43,6 +45,7 @@ import {
 import { useTheme } from "@/theme";
 import { LOW_STOCK_THRESHOLD, type ProductItem } from "@/types/domain";
 import { formatCurrency } from "@/utils/formatters";
+import { resolveProductImageUri } from "@/utils/productImage";
 
 /**
  * Matches SUPPORTED_FORMATS and REPEAT_SCAN_WINDOW_MS in
@@ -65,6 +68,7 @@ const REPEAT_SCAN_WINDOW_MS = 1200;
 export default function ScanScreen() {
   const { theme } = useTheme();
   const api = useApiClient();
+  const { serverUrl } = useAuth();
   const router = useRouter();
   const { colors, spacing, radii, typography, fontFamilies } = theme;
 
@@ -77,7 +81,12 @@ export default function ScanScreen() {
   const [isLookingUp, setIsLookingUp] = useState(false);
   const [lastScannedCode, setLastScannedCode] = useState<string | null>(null);
   const [matchedProduct, setMatchedProduct] = useState<ProductItem | null>(null);
+  const [matchedImageError, setMatchedImageError] = useState(false);
   const [notFoundCode, setNotFoundCode] = useState<string | null>(null);
+
+  useEffect(() => {
+    setMatchedImageError(false);
+  }, [matchedProduct?.photoUrl]);
 
   const lastScanTimeRef = useRef(0);
   const isLookingUpRef = useRef(false);
@@ -349,18 +358,46 @@ export default function ScanScreen() {
             </CardHeader>
 
             <CardContent style={{ paddingTop: spacing.md, gap: spacing.md }}>
-              <View>
-                <Text style={[typography.caption, { color: colors.mutedForeground }]}>
-                  {matchedProduct.categoryName} · {matchedProduct.barcode}
-                </Text>
-                <Text
-                  style={[
-                    typography.titleXsm,
-                    { color: colors.foreground, marginTop: 2 },
-                  ]}
-                >
-                  {matchedProduct.name}
-                </Text>
+              <View style={styles.matchedIdentityRow}>
+                {(() => {
+                  const matchedPhotoUri = resolveProductImageUri(
+                    matchedProduct.photoUrl,
+                    serverUrl,
+                  );
+                  if (!matchedPhotoUri || matchedImageError) return null;
+                  return (
+                    <View
+                      style={[
+                        styles.matchedThumb,
+                        {
+                          borderColor: colors.border,
+                          backgroundColor: colors.muted,
+                          borderRadius: radii.lg,
+                        },
+                      ]}
+                    >
+                      <Image
+                        source={{ uri: matchedPhotoUri }}
+                        style={styles.matchedThumbImage}
+                        resizeMode="cover"
+                        onError={() => setMatchedImageError(true)}
+                      />
+                    </View>
+                  );
+                })()}
+                <View style={{ flex: 1, minWidth: 0 }}>
+                  <Text style={[typography.caption, { color: colors.mutedForeground }]}>
+                    {matchedProduct.categoryName} · {matchedProduct.barcode}
+                  </Text>
+                  <Text
+                    style={[
+                      typography.titleXsm,
+                      { color: colors.foreground, marginTop: 2 },
+                    ]}
+                  >
+                    {matchedProduct.name}
+                  </Text>
+                </View>
               </View>
 
               <View
@@ -657,6 +694,21 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     gap: 8,
+  },
+  matchedIdentityRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+  },
+  matchedThumb: {
+    width: 44,
+    height: 44,
+    borderWidth: 1,
+    overflow: "hidden",
+  },
+  matchedThumbImage: {
+    width: "100%",
+    height: "100%",
   },
   matchMetrics: {
     flexDirection: "row",

@@ -24,7 +24,7 @@ import { useApiClient } from "@/api/ApiProvider";
 import { useAuth } from "@/api/AuthProvider";
 import { EmptyState } from "@/components/EmptyState";
 import { LoadingState } from "@/components/LoadingState";
-import { Badge, Button, Card, SegmentedTabs } from "@/components/ui";
+import { Badge, Button, Card, SegmentedTabs, useToast } from "@/components/ui";
 import { useTheme } from "@/theme";
 import type { NotificationItem } from "@/types/domain";
 import { formatDateTime } from "@/utils/formatters";
@@ -35,6 +35,7 @@ export default function NotificationsScreen() {
   const { theme } = useTheme();
   const api = useApiClient();
   const { refreshUnreadNotifications } = useAuth();
+  const toast = useToast();
   const router = useRouter();
   const { colors, spacing, radii, typography, fontFamilies } = theme;
 
@@ -103,10 +104,12 @@ export default function NotificationsScreen() {
           prev.map((row) => (row.id === item.id ? updated : row)),
         );
         await refreshUnreadNotifications();
+        toast.info("Marked as read", item.title);
       } catch (err) {
-        setErrorMsg(
-          err instanceof Error ? err.message : "Could not update notification.",
-        );
+        const msg =
+          err instanceof Error ? err.message : "Could not update notification.";
+        setErrorMsg(msg);
+        toast.error("Update failed", msg);
       } finally {
         setBusyId(null);
       }
@@ -136,10 +139,12 @@ export default function NotificationsScreen() {
       await api.deleteNotification(id);
       setItems((prev) => prev.filter((row) => row.id !== id));
       await refreshUnreadNotifications();
+      toast.success("Notification deleted", "Removed from your inbox.");
     } catch (err) {
-      setErrorMsg(
-        err instanceof Error ? err.message : "Failed to delete notification.",
-      );
+      const msg =
+        err instanceof Error ? err.message : "Failed to delete notification.";
+      setErrorMsg(msg);
+      toast.error("Delete failed", msg);
     } finally {
       setBusyId(null);
     }
@@ -156,12 +161,14 @@ export default function NotificationsScreen() {
         prev.map((row) => ({ ...row, isRead: true, updatedAt: nowIso })),
       );
       await refreshUnreadNotifications();
+      toast.success("All caught up", "All notifications marked as read.");
     } catch (err) {
-      setErrorMsg(
+      const msg =
         err instanceof Error
           ? err.message
-          : "Failed to mark notifications as read.",
-      );
+          : "Failed to mark notifications as read.";
+      setErrorMsg(msg);
+      toast.error("Update failed", msg);
     } finally {
       setBulkBusy(false);
     }
@@ -175,10 +182,12 @@ export default function NotificationsScreen() {
       setItems([]);
       setClearConfirmOpen(false);
       await refreshUnreadNotifications();
+      toast.success("Notifications cleared", "All notifications removed.");
     } catch (err) {
-      setErrorMsg(
-        err instanceof Error ? err.message : "Failed to clear notifications.",
-      );
+      const msg =
+        err instanceof Error ? err.message : "Failed to clear notifications.";
+      setErrorMsg(msg);
+      toast.error("Clear failed", msg);
     } finally {
       setBulkBusy(false);
     }

@@ -134,6 +134,7 @@ export interface CreateProductInput {
   name: string;
   categoryName: string;
   barcode?: string;
+  photoUrl?: string;
   description?: string;
   costPrice: number;
   unitPrice: number;
@@ -146,6 +147,7 @@ export interface UpdateProductInput {
   name?: string;
   categoryName?: string;
   barcode?: string;
+  photoUrl?: string;
   description?: string;
   costPrice?: number;
   unitPrice?: number;
@@ -213,6 +215,7 @@ export interface ProductItem {
   categoryId: string;
   categoryName: string;
   barcode: string;
+  photoUrl?: string;
   costPrice: number;
   unitPrice: number;
   stockQuantity: number;
@@ -810,6 +813,7 @@ export interface SyncMergePayload {
     name: string;
     description?: string;
     barcode?: string;
+    photoUrl?: string;
     costPrice: number;
     unitPrice: number;
     stockQuantity: number;

@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
+  Image,
   KeyboardAvoidingView,
   Linking,
   Modal,
@@ -33,11 +34,13 @@ import {
   X,
 } from "lucide-react-native";
 import { useApiClient } from "@/api/ApiProvider";
+import { useAuth } from "@/api/AuthProvider";
 import { DEMO_SAMPLE_BARCODES } from "@/api/demoData";
 import { Button, Card, CardContent, Input } from "@/components/ui";
 import { useTheme } from "@/theme";
 import type { ProductItem } from "@/types/domain";
 import { formatCurrency } from "@/utils/formatters";
+import { resolveProductImageUri } from "@/utils/productImage";
 
 const SUPPORTED_BARCODE_TYPES: BarcodeType[] = [
   "ean13",
@@ -88,6 +91,7 @@ export function SalesBarcodeScannerModal({
 }: SalesBarcodeScannerModalProps) {
   const { theme } = useTheme();
   const api = useApiClient();
+  const { serverUrl } = useAuth();
   const insets = useSafeAreaInsets();
   const { colors, spacing, radii, typography, fontFamilies } = theme;
 
@@ -96,12 +100,17 @@ export function SalesBarcodeScannerModal({
   const [manualCode, setManualCode] = useState("");
   const [lookingUp, setLookingUp] = useState(false);
   const [feedback, setFeedback] = useState<ScanFeedback | null>(null);
+  const [feedbackImageError, setFeedbackImageError] = useState(false);
 
   const isLookingUpRef = useRef(false);
   const lastScanRef = useRef<{ code: string; at: number }>({
     code: "",
     at: 0,
   });
+
+  useEffect(() => {
+    setFeedbackImageError(false);
+  }, [feedback?.product?.photoUrl]);
 
   // Reset transient torch and cooldown when modal closes
   useEffect(() => {
@@ -438,18 +447,46 @@ export function SalesBarcodeScannerModal({
                   }}
                 >
                   <View style={styles.feedbackRow}>
-                    {feedback.status === "added" ? (
-                      <CheckCircle2 size={18} color={colors.successText} />
-                    ) : (
-                      <AlertCircle
-                        size={18}
-                        color={
-                          feedback.status === "warning"
-                            ? colors.warningText
-                            : colors.dangerText
-                        }
-                      />
-                    )}
+                    {(() => {
+                      const feedbackPhotoUri = resolveProductImageUri(
+                        feedback.product?.photoUrl,
+                        serverUrl,
+                      );
+                      if (feedbackPhotoUri && !feedbackImageError) {
+                        return (
+                          <View
+                            style={[
+                              styles.feedbackThumb,
+                              {
+                                borderColor: colors.border,
+                                backgroundColor: colors.muted,
+                                borderRadius: radii.md,
+                              },
+                            ]}
+                          >
+                            <Image
+                              source={{ uri: feedbackPhotoUri }}
+                              style={styles.feedbackThumbImage}
+                              resizeMode="cover"
+                              onError={() => setFeedbackImageError(true)}
+                            />
+                          </View>
+                        );
+                      }
+                      if (feedback.status === "added") {
+                        return <CheckCircle2 size={18} color={colors.successText} />;
+                      }
+                      return (
+                        <AlertCircle
+                          size={18}
+                          color={
+                            feedback.status === "warning"
+                              ? colors.warningText
+                              : colors.dangerText
+                          }
+                        />
+                      );
+                    })()}
                     <View style={{ flex: 1 }}>
                       <Text
                         style={[
@@ -777,6 +814,16 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     gap: 10,
+  },
+  feedbackThumb: {
+    width: 36,
+    height: 36,
+    borderWidth: 1,
+    overflow: "hidden",
+  },
+  feedbackThumbImage: {
+    width: "100%",
+    height: "100%",
   },
   stepperRow: {
     flexDirection: "row",

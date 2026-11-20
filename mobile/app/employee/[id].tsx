@@ -35,6 +35,7 @@ import {
   CardHeader,
   CardTitle,
   Input,
+  useToast,
 } from "@/components/ui";
 import { useTheme } from "@/theme";
 import type { EmployeeDetailResponse, SaleStatus } from "@/types/domain";
@@ -49,6 +50,7 @@ export default function EmployeeDetailScreen() {
   const { theme } = useTheme();
   const api = useApiClient();
   const { user: currentUser, store } = useAuth();
+  const toast = useToast();
   const router = useRouter();
   const { colors, spacing, radii, typography, fontFamilies } = theme;
   const currency = store?.currency || "GHS";
@@ -139,6 +141,7 @@ export default function EmployeeDetailScreen() {
       });
       setDetail({ ...detail, employee: updated });
       setEditOpen(false);
+      toast.success("Team member updated", `${updated.fullName} profile saved.`);
     } catch (err) {
       setFormError(
         err instanceof Error ? err.message : "Failed to update team member.",

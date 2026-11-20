@@ -275,7 +275,7 @@ export default function AccountScreen() {
                 </Text>
                 <Button
                   title="Switch to Synced (Web + Mobile)"
-                  size="md"
+                  size="default"
                   leftIcon={<Cloud size={16} color="#FFFFFF" />}
                   onPress={() => setTransitionOpen(true)}
                 />

@@ -380,7 +380,7 @@ export function SyncTransitionModal({
                 <Button
                   title="Resend Code"
                   variant="outline"
-                  size="md"
+                  size="default"
                   disabled={loading}
                   onPress={() => void handleResendOtp()}
                 />

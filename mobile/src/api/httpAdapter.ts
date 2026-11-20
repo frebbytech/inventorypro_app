@@ -1,5 +1,6 @@
 import Constants from "expo-constants";
 import { Platform } from "react-native";
+import { inferProductImageUploadMeta } from "@/utils/productImage";
 import type { AuthenticatedApiClient } from "./sqliteAdapter";
 import type {
   AdjustStockInput,
@@ -143,9 +144,14 @@ export class HttpApiClient implements AuthenticatedApiClient {
     const { allowNotFound, skipAuthCheck, clientMutationId, ...fetchInit } =
       init ?? {};
 
+    const isFormDataBody =
+      typeof FormData !== "undefined" && fetchInit.body instanceof FormData;
+
     const headers: Record<string, string> = {
       Accept: "application/json",
-      ...(fetchInit.body ? { "Content-Type": "application/json" } : {}),
+      ...(fetchInit.body && !isFormDataBody
+        ? { "Content-Type": "application/json" }
+        : {}),
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
       ...(clientMutationId ? { "X-Client-Mutation-Id": clientMutationId } : {}),
       ...((fetchInit.headers as Record<string, string> | undefined) ?? {}),
@@ -337,12 +343,61 @@ export class HttpApiClient implements AuthenticatedApiClient {
     );
   }
 
+  async uploadProductImage(
+    localUri: string,
+    opts?: { mimeType?: string; fileName?: string; webFile?: Blob },
+  ): Promise<string> {
+    const trimmed = localUri.trim();
+    if (!trimmed) {
+      throw new Error("No image URI was provided for upload.");
+    }
+
+    const meta = inferProductImageUploadMeta(trimmed, opts);
+    const formData = new FormData();
+    formData.append("folder", "products");
+
+    if (Platform.OS === "web") {
+      const blob =
+        opts?.webFile ?? (await (await fetch(trimmed)).blob());
+      const resolvedType =
+        blob.type === "image/png" || blob.type === "image/webp" || blob.type === "image/jpeg"
+          ? blob.type
+          : meta.mimeType;
+      const webFile =
+        typeof File !== "undefined"
+          ? new File([blob], meta.fileName, { type: resolvedType })
+          : blob;
+      formData.append("file", webFile);
+    } else {
+      formData.append("file", {
+        uri: trimmed,
+        name: meta.fileName,
+        type: meta.mimeType,
+      } as unknown as Blob);
+    }
+
+    const res = await this.request<{
+      success?: boolean;
+      downloadURL?: string;
+    }>("/api/upload", {
+      method: "POST",
+      body: formData,
+    });
+
+    if (!res?.downloadURL) {
+      throw new Error("Server did not return an uploaded image URL.");
+    }
+    return res.downloadURL;
+  }
+
   bulkCreateProducts(
     items: CreateProductInput[],
+    clientMutationId?: string,
   ): Promise<BulkImportProductsResult> {
     return this.request<BulkImportProductsResult>("/api/mobile/v1/products/bulk", {
       method: "POST",
       body: JSON.stringify({ items }),
+      clientMutationId,
     });
   }
 
@@ -523,24 +578,28 @@ export class HttpApiClient implements AuthenticatedApiClient {
 
   recordSupplierTransaction(
     input: CreateSupplierTransactionInput,
+    clientMutationId?: string,
   ): Promise<SupplierTransactionSummary> {
     return this.request<SupplierTransactionSummary>(
       `/api/mobile/v1/suppliers/${encodeURIComponent(input.supplierId)}/transactions`,
       {
         method: "POST",
         body: JSON.stringify(input),
+        clientMutationId,
       },
     );
   }
 
   paySupplierTransactionBalance(
     input: PaySupplierBalanceInput,
+    clientMutationId?: string,
   ): Promise<SupplierTransactionSummary> {
     return this.request<SupplierTransactionSummary>(
       `/api/mobile/v1/suppliers/transactions/${encodeURIComponent(input.transactionId)}/pay`,
       {
         method: "POST",
         body: JSON.stringify(input),
+        clientMutationId,
       },
     );
   }
@@ -606,30 +665,41 @@ export class HttpApiClient implements AuthenticatedApiClient {
     return Number(res?.count ?? 0);
   }
 
-  markNotificationRead(notificationId: string): Promise<NotificationItem> {
+  markNotificationRead(
+    notificationId: string,
+    clientMutationId?: string,
+  ): Promise<NotificationItem> {
     return this.request<NotificationItem>(
       `/api/mobile/v1/notifications/${encodeURIComponent(notificationId)}/read`,
-      { method: "PATCH" },
+      { method: "PATCH", clientMutationId },
     );
   }
 
-  markAllNotificationsRead(): Promise<{ updatedCount: number }> {
+  markAllNotificationsRead(
+    clientMutationId?: string,
+  ): Promise<{ updatedCount: number }> {
     return this.request<{ updatedCount: number }>(
       "/api/mobile/v1/notifications/read-all",
-      { method: "POST" },
+      { method: "POST", clientMutationId },
     );
   }
 
-  async deleteNotification(notificationId: string): Promise<void> {
+  async deleteNotification(
+    notificationId: string,
+    clientMutationId?: string,
+  ): Promise<void> {
     await this.request<void>(
       `/api/mobile/v1/notifications/${encodeURIComponent(notificationId)}`,
-      { method: "DELETE" },
+      { method: "DELETE", clientMutationId },
     );
   }
 
-  clearAllNotifications(): Promise<{ deletedCount: number }> {
+  clearAllNotifications(
+    clientMutationId?: string,
+  ): Promise<{ deletedCount: number }> {
     return this.request<{ deletedCount: number }>("/api/mobile/v1/notifications", {
       method: "DELETE",
+      clientMutationId,
     });
   }
 
@@ -645,10 +715,14 @@ export class HttpApiClient implements AuthenticatedApiClient {
     return this.request<BroadcastMessageItem[]>("/api/mobile/v1/messages");
   }
 
-  sendBroadcastMessage(input: SendBroadcastInput): Promise<BroadcastMessageItem> {
+  sendBroadcastMessage(
+    input: SendBroadcastInput,
+    clientMutationId?: string,
+  ): Promise<BroadcastMessageItem> {
     return this.request<BroadcastMessageItem>("/api/mobile/v1/messages", {
       method: "POST",
       body: JSON.stringify(input),
+      clientMutationId,
     });
   }
 

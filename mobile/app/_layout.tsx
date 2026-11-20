@@ -13,6 +13,7 @@ import {
 import { ApiProvider } from "@/api/ApiProvider";
 import { AuthProvider, useAuth } from "@/api/AuthProvider";
 import { LoadingState } from "@/components/LoadingState";
+import { ToastProvider } from "@/components/ui";
 import { ThemeProvider, useTheme } from "@/theme";
 
 SplashScreen.preventAutoHideAsync().catch(() => {});
@@ -217,11 +218,13 @@ export default function RootLayout() {
   return (
     <SafeAreaProvider>
       <ThemeProvider>
-        <AuthProvider>
-          <ApiProvider>
-            <ThemedNavigator />
-          </ApiProvider>
-        </AuthProvider>
+        <ToastProvider>
+          <AuthProvider>
+            <ApiProvider>
+              <ThemedNavigator />
+            </ApiProvider>
+          </AuthProvider>
+        </ToastProvider>
       </ThemeProvider>
     </SafeAreaProvider>
   );

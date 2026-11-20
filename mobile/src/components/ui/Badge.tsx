@@ -70,7 +70,7 @@ export function Badge({
     },
   };
 
-  const palette = variantMap[variant];
+  const palette = variantMap[variant] ?? variantMap.default;
 
   return (
     <View

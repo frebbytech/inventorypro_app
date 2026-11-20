@@ -29,7 +29,7 @@ import { useApiClient } from "@/api/ApiProvider";
 import { useAuth } from "@/api/AuthProvider";
 import { EmptyState } from "@/components/EmptyState";
 import { LoadingState } from "@/components/LoadingState";
-import { Badge, Button, Card, Input } from "@/components/ui";
+import { Badge, Button, Card, Input, useToast } from "@/components/ui";
 import { useTheme } from "@/theme";
 import type { EmployeeItem } from "@/types/domain";
 import { formatCurrency, formatDateTime } from "@/utils/formatters";
@@ -38,6 +38,7 @@ export default function EmployeesScreen() {
   const { theme } = useTheme();
   const api = useApiClient();
   const { user: currentUser, store } = useAuth();
+  const toast = useToast();
   const router = useRouter();
   const { colors, spacing, radii, typography, fontFamilies } = theme;
   const currency = store?.currency || "GHS";
@@ -156,6 +157,10 @@ export default function EmployeesScreen() {
         password: passwordInput,
       });
       setModalOpen(false);
+      toast.success(
+        "Team member created",
+        `${firstnameInput.trim()} (@${usernameInput.trim()}) added.`,
+      );
       await loadEmployees(true);
     } catch (err) {
       setFormError(

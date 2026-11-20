@@ -62,6 +62,7 @@ export async function POST(req: Request) {
                 name,
                 description: String(item.description ?? "").trim(),
                 barcode: String(item.barcode ?? "").trim(),
+                photo_url: item.photoUrl ? String(item.photoUrl).trim() : null,
                 cost_price: Math.max(0, Number(item.costPrice ?? 0)),
                 unit_price: Math.max(0, Number(item.unitPrice ?? 0)),
                 stock_quantity: Math.max(

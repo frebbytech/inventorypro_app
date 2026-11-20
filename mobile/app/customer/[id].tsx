@@ -35,6 +35,7 @@ import {
   CardHeader,
   CardTitle,
   Input,
+  useToast,
 } from "@/components/ui";
 import { useTheme } from "@/theme";
 import type { CustomerDetailResponse, SaleStatus } from "@/types/domain";
@@ -49,6 +50,7 @@ export default function CustomerDetailScreen() {
   const { theme } = useTheme();
   const api = useApiClient();
   const { store } = useAuth();
+  const toast = useToast();
   const router = useRouter();
   const { colors, spacing, radii, typography, fontFamilies } = theme;
   const currency = store?.currency || "GHS";
@@ -129,6 +131,7 @@ export default function CustomerDetailScreen() {
       });
       setDetail({ ...detail, customer: updated });
       setEditOpen(false);
+      toast.success("Customer updated", `${updated.name} profile saved.`);
     } catch (err) {
       setFormError(
         err instanceof Error ? err.message : "Failed to update customer.",

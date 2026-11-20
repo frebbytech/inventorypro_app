@@ -34,6 +34,7 @@ import {
   CardTitle,
   Input,
   SegmentedTabs,
+  useToast,
 } from "@/components/ui";
 import {
   DEFAULT_ACCENT_COLOR,
@@ -147,6 +148,7 @@ export default function SettingsScreen() {
     setAccentColor,
   } = useTheme();
   const { store, updateBusinessSettings } = useAuth();
+  const toast = useToast();
   const { colors, spacing, typography, radii, fontFamilies } = theme;
   const [activeTab, setActiveTab] = useState<SettingsTabValue>("business");
 
@@ -277,10 +279,12 @@ export default function SettingsScreen() {
       setCurrency(updated.currency);
       setTaxPercentText(formatTaxPercentInput(updated.taxRate));
       setBusinessSavedMsg("Business details updated and saved.");
+      toast.success("Business settings saved", `${updated.storeName} details updated.`);
     } catch (err) {
-      setBusinessError(
-        err instanceof Error ? err.message : "Failed to save business info.",
-      );
+      const msg =
+        err instanceof Error ? err.message : "Failed to save business info.";
+      setBusinessError(msg);
+      toast.error("Could not save settings", msg);
     } finally {
       setSavingBusiness(false);
     }
@@ -289,9 +293,9 @@ export default function SettingsScreen() {
   const handleSelectTheme = (pref: ThemePreference) => {
     setAppearanceError(null);
     setPreference(pref);
-    setAppearanceSavedMsg(
-      `Theme set to ${pref.charAt(0).toUpperCase() + pref.slice(1)}.`,
-    );
+    const label = `${pref.charAt(0).toUpperCase() + pref.slice(1)}`;
+    setAppearanceSavedMsg(`Theme set to ${label}.`);
+    toast.info("Theme updated", `Switched to ${label} mode.`);
   };
 
   const handleSelectAccent = (hex: string) => {
@@ -304,6 +308,7 @@ export default function SettingsScreen() {
     setHexInput(normalized);
     setAccentColor(normalized);
     setAppearanceSavedMsg(`Accent color applied (${normalized}).`);
+    toast.info("Accent color updated", `Applied ${normalized}.`);
   };
 
   const handleResetAppearance = () => {
@@ -312,6 +317,7 @@ export default function SettingsScreen() {
     setHexInput(DEFAULT_ACCENT_COLOR);
     setAccentColor(DEFAULT_ACCENT_COLOR);
     setAppearanceSavedMsg("Appearance reset to System theme & default blue.");
+    toast.info("Appearance reset", "Restored System theme & default blue.");
   };
 
   const normalizedTypedHex = normalizeHexColor(hexInput);
