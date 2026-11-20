@@ -7,6 +7,7 @@ import {
   type SessionUser as ServerSessionUser,
 } from "@/lib/auth";
 import { runWithAuthContext } from "@/lib/request-context";
+import { decrypt } from "@/lib/encryption";
 import {
   DEFAULT_TENANT_ID,
   DEFAULT_TENANT_NAME,
@@ -261,9 +262,15 @@ export async function getTwoFactorChannelStatus(
     if (!row) {
       return { emailConfigured: false, smsConfigured: false };
     }
+    const emailConfigured = Boolean(
+      row.smtp_user && row.smtp_password && decrypt(String(row.smtp_password)),
+    );
+    const smsConfigured = Boolean(
+      row.arkessel_api_key && decrypt(String(row.arkessel_api_key)),
+    );
     return {
-      emailConfigured: Boolean(row.smtp_user && row.smtp_password),
-      smsConfigured: Boolean(row.arkessel_api_key),
+      emailConfigured,
+      smsConfigured,
     };
   } catch {
     return { emailConfigured: false, smsConfigured: false };

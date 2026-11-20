@@ -3,15 +3,22 @@ import crypto from "crypto";
 const ALGORITHM = "aes-256-gcm";
 const IV_LENGTH = 12; // 96-bit IV for GCM
 const AUTH_TAG_LENGTH = 16;
+const HEX_64_REGEX = /^[0-9a-fA-F]{64}$/;
+const HEX_REGEX = /^[0-9a-fA-F]+$/;
 
 function getKey(): Buffer {
-  const key = process.env.ENCRYPTION_KEY;
-  if (!key || key.length !== 64) {
-    throw new Error(
-      "ENCRYPTION_KEY must be a 64-character hex string (32 bytes)"
-    );
+  const rawKey = process.env.ENCRYPTION_KEY?.trim();
+  if (rawKey) {
+    if (HEX_64_REGEX.test(rawKey)) {
+      return Buffer.from(rawKey, "hex");
+    }
+    return crypto.createHash("sha256").update(rawKey, "utf8").digest();
   }
-  return Buffer.from(key, "hex");
+
+  const fallbackSeed =
+    process.env.JWT_SECRET?.trim() ||
+    "inventorypro_default_encryption_secret_2026_change_in_prod";
+  return crypto.createHash("sha256").update(fallbackSeed, "utf8").digest();
 }
 
 /**
@@ -35,10 +42,25 @@ export function encrypt(plaintext: string): string {
  * Decrypt a value produced by encrypt().
  */
 export function decrypt(encryptedValue: string): string {
-  if (!encryptedValue) return "";
+  if (!encryptedValue || typeof encryptedValue !== "string") return "";
   try {
-    const [ivHex, authTagHex, ciphertextHex] = encryptedValue.split(":");
-    if (!ivHex || !authTagHex || !ciphertextHex) return "";
+    const parts = encryptedValue.trim().split(":");
+    if (parts.length !== 3) return "";
+    const [ivHex, authTagHex, ciphertextHex] = parts;
+    if (
+      !ivHex ||
+      !authTagHex ||
+      !ciphertextHex ||
+      ivHex.length !== IV_LENGTH * 2 ||
+      authTagHex.length !== AUTH_TAG_LENGTH * 2 ||
+      ciphertextHex.length % 2 !== 0 ||
+      !HEX_REGEX.test(ivHex) ||
+      !HEX_REGEX.test(authTagHex) ||
+      !HEX_REGEX.test(ciphertextHex)
+    ) {
+      return "";
+    }
+
     const iv = Buffer.from(ivHex, "hex");
     const authTag = Buffer.from(authTagHex, "hex");
     const ciphertext = Buffer.from(ciphertextHex, "hex");
@@ -49,8 +71,7 @@ export function decrypt(encryptedValue: string): string {
       decipher.final(),
     ]);
     return decrypted.toString("utf8");
-  } catch (err) {
-    console.error("Decryption failed:", err);
+  } catch {
     return "";
   }
 }

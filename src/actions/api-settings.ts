@@ -43,28 +43,31 @@ export async function getApiSettings(): Promise<Result<ApiSettings>> {
     const tenantId = user.tenant_id || DEFAULT_TENANT_ID;
     const row = await findOrCreateTenantApiSettingsRow(user.id, tenantId);
 
+    const decryptedArkKey = row.arkessel_api_key
+      ? decrypt(row.arkessel_api_key)
+      : "";
+    const decryptedSmtpPass = row.smtp_password
+      ? decrypt(row.smtp_password)
+      : "";
+
     const safe: ApiSettings = {
       id: row.id,
       user_id: row.user_id,
 
-      arkessel_api_key: row.arkessel_api_key
-        ? maskSecret(decrypt(row.arkessel_api_key))
-        : "",
+      arkessel_api_key: decryptedArkKey ? maskSecret(decryptedArkKey) : "",
       arkessel_sender_id: row.arkessel_sender_id || "",
       arkessel_base_url:
         row.arkessel_base_url || "https://sms.arkesel.com/api/v2/sms/send",
-      has_arkessel_api_key: !!row.arkessel_api_key,
+      has_arkessel_api_key: Boolean(decryptedArkKey),
 
       smtp_host: row.smtp_host || "smtp.gmail.com",
       smtp_port: row.smtp_port || 587,
       smtp_secure: row.smtp_secure || false,
       smtp_user: row.smtp_user || "",
-      smtp_password: row.smtp_password
-        ? maskSecret(decrypt(row.smtp_password))
-        : "",
+      smtp_password: decryptedSmtpPass ? maskSecret(decryptedSmtpPass) : "",
       smtp_from_name: row.smtp_from_name || "",
       smtp_from_email: row.smtp_from_email || "",
-      has_smtp_password: !!row.smtp_password,
+      has_smtp_password: Boolean(decryptedSmtpPass),
 
       created_at: row.created_at,
       updated_at: row.updated_at,
@@ -149,6 +152,11 @@ export async function testSmsConnection(
       return Result.fail("Arkessel API key not configured");
 
     const apiKey = decrypt(row.arkessel_api_key);
+    if (!apiKey) {
+      return Result.fail(
+        "Arkessel API key needs to be re-entered and saved before testing.",
+      );
+    }
     const sender = row.arkessel_sender_id || "InvPro";
     const baseUrl =
       row.arkessel_base_url || "https://sms.arkesel.com/api/v2/sms/send";
@@ -195,6 +203,13 @@ export async function testEmailConnection(): Promise<
     if (!row?.smtp_user || !row?.smtp_password)
       return Result.fail("SMTP credentials not configured");
 
+    const smtpPass = decrypt(row.smtp_password);
+    if (!smtpPass) {
+      return Result.fail(
+        "SMTP password needs to be re-entered and saved before testing.",
+      );
+    }
+
     const nodemailer = await import("nodemailer");
     const transporter = nodemailer.createTransport({
       host: row.smtp_host || "smtp.gmail.com",
@@ -202,7 +217,7 @@ export async function testEmailConnection(): Promise<
       secure: !!row.smtp_secure,
       auth: {
         user: row.smtp_user,
-        pass: decrypt(row.smtp_password),
+        pass: smtpPass,
       },
     });
 
