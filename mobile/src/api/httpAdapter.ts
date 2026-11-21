@@ -170,6 +170,7 @@ export class HttpApiClient implements AuthenticatedApiClient {
       skipAuthCheck?: boolean;
       clientMutationId?: string;
       baseUrlOverride?: string;
+      tokenOverride?: string | null;
     },
   ): Promise<T> {
     return this.request<T>(path, init);
@@ -182,16 +183,21 @@ export class HttpApiClient implements AuthenticatedApiClient {
       skipAuthCheck?: boolean;
       clientMutationId?: string;
       baseUrlOverride?: string;
+      tokenOverride?: string | null;
     },
   ): Promise<T> {
-    const token = this.config.getAccessToken();
     const {
       allowNotFound,
       skipAuthCheck,
       clientMutationId,
       baseUrlOverride,
+      tokenOverride,
       ...fetchInit
     } = init ?? {};
+    const token =
+      tokenOverride !== undefined
+        ? tokenOverride
+        : this.config.getAccessToken();
 
     const isFormDataBody =
       typeof FormData !== "undefined" && fetchInit.body instanceof FormData;
@@ -368,24 +374,29 @@ export class HttpApiClient implements AuthenticatedApiClient {
     });
   }
 
-  syncBootstrap(): Promise<SyncBootstrapResponse> {
-    return this.request<SyncBootstrapResponse>("/api/mobile/v1/sync/bootstrap");
+  syncBootstrap(tokenOverride?: string): Promise<SyncBootstrapResponse> {
+    return this.request<SyncBootstrapResponse>("/api/mobile/v1/sync/bootstrap", {
+      tokenOverride,
+    });
   }
 
-  syncDelta(cursor: number): Promise<SyncDeltaResponse> {
+  syncDelta(cursor: number, tokenOverride?: string): Promise<SyncDeltaResponse> {
     return this.request<SyncDeltaResponse>(
       `/api/mobile/v1/sync/delta?cursor=${Math.max(0, Math.trunc(cursor || 0))}`,
+      { tokenOverride },
     );
   }
 
   syncMerge(
     payload: SyncMergePayload,
     clientMutationId?: string,
+    tokenOverride?: string,
   ): Promise<SyncMergeResponse> {
     return this.request<SyncMergeResponse>("/api/mobile/v1/sync/merge", {
       method: "POST",
       body: JSON.stringify(payload),
       clientMutationId,
+      tokenOverride,
     });
   }
 
@@ -790,9 +801,10 @@ export class HttpApiClient implements AuthenticatedApiClient {
     return this.request<NotificationItem[]>(`/api/mobile/v1/notifications${suffix}`);
   }
 
-  async getUnreadNotificationCount(): Promise<number> {
+  async getUnreadNotificationCount(tokenOverride?: string): Promise<number> {
     const res = await this.request<{ count: number }>(
       "/api/mobile/v1/notifications/unread-count",
+      { tokenOverride },
     );
     return Number(res?.count ?? 0);
   }

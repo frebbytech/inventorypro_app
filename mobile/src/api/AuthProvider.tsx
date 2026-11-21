@@ -168,25 +168,57 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [syncError, setSyncError] = useState<string | null>(null);
 
   const tokenRef = useRef<string | null>(null);
-  tokenRef.current = token;
   const userRef = useRef<SessionUser | null>(null);
-  userRef.current = user;
-  const serverUrlRef = useRef<string>(serverUrl);
-  serverUrlRef.current = serverUrl;
+  const serverUrlRef = useRef<string>(resolveApiBaseUrl());
   const syncEngineRef = useRef<SyncEngine | null>(null);
+  const authEpochRef = useRef(0);
+  const isBootstrappingRef = useRef(false);
+
+  const commitToken = useCallback((next: string | null) => {
+    tokenRef.current = next;
+    setToken(next);
+  }, []);
+
+  const commitUser = useCallback(
+    (
+      next:
+        | SessionUser
+        | null
+        | ((prev: SessionUser | null) => SessionUser | null),
+    ) => {
+      if (typeof next === "function") {
+        setUser((prev) => {
+          const resolved = next(prev);
+          userRef.current = resolved;
+          return resolved;
+        });
+      } else {
+        userRef.current = next;
+        setUser(next);
+      }
+    },
+    [],
+  );
+
+  const commitServerUrl = useCallback((next: string) => {
+    const clean = next.trim().replace(/\/+$/, "");
+    serverUrlRef.current = clean;
+    setServerUrlState(clean);
+  }, []);
 
   const handleUnauthorized = useCallback(() => {
+    if (isBootstrappingRef.current) return;
+    authEpochRef.current += 1;
     syncEngineRef.current?.stop();
     syncEngineRef.current = null;
-    tokenRef.current = null;
-    setToken(null);
-    setUser(null);
+    commitToken(null);
+    commitUser(null);
     setTenant(null);
     setUnreadNotificationsCount(0);
     setSyncStatus("local_only");
     void clearStoredAuthToken();
     void setStoredTenantInfo(null);
-  }, []);
+  }, [commitToken, commitUser]);
 
   const sqliteClient = useMemo(
     () =>
@@ -251,7 +283,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       () => tokenRef.current,
       (snapshot) => {
         setStore(snapshot.store);
-        setUser(snapshot.user);
+        commitUser(snapshot.user);
         setTenant(snapshot.tenant);
         if (Array.isArray(snapshot.notifications)) {
           setUnreadNotificationsCount(
@@ -284,7 +316,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         syncEngineRef.current = null;
       }
     };
-  }, [workspaceMode, token, user?.id, httpClient, refreshUnreadNotifications]);
+  }, [
+    workspaceMode,
+    token,
+    user?.id,
+    httpClient,
+    refreshUnreadNotifications,
+    commitUser,
+  ]);
 
   const refreshPlatformServerUrl = useCallback(async (): Promise<string> => {
     setIsResolvingServerUrl(true);
@@ -308,8 +347,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
               typeof cfg.serverUrl === "string" && cfg.serverUrl.trim()
                 ? cfg.serverUrl.trim().replace(/\/+$/, "")
                 : candidate;
-            serverUrlRef.current = discovered;
-            setServerUrlState(discovered);
+            commitServerUrl(discovered);
             setIsPlatformUrlConfigured(Boolean(cfg.configuredBySuperAdmin));
             if (discovered) {
               await setStoredServerUrl(discovered);
@@ -325,11 +363,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     } finally {
       setIsResolvingServerUrl(false);
     }
-  }, [httpClient]);
+  }, [httpClient, commitServerUrl]);
 
   // Restore session & workspace mode on startup
   useEffect(() => {
     let active = true;
+    const epochAtStart = authEpochRef.current;
+
     async function restoreSession() {
       try {
         const [storedToken, onboarded, storedMode, storedServer, storedTenant] =
@@ -341,13 +381,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             getStoredTenantInfo(),
           ]);
 
-        if (!active) return;
+        if (!active || authEpochRef.current !== epochAtStart) return;
 
         const cleanStoredServer =
           storedServer && !isLegacyMetroUrl(storedServer) ? storedServer : null;
         const resolvedServer = cleanStoredServer || resolveApiBaseUrl();
-        serverUrlRef.current = resolvedServer;
-        setServerUrlState(resolvedServer);
+        commitServerUrl(resolvedServer);
         setWorkspaceMode(storedMode);
         setSyncStatus(storedMode === "synced" ? "connecting" : "local_only");
         setHasCompletedOnboardingState(onboarded);
@@ -355,7 +394,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
         // Automatically fetch the Super-Admin configured static server URL
         await refreshPlatformServerUrl().catch(() => resolvedServer);
-        if (!active) return;
+        if (!active || authEpochRef.current !== epochAtStart) return;
 
         if (!storedToken) {
           return;
@@ -366,10 +405,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           storedMode === "synced" ? httpClient : sqliteClient;
 
         const session = await activeClient.getMe();
-        if (!active) return;
+        if (!active || authEpochRef.current !== epochAtStart) return;
 
-        setToken(storedToken);
-        setUser(session.user);
+        commitToken(storedToken);
+        commitUser(session.user);
         setStore(session.store);
         const resolvedTenant = extractTenant(session) ?? storedTenant;
         setTenant(resolvedTenant);
@@ -385,15 +424,16 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         const unread = await activeClient
           .getUnreadNotificationCount()
           .catch(() => 0);
-        if (active) {
+        if (active && authEpochRef.current === epochAtStart) {
           setUnreadNotificationsCount(unread);
         }
       } catch {
+        if (authEpochRef.current !== epochAtStart) return;
         tokenRef.current = null;
         await clearStoredAuthToken();
-        if (active) {
-          setToken(null);
-          setUser(null);
+        if (active && authEpochRef.current === epochAtStart) {
+          commitToken(null);
+          commitUser(null);
           setStore(null);
           setUnreadNotificationsCount(0);
         }
@@ -407,7 +447,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     return () => {
       active = false;
     };
-  }, [httpClient, sqliteClient, refreshPlatformServerUrl]);
+  }, [
+    httpClient,
+    sqliteClient,
+    refreshPlatformServerUrl,
+    commitServerUrl,
+    commitToken,
+    commitUser,
+  ]);
 
   const completeOnboarding = useCallback(async () => {
     setHasCompletedOnboardingState(true);
@@ -433,34 +480,50 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           "Web server returned an invalid session token. Please check the Super Admin server configuration.",
         );
       }
+      authEpochRef.current += 1;
       const cleanToken = res.token.trim();
-      tokenRef.current = cleanToken;
-      await setStoredAuthToken(cleanToken);
-      await setStoredWorkspaceMode("synced");
+      const previousToken = tokenRef.current;
       const resolvedTenant = extractTenant(res);
-      setTenant(resolvedTenant);
-      await setStoredTenantInfo(resolvedTenant);
-      await setStoredSyncCursor(0);
 
-      // Run migration or initial bootstrap BEFORE flipping user+token+mode into SyncEngine
-      const tempEngine = new SyncEngine(httpClient, () => cleanToken);
-      if (strategy === "merge") {
-        await tempEngine.mergeLocalAndBootstrap();
-      } else {
-        await tempEngine.bootstrapAndHydrate();
+      tokenRef.current = cleanToken;
+      isBootstrappingRef.current = true;
+      try {
+        await setStoredSyncCursor(0);
+
+        // Hydrate / merge local cache BEFORE activating synced SyncEngine in React state
+        const tempEngine = new SyncEngine(httpClient, () => cleanToken);
+        if (strategy === "merge") {
+          await tempEngine.mergeLocalAndBootstrap();
+        } else {
+          await tempEngine.bootstrapAndHydrate();
+        }
+
+        await setStoredAuthToken(cleanToken);
+        await setStoredWorkspaceMode("synced");
+        await setStoredTenantInfo(resolvedTenant);
+      } catch (err) {
+        // Preserve previous in-memory token ref if pre-activation bootstrap fails
+        if (tokenRef.current === cleanToken) {
+          tokenRef.current = previousToken;
+        }
+        throw err;
+      } finally {
+        isBootstrappingRef.current = false;
       }
 
-      setWorkspaceMode("synced");
-      setToken(cleanToken);
-      setUser(res.user);
-      setStore(res.store);
-      setSyncVersion((v) => v + 1);
       const unread = await httpClient
-        .getUnreadNotificationCount()
+        .getUnreadNotificationCount(cleanToken)
         .catch(() => 0);
+
+      setTenant(resolvedTenant);
+      setStore(res.store);
+      setWorkspaceMode("synced");
+      commitToken(cleanToken);
+      commitUser(res.user);
       setUnreadNotificationsCount(unread);
+      setSyncVersion((v) => v + 1);
     },
-    [httpClient],
+    [httpClient, commitToken, commitUser],
   );
 
   const signIn = useCallback(
@@ -486,6 +549,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         return res;
       }
 
+      authEpochRef.current += 1;
       const response = (await sqliteClient.login({
         identifier,
         password,
@@ -498,10 +562,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       ) {
         throw new Error("Local device login failed to issue a session token.");
       }
-      tokenRef.current = response.token;
       await setStoredAuthToken(response.token);
-      setToken(response.token);
-      setUser(response.user);
+      commitToken(response.token);
+      commitUser(response.user);
       setStore(response.store);
       setTenant(null);
       setSyncStatus("local_only");
@@ -517,6 +580,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       sqliteClient,
       commitSyncedSession,
       refreshPlatformServerUrl,
+      commitToken,
+      commitUser,
     ],
   );
 
@@ -571,6 +636,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   );
 
   const switchBackToMobileOnly = useCallback(async () => {
+    authEpochRef.current += 1;
     if (syncEngineRef.current) {
       await syncEngineRef.current.flushOutbox().catch(() => {});
       syncEngineRef.current.stop();
@@ -583,21 +649,20 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     } catch {
       // ignore
     }
-    tokenRef.current = null;
     await clearStoredAuthToken();
     await setStoredTenantInfo(null);
     await setStoredSyncCursor(0);
     await setStoredWorkspaceMode("mobile_only");
     setWorkspaceMode("mobile_only");
-    setToken(null);
-    setUser(null);
+    commitToken(null);
+    commitUser(null);
     setStore(null);
     setTenant(null);
     setSyncStatus("local_only");
     setPendingOutboxCount(0);
     setConflictOutboxCount(0);
     setUnreadNotificationsCount(0);
-  }, [httpClient]);
+  }, [httpClient, commitToken, commitUser]);
 
   const triggerSyncNow = useCallback(async () => {
     if (syncEngineRef.current) {
@@ -614,6 +679,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const signOut = useCallback(async () => {
+    authEpochRef.current += 1;
     syncEngineRef.current?.stop();
     syncEngineRef.current = null;
     try {
@@ -623,18 +689,17 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     } catch {
       // Ignore network errors during logout
     } finally {
-      tokenRef.current = null;
       await clearStoredAuthToken();
       await setStoredTenantInfo(null);
       await setStoredSyncCursor(0);
-      setToken(null);
-      setUser(null);
+      commitToken(null);
+      commitUser(null);
       setStore(null);
       setTenant(null);
       setUnreadNotificationsCount(0);
       setSyncStatus(workspaceMode === "synced" ? "offline" : "local_only");
     }
-  }, [apiClient, workspaceMode]);
+  }, [apiClient, workspaceMode, commitToken, commitUser]);
 
   const refreshStoreSettings = useCallback(async (): Promise<StoreProfile> => {
     const latest = await apiClient.getStoreSettings();
@@ -688,17 +753,17 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const updateMyProfile = useCallback(
     async (input: UpdateMyProfileInput): Promise<SessionUser> => {
       const updated = await apiClient.updateMyProfile(input);
-      setUser(updated);
+      commitUser(updated);
       return updated;
     },
-    [apiClient],
+    [apiClient, commitUser],
   );
 
   const updateUserTwoFactor = useCallback(
     async (input: UpdateTwoFactorInput): Promise<StaffTwoFactorAccount> => {
       const updated = await apiClient.updateUserTwoFactor(input);
       if (updated.isCurrentUser || updated.id === userRef.current?.id) {
-        setUser((prev) =>
+        commitUser((prev) =>
           prev
             ? {
                 ...prev,
@@ -710,7 +775,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       }
       return updated;
     },
-    [apiClient],
+    [apiClient, commitUser],
   );
 
   const changePassword = useCallback(

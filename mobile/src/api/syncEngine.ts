@@ -135,7 +135,7 @@ export class SyncEngine {
       }
     });
 
-    if (lastCursor === 0) {
+    if (lastCursor === 0 && !lastSyncedAt) {
       await this.bootstrapAndHydrate().catch(() => {});
     } else {
       await this.flushOutbox().catch(() => {});
@@ -168,7 +168,8 @@ export class SyncEngine {
 
   async bootstrapAndHydrate(): Promise<SyncBootstrapResponse> {
     this.setState({ status: "syncing", lastError: null });
-    const snapshot = await this.httpClient.syncBootstrap();
+    const accessToken = this.getAccessToken() ?? undefined;
+    const snapshot = await this.httpClient.syncBootstrap(accessToken);
     const db = await ensureDbReady();
     replaceLocalSnapshotWithCloud(db, snapshot);
     await setStoredSyncCursor(snapshot.latestCursor || 0);
@@ -207,8 +208,9 @@ export class SyncEngine {
       }
     }
 
+    const accessToken = this.getAccessToken() ?? undefined;
     const mutationId = `merge-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-    const merge = await this.httpClient.syncMerge(payload, mutationId);
+    const merge = await this.httpClient.syncMerge(payload, mutationId, accessToken);
     const snapshot = await this.bootstrapAndHydrate();
     return { merge, snapshot };
   }
@@ -277,6 +279,7 @@ export class SyncEngine {
             method: item.method,
             body: bodyToSend,
             clientMutationId: item.clientMutationId,
+            tokenOverride: this.getAccessToken() ?? undefined,
           });
 
           if (uploadedPhotoUrl && originalLocalPhotoUri) {
@@ -324,7 +327,11 @@ export class SyncEngine {
     this.catchingUp = true;
 
     try {
-      const delta = await this.httpClient.syncDelta(this.state.lastCursor);
+      const accessToken = this.getAccessToken() ?? undefined;
+      const delta = await this.httpClient.syncDelta(
+        this.state.lastCursor,
+        accessToken,
+      );
       if (delta.resetRequired) {
         await this.bootstrapAndHydrate();
         return;

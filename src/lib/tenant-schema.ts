@@ -313,13 +313,41 @@ export async function rebuildTenantScopedViews(knexOrDb: Knex): Promise<void> {
     .first("sql")
     .catch(() => null);
 
-  if (
-    sampleViewRow?.sql &&
-    String(sampleViewRow.sql).includes("tenant_id") &&
-    sampleSalesView?.sql &&
-    String(sampleSalesView.sql).includes("tenant_id")
-  ) {
-    return;
+  const productViewSql = String(sampleViewRow?.sql || "");
+  const salesViewSql = String(sampleSalesView?.sql || "");
+  const hasExpectedSqlDefinitions =
+    productViewSql.includes("tenant_id") &&
+    productViewSql.includes("low_stock_threshold") &&
+    productViewSql.includes("photo_url") &&
+    productViewSql.includes("barcode") &&
+    productViewSql.includes("version") &&
+    salesViewSql.includes("tenant_id");
+
+  if (hasExpectedSqlDefinitions) {
+    try {
+      await Promise.all([
+        knexOrDb("v_product_catalog")
+          .select(
+            "product_id",
+            "tenant_id",
+            "low_stock_threshold",
+            "photo_url",
+            "barcode",
+            "version",
+          )
+          .limit(0),
+        knexOrDb("v_sales_summary").select("tenant_id", "sale_date").limit(0),
+        knexOrDb("v_sale_summary")
+          .select("sale_id", "tenant_id", "receipt_number")
+          .limit(0),
+        knexOrDb("v_supplier_transactions")
+          .select("id", "tenant_id", "transaction_no")
+          .limit(0),
+      ]);
+      return;
+    } catch {
+      // One or more existing views reference outdated/missing columns or tables; rebuild all views.
+    }
   }
 
   const viewsToDrop = [
@@ -791,8 +819,107 @@ export async function applyMultiTenantSchema(knexOrDb: Knex): Promise<void> {
     }
   }
 
+  // Ensure evolved columns exist on legacy tables before rebuilding views
+  await addColumnIfMissing(knexOrDb, "products", "photo_url", (table) => {
+    table.text("photo_url").defaultTo("");
+  });
+  await addColumnIfMissing(knexOrDb, "products", "barcode", (table) => {
+    table.text("barcode").defaultTo("");
+  });
+  await addColumnIfMissing(knexOrDb, "products", "description", (table) => {
+    table.text("description").defaultTo("");
+  });
+  await addColumnIfMissing(knexOrDb, "products", "low_stock_threshold", (table) => {
+    table.integer("low_stock_threshold").notNullable().defaultTo(5);
+  });
+  await addColumnIfMissing(knexOrDb, "products", "is_active", (table) => {
+    table.integer("is_active").defaultTo(1);
+  });
   await addColumnIfMissing(knexOrDb, "products", "version", (table) => {
     table.integer("version").notNullable().defaultTo(1);
+  });
+
+  await addColumnIfMissing(knexOrDb, "sales", "receipt_number", (table) => {
+    table.string("receipt_number", 100).defaultTo("");
+  });
+  await addColumnIfMissing(knexOrDb, "suppliers", "company_name", (table) => {
+    table.string("company_name", 255).defaultTo(null);
+  });
+  await addColumnIfMissing(knexOrDb, "suppliers", "is_active", (table) => {
+    table.integer("is_active").defaultTo(1);
+  });
+  await addColumnIfMissing(knexOrDb, "supplier_transactions", "transaction_no", (table) => {
+    table.string("transaction_no").nullable();
+  });
+  await addColumnIfMissing(knexOrDb, "supplier_transactions", "delivered_by", (table) => {
+    table.string("delivered_by").nullable();
+  });
+  await addColumnIfMissing(knexOrDb, "supplier_transactions", "amount_paid", (table) => {
+    table.float("amount_paid").defaultTo(0);
+  });
+  await addColumnIfMissing(knexOrDb, "supplier_transactions", "balance", (table) => {
+    table.float("balance").defaultTo(0);
+  });
+  await addColumnIfMissing(knexOrDb, "supplier_transactions", "notes", (table) => {
+    table.text("notes").nullable();
+  });
+
+  await addColumnIfMissing(knexOrDb, "settings", "logo", (table) => {
+    table.text("logo").defaultTo("");
+  });
+  await addColumnIfMissing(knexOrDb, "settings", "language", (table) => {
+    table.string("language", 10).defaultTo("en");
+  });
+  await addColumnIfMissing(knexOrDb, "settings", "business_opening_time", (table) => {
+    table.string("business_opening_time").defaultTo("08:00");
+  });
+  await addColumnIfMissing(knexOrDb, "settings", "business_closing_time", (table) => {
+    table.string("business_closing_time").defaultTo("18:00");
+  });
+  await addColumnIfMissing(knexOrDb, "settings", "business_hours_schedule", (table) => {
+    table.text("business_hours_schedule").defaultTo("[]");
+  });
+  await addColumnIfMissing(knexOrDb, "settings", "business_hours_notes", (table) => {
+    table.text("business_hours_notes").defaultTo("");
+  });
+  await addColumnIfMissing(knexOrDb, "settings", "business_24_7", (table) => {
+    table.boolean("business_24_7").defaultTo(false);
+  });
+  await addColumnIfMissing(knexOrDb, "settings", "eod_report_enabled", (table) => {
+    table.boolean("eod_report_enabled").defaultTo(true);
+  });
+  await addColumnIfMissing(knexOrDb, "settings", "eod_business_closing_time", (table) => {
+    table.string("eod_business_closing_time").defaultTo("18:00");
+  });
+  await addColumnIfMissing(knexOrDb, "settings", "eod_channels", (table) => {
+    table.text("eod_channels").defaultTo('["in_app","email","sms"]');
+  });
+  await addColumnIfMissing(knexOrDb, "settings", "eod_admin_email", (table) => {
+    table.string("eod_admin_email").nullable();
+  });
+  await addColumnIfMissing(knexOrDb, "settings", "eod_admin_phone", (table) => {
+    table.string("eod_admin_phone").nullable();
+  });
+  await addColumnIfMissing(knexOrDb, "settings", "stock_audio_alert", (table) => {
+    table.boolean("stock_audio_alert").defaultTo(true);
+  });
+  await addColumnIfMissing(knexOrDb, "settings", "stock_audio_volume", (table) => {
+    table.float("stock_audio_volume").defaultTo(0.5);
+  });
+  await addColumnIfMissing(knexOrDb, "settings", "stock_audio_tone", (table) => {
+    table.string("stock_audio_tone").defaultTo("chime");
+  });
+  await addColumnIfMissing(knexOrDb, "settings", "stock_alert_threshold", (table) => {
+    table.integer("stock_alert_threshold").defaultTo(5);
+  });
+  await addColumnIfMissing(knexOrDb, "settings", "printer_device_name", (table) => {
+    table.string("printer_device_name").defaultTo("");
+  });
+  await addColumnIfMissing(knexOrDb, "settings", "print_after_sale", (table) => {
+    table.integer("print_after_sale").defaultTo(0);
+  });
+  await addColumnIfMissing(knexOrDb, "settings", "paper_size", (table) => {
+    table.string("paper_size", 20).defaultTo("thermal_80mm");
   });
 
   const existingDefaultTenant = await knexOrDb("tenants")
