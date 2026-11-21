@@ -23,5 +23,7 @@ export async function GET(req: Request) {
     req,
     tenantId: auth.session.tenant_id || DEFAULT_TENANT_ID,
     sinceCursor,
+    userId: auth.session.id,
+    role: auth.session.role,
   });
 }

@@ -7,7 +7,14 @@ import React, {
   useRef,
   useState,
 } from "react";
+import { eq } from "drizzle-orm";
 import { Platform } from "react-native";
+import { ensureDbReady } from "@/db/client";
+import {
+  getStoreProfile,
+  getUnreadNotificationCount as getLocalUnreadNotificationCount,
+} from "@/db/queries";
+import { users } from "@/db/schema";
 import { HttpApiClient, resolveApiBaseUrl } from "./httpAdapter";
 import {
   ExpoSqliteDrizzleClient,
@@ -292,6 +299,52 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         }
         setSyncVersion((v) => v + 1);
       },
+      () => userRef.current?.id ?? null,
+      (res) => {
+        if (!res.storeUpdated && !res.currentUserUpdated && !res.notificationsChanged) {
+          return;
+        }
+        void ensureDbReady()
+          .then((db) => {
+            if (res.storeUpdated) {
+              setStore(getStoreProfile(db));
+            }
+            const uid = userRef.current?.id;
+            if (res.currentUserUpdated && uid) {
+              const row = db
+                .select()
+                .from(users)
+                .where(eq(users.id, uid))
+                .limit(1)
+                .get();
+              if (row) {
+                commitUser((prev) =>
+                  prev
+                    ? {
+                        ...prev,
+                        username: row.username,
+                        email: row.email,
+                        firstname: row.firstname,
+                        lastname: row.lastname,
+                        phonenumber: row.phonenumber ?? undefined,
+                        role: row.role,
+                        lastLoginAt: row.lastLoginAt,
+                        twoFactorEnabled: row.twoFactorEnabled === 1,
+                        twoFactorMethod:
+                          row.twoFactorMethod === "sms" ? "sms" : "email",
+                      }
+                    : prev,
+                );
+              }
+            }
+            if (res.notificationsChanged && uid) {
+              setUnreadNotificationsCount(
+                getLocalUnreadNotificationCount(db, uid),
+              );
+            }
+          })
+          .catch(() => {});
+      },
     );
     syncEngineRef.current = engine;
 
@@ -303,7 +356,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       setSyncError(snap.lastError);
       if (event) {
         setSyncVersion((v) => v + 1);
-        void refreshUnreadNotifications();
       }
     });
 
@@ -321,7 +373,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     token,
     user?.id,
     httpClient,
-    refreshUnreadNotifications,
     commitUser,
   ]);
 

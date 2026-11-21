@@ -13,6 +13,7 @@ import {
   removeOutboxItem,
   replaceLocalSnapshotWithCloud,
   setSyncMetaValue,
+  type ApplySyncEventResult,
 } from "@/db/syncStore";
 import {
   deleteLocalProductImageIfManaged,
@@ -47,6 +48,7 @@ export class SyncEngine {
   private abortController: AbortController | null = null;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private pollTimer: ReturnType<typeof setInterval> | null = null;
+  private refreshTimer: ReturnType<typeof setTimeout> | null = null;
   private appStateSub: { remove: () => void } | null = null;
   private reconnectAttempts = 0;
   private flushing = false;
@@ -66,6 +68,11 @@ export class SyncEngine {
     private readonly httpClient: HttpApiClient,
     private readonly getAccessToken: () => string | null,
     private readonly onBootstrapSynced?: (snapshot: SyncBootstrapResponse) => void,
+    private readonly getCurrentUserId?: () => string | null,
+    private readonly onDeltaApplied?: (
+      result: ApplySyncEventResult,
+      event: SyncEventDto,
+    ) => void,
   ) {}
 
   getState(): SyncStateSnapshot {
@@ -156,6 +163,10 @@ export class SyncEngine {
       clearInterval(this.pollTimer);
       this.pollTimer = null;
     }
+    if (this.refreshTimer) {
+      clearTimeout(this.refreshTimer);
+      this.refreshTimer = null;
+    }
     if (this.abortController) {
       this.abortController.abort();
       this.abortController = null;
@@ -164,6 +175,16 @@ export class SyncEngine {
       this.appStateSub.remove();
       this.appStateSub = null;
     }
+  }
+
+  private scheduleRefreshFromCloud(): void {
+    if (this.destroyed || !this.started || this.refreshTimer) return;
+    this.refreshTimer = setTimeout(() => {
+      this.refreshTimer = null;
+      if (!this.destroyed && this.started) {
+        void this.bootstrapAndHydrate().catch(() => {});
+      }
+    }, 350);
   }
 
   async bootstrapAndHydrate(): Promise<SyncBootstrapResponse> {
@@ -338,11 +359,23 @@ export class SyncEngine {
       }
 
       const db = await ensureDbReady();
+      const currentUserId = this.getCurrentUserId?.() ?? null;
       let maxCursor = this.state.lastCursor;
+      let needsFullRefresh = false;
+
       for (const evt of delta.events) {
-        applyRemoteSyncEvent(db, evt);
+        const res = applyRemoteSyncEvent(db, evt, currentUserId);
+        if (res.requiresRefresh) {
+          needsFullRefresh = true;
+        }
         if (evt.cursor > maxCursor) maxCursor = evt.cursor;
+        this.onDeltaApplied?.(res, evt);
         this.emit(evt);
+      }
+
+      if (needsFullRefresh) {
+        await this.bootstrapAndHydrate();
+        return;
       }
 
       const latest = Math.max(maxCursor, delta.latestCursor || 0);
@@ -508,10 +541,18 @@ export class SyncEngine {
     if (eventName === "sync" && parsed) {
       const evt = parsed as unknown as SyncEventDto;
       const db = await ensureDbReady();
-      applyRemoteSyncEvent(db, evt);
+      const res = applyRemoteSyncEvent(
+        db,
+        evt,
+        this.getCurrentUserId?.() ?? null,
+      );
       const nextCursor = Math.max(this.state.lastCursor, Number(evt.cursor || 0));
       const nowIso = new Date().toISOString();
       await setStoredSyncCursor(nextCursor);
+      this.onDeltaApplied?.(res, evt);
+      if (res.requiresRefresh) {
+        this.scheduleRefreshFromCloud();
+      }
       this.setState(
         {
           lastCursor: nextCursor,

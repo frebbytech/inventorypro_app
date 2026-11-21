@@ -25,7 +25,12 @@ export async function POST(req: Request) {
           entityType: "notification",
           entityId: "all",
           action: "refresh",
-          payload: { user_id: session.id },
+          payload: {
+            userId: session.id,
+            user_id: session.id,
+            allRead: true,
+            all_read: true,
+          },
           actorUserId: session.id,
         });
 

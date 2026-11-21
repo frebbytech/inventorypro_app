@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import db from "@/db/knex";
 import {
+  emitSyncEvent,
   insertSyncEvent,
   publishSyncEvent,
   runWithIdempotency,
@@ -347,7 +348,7 @@ export async function POST(req: Request) {
         // Fire notifications outside tx safely
         for (const alert of lowStockAlerts) {
           const notifId = generateId();
-          await db("notifications")
+          const inserted = await db("notifications")
             .insert({
               id: notifId,
               tenant_id: tenantId,
@@ -361,7 +362,18 @@ export async function POST(req: Request) {
               created_at: nowIso,
               updated_at: nowIso,
             })
-            .catch(() => {});
+            .then(() => true)
+            .catch(() => false);
+          if (inserted) {
+            await emitSyncEvent({
+              tenantId,
+              entityType: "notification",
+              entityId: notifId,
+              action: "upsert",
+              payload: { userId: session.id, user_id: session.id },
+              actorUserId: session.id,
+            });
+          }
         }
 
         const receipt = await getSaleReceiptDetailDto(tenantId, saleId, session);

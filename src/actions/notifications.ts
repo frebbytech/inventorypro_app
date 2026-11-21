@@ -253,9 +253,14 @@ export async function markAllNotificationsAsRead(): Promise<
     await emitSyncEvent({
       tenantId,
       entityType: "notification",
-      entityId: currentUser.id,
+      entityId: "all",
       action: "refresh",
-      payload: { user_id: currentUser.id, all_read: true },
+      payload: {
+        userId: currentUser.id,
+        user_id: currentUser.id,
+        allRead: true,
+        all_read: true,
+      },
       actorUserId: currentUser.id,
     });
 
@@ -367,8 +372,13 @@ export async function deleteAllNotifications(): Promise<
     await emitSyncEvent({
       tenantId,
       entityType: "notification",
-      entityId: currentUser.id,
-      action: "refresh",
+      entityId: "all",
+      action: "delete",
+      payload: {
+        userId: currentUser.id,
+        user_id: currentUser.id,
+        allDeleted: true,
+      },
       actorUserId: currentUser.id,
     });
 

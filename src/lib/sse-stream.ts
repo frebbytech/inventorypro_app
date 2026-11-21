@@ -4,14 +4,26 @@ import {
   subscribeTenantSync,
   type SyncEventRecord,
 } from "@/lib/sync-bus";
+import {
+  enrichSyncEventRecord,
+  enrichSyncEventsBatch,
+  scopeSyncEventsForUser,
+  type SyncEventDto,
+} from "@/lib/sync-delta";
 
 export function createTenantSyncSseResponse(opts: {
   req: Request;
   tenantId: string;
   sinceCursor: number;
+  userId?: string | null;
+  role?: string | null;
 }): Response {
   const encoder = new TextEncoder();
   let cleanupFn: (() => void) | null = null;
+  const viewer = {
+    userId: opts.userId ?? null,
+    role: opts.role ?? null,
+  };
 
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
@@ -19,6 +31,7 @@ export function createTenantSyncSseResponse(opts: {
       let lastSentCursor = Math.max(0, Math.floor(opts.sinceCursor));
       const pendingLive: SyncEventRecord[] = [];
       let replayDone = false;
+      let liveQueue: Promise<void> = Promise.resolve();
 
       const sendFrame = (eventName: string, data: unknown, id?: number) => {
         if (closed) return;
@@ -34,15 +47,33 @@ export function createTenantSyncSseResponse(opts: {
         }
       };
 
+      const dispatchDtos = (dtos: SyncEventDto[], rawMaxCursor?: number) => {
+        const scoped = scopeSyncEventsForUser(dtos, viewer);
+        for (const dto of scoped) {
+          if (dto.cursor > lastSentCursor) {
+            lastSentCursor = dto.cursor;
+            sendFrame("sync", dto, dto.cursor);
+          }
+        }
+        if (rawMaxCursor && rawMaxCursor > lastSentCursor) {
+          lastSentCursor = rawMaxCursor;
+        }
+      };
+
       const unsubscribe = subscribeTenantSync(opts.tenantId, (evt) => {
         if (closed) return;
         if (!replayDone) {
           pendingLive.push(evt);
           return;
         }
-        if (evt.cursor <= lastSentCursor) return;
-        lastSentCursor = evt.cursor;
-        sendFrame("sync", evt, evt.cursor);
+        liveQueue = liveQueue
+          .then(async () => {
+            if (closed || evt.cursor <= lastSentCursor) return;
+            const enriched = await enrichSyncEventRecord(evt);
+            if (closed || evt.cursor <= lastSentCursor) return;
+            dispatchDtos([enriched], evt.cursor);
+          })
+          .catch(() => {});
       });
 
       const heartbeat = setInterval(() => {
@@ -83,22 +114,37 @@ export function createTenantSyncSseResponse(opts: {
           resetRequired,
         });
 
-        for (const evt of catchUp.events) {
-          if (evt.cursor > lastSentCursor) {
-            lastSentCursor = evt.cursor;
-            sendFrame("sync", evt, evt.cursor);
-          }
-        }
+        const enrichedCatchUp = await enrichSyncEventsBatch(
+          opts.tenantId,
+          catchUp.events,
+        );
+        dispatchDtos(
+          enrichedCatchUp,
+          catchUp.events.reduce(
+            (max, e) => (e.cursor > max ? e.cursor : max),
+            lastSentCursor,
+          ),
+        );
 
         replayDone = true;
 
-        for (const evt of pendingLive) {
-          if (evt.cursor > lastSentCursor) {
-            lastSentCursor = evt.cursor;
-            sendFrame("sync", evt, evt.cursor);
+        if (pendingLive.length > 0) {
+          const missedLive = pendingLive.filter((e) => e.cursor > lastSentCursor);
+          pendingLive.length = 0;
+          if (missedLive.length > 0) {
+            const enrichedPending = await enrichSyncEventsBatch(
+              opts.tenantId,
+              missedLive,
+            );
+            dispatchDtos(
+              enrichedPending,
+              missedLive.reduce(
+                (max, e) => (e.cursor > max ? e.cursor : max),
+                lastSentCursor,
+              ),
+            );
           }
         }
-        pendingLive.length = 0;
       } catch (err) {
         sendFrame("error", {
           message: err instanceof Error ? err.message : "Sync replay failed",

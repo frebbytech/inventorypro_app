@@ -1,4 +1,4 @@
-import { and, asc, eq, inArray, ne } from "drizzle-orm";
+import { and, asc, eq, inArray, ne, sql } from "drizzle-orm";
 import type { ExpoSqliteDrizzleDb } from "./client";
 import { generateId } from "./crypto";
 import {
@@ -744,177 +744,1604 @@ export function getSyncMetaValue(
   return row?.value ?? null;
 }
 
+export interface ApplySyncEventResult {
+  applied: boolean;
+  requiresRefresh: boolean;
+  entityType: string;
+  storeUpdated: boolean;
+  currentUserUpdated: boolean;
+  notificationsChanged: boolean;
+}
+
+type SyncTx = Parameters<Parameters<ExpoSqliteDrizzleDb["transaction"]>[0]>[0];
+
+function normalizeIncomingSyncEvent(raw: SyncEventDto | Record<string, unknown>): SyncEventDto {
+  const anyRaw = raw as Record<string, unknown>;
+  const rawEntityType = String(
+    anyRaw.entityType ?? anyRaw.entity_type ?? "",
+  ).trim();
+  const entityType =
+    rawEntityType === "supplier_tx" ? "supplier_transaction" : rawEntityType;
+
+  return {
+    cursor: Number(anyRaw.cursor ?? 0) || 0,
+    tenantId: String(anyRaw.tenantId ?? anyRaw.tenant_id ?? ""),
+    entityType,
+    entityId: String(anyRaw.entityId ?? anyRaw.entity_id ?? ""),
+    action: String(anyRaw.action ?? "upsert"),
+    payload:
+      anyRaw.payload && typeof anyRaw.payload === "object"
+        ? (anyRaw.payload as Record<string, unknown>)
+        : null,
+    actorUserId:
+      typeof anyRaw.actorUserId === "string"
+        ? anyRaw.actorUserId
+        : typeof anyRaw.actor_user_id === "string"
+          ? anyRaw.actor_user_id
+          : null,
+    createdAt: String(
+      anyRaw.createdAt ?? anyRaw.created_at ?? new Date().toISOString(),
+    ),
+  };
+}
+
+function resolveOwnerUserIdTx(
+  tx: SyncTx,
+  preferredUserId?: string | null,
+): string | null {
+  if (preferredUserId) {
+    const found = tx
+      .select({ id: users.id })
+      .from(users)
+      .where(eq(users.id, preferredUserId))
+      .limit(1)
+      .get();
+    if (found?.id) return found.id;
+  }
+  const firstUser = tx.select({ id: users.id }).from(users).limit(1).get();
+  return firstUser?.id ?? null;
+}
+
+function resolveCategoryIdTx(
+  tx: SyncTx,
+  ownerId: string,
+  nowIso: string,
+  preferredCategoryId?: string | null,
+  preferredCategoryName?: string | null,
+): string {
+  if (preferredCategoryId) {
+    const byId = tx
+      .select({ id: productCategories.id })
+      .from(productCategories)
+      .where(eq(productCategories.id, preferredCategoryId))
+      .limit(1)
+      .get();
+    if (byId?.id) return byId.id;
+  }
+
+  const cleanName = String(preferredCategoryName || "").trim();
+  if (cleanName) {
+    const byName = tx
+      .select({ id: productCategories.id })
+      .from(productCategories)
+      .where(sql`LOWER(${productCategories.name}) = ${cleanName.toLowerCase()}`)
+      .limit(1)
+      .get();
+    if (byName?.id) return byName.id;
+
+    const newCatId = preferredCategoryId || generateId("cat");
+    tx.insert(productCategories)
+      .values({
+        id: newCatId,
+        userId: ownerId,
+        name: cleanName,
+        description: `${cleanName} products`,
+        isActive: 1,
+        createdAt: nowIso,
+        updatedAt: nowIso,
+      })
+      .run();
+    return newCatId;
+  }
+
+  const general = tx
+    .select({ id: productCategories.id })
+    .from(productCategories)
+    .where(sql`LOWER(${productCategories.name}) = 'general'`)
+    .limit(1)
+    .get();
+  if (general?.id) return general.id;
+
+  const anyCat = tx
+    .select({ id: productCategories.id })
+    .from(productCategories)
+    .limit(1)
+    .get();
+  if (anyCat?.id) return anyCat.id;
+
+  const fallbackId = generateId("cat");
+  tx.insert(productCategories)
+    .values({
+      id: fallbackId,
+      userId: ownerId,
+      name: "General",
+      description: "Default category",
+      isActive: 1,
+      createdAt: nowIso,
+      updatedAt: nowIso,
+    })
+    .run();
+  return fallbackId;
+}
+
+function upsertCategoryTx(
+  tx: SyncTx,
+  rec: Record<string, unknown>,
+  ownerId: string,
+  nowIso: string,
+): boolean {
+  const id = String(rec.id || "").trim();
+  if (!id) return false;
+  const rawName = String(rec.name || `Category-${id.slice(0, 6)}`).trim();
+  const isActive = rec.isActive === false || rec.is_active === 0 ? 0 : 1;
+  const description =
+    typeof rec.description === "string" ? rec.description : null;
+  const updatedAt = String(rec.updatedAt || nowIso);
+
+  const existing = tx
+    .select({ id: productCategories.id })
+    .from(productCategories)
+    .where(eq(productCategories.id, id))
+    .limit(1)
+    .get();
+
+  let safeName = rawName;
+  const nameConflict = tx
+    .select({ id: productCategories.id })
+    .from(productCategories)
+    .where(
+      and(
+        eq(productCategories.userId, ownerId),
+        sql`LOWER(${productCategories.name}) = ${rawName.toLowerCase()}`,
+        ne(productCategories.id, id),
+      ),
+    )
+    .limit(1)
+    .get();
+  if (nameConflict) {
+    safeName = `${rawName} (${id.slice(0, 4)})`;
+  }
+
+  if (existing) {
+    tx.update(productCategories)
+      .set({
+        name: safeName,
+        description,
+        isActive,
+        updatedAt,
+      })
+      .where(eq(productCategories.id, id))
+      .run();
+  } else {
+    tx.insert(productCategories)
+      .values({
+        id,
+        userId: ownerId,
+        name: safeName,
+        description,
+        isActive,
+        createdAt: updatedAt,
+        updatedAt,
+      })
+      .run();
+  }
+  return true;
+}
+
+function deleteCategorySafeTx(tx: SyncTx, id: string, nowIso: string): boolean {
+  const existing = tx
+    .select({ id: productCategories.id })
+    .from(productCategories)
+    .where(eq(productCategories.id, id))
+    .limit(1)
+    .get();
+  if (!existing) return false;
+
+  const usedByProd = tx
+    .select({ id: products.id })
+    .from(products)
+    .where(eq(products.categoryId, id))
+    .limit(1)
+    .get();
+  const usedByInv = tx
+    .select({ id: inventory.id })
+    .from(inventory)
+    .where(eq(inventory.productCategoryId, id))
+    .limit(1)
+    .get();
+
+  if (usedByProd || usedByInv) {
+    tx.update(productCategories)
+      .set({ isActive: 0, updatedAt: nowIso })
+      .where(eq(productCategories.id, id))
+      .run();
+  } else {
+    tx.delete(productCategories).where(eq(productCategories.id, id)).run();
+  }
+  return true;
+}
+
+function upsertProductTx(
+  tx: SyncTx,
+  rec: Record<string, unknown>,
+  ownerId: string,
+  nowIso: string,
+): boolean {
+  const id = String(rec.id || "").trim();
+  if (!id) return false;
+
+  const categoryId = resolveCategoryIdTx(
+    tx,
+    ownerId,
+    nowIso,
+    typeof rec.categoryId === "string" ? rec.categoryId : null,
+    typeof rec.categoryName === "string" ? rec.categoryName : null,
+  );
+
+  const values = {
+    categoryId,
+    name: String(rec.name || "Product").trim(),
+    photoUrl: typeof rec.photoUrl === "string" ? rec.photoUrl : "",
+    barcode: typeof rec.barcode === "string" ? rec.barcode : "",
+    description: typeof rec.description === "string" ? rec.description : "",
+    costPrice: Math.max(0, Number(rec.costPrice ?? 0) || 0),
+    unitPrice: Math.max(0, Number(rec.unitPrice ?? 0) || 0),
+    stockQuantity: Math.max(
+      0,
+      Math.trunc(Number(rec.stockQuantity ?? rec.stock_quantity ?? 0) || 0),
+    ),
+    lowStockThreshold: Math.max(
+      1,
+      Math.trunc(Number(rec.lowStockThreshold ?? 5) || 5),
+    ),
+    isActive: rec.active === false || rec.isActive === false ? 0 : 1,
+    updatedAt: String(rec.updatedAt || nowIso),
+  };
+
+  const existing = tx
+    .select({ id: products.id })
+    .from(products)
+    .where(eq(products.id, id))
+    .limit(1)
+    .get();
+
+  if (existing) {
+    tx.update(products).set(values).where(eq(products.id, id)).run();
+  } else {
+    tx.insert(products)
+      .values({
+        id,
+        userId: ownerId,
+        ...values,
+        createdAt: values.updatedAt,
+      })
+      .run();
+  }
+  return true;
+}
+
+function deleteProductSafeTx(tx: SyncTx, id: string, nowIso: string): boolean {
+  const existing = tx
+    .select({ id: products.id })
+    .from(products)
+    .where(eq(products.id, id))
+    .limit(1)
+    .get();
+  if (!existing) return false;
+
+  const usedInSales = tx
+    .select({ id: saleItems.id })
+    .from(saleItems)
+    .where(eq(saleItems.productId, id))
+    .limit(1)
+    .get();
+  const usedInInv = tx
+    .select({ id: inventory.id })
+    .from(inventory)
+    .where(eq(inventory.productId, id))
+    .limit(1)
+    .get();
+
+  if (usedInSales || usedInInv) {
+    tx.update(products)
+      .set({ isActive: 0, updatedAt: nowIso })
+      .where(eq(products.id, id))
+      .run();
+  } else {
+    tx.delete(products).where(eq(products.id, id)).run();
+  }
+  return true;
+}
+
+function upsertCustomerTx(
+  tx: SyncTx,
+  rec: Record<string, unknown>,
+  ownerId: string,
+  nowIso: string,
+): boolean {
+  const id = String(rec.id || "").trim();
+  if (!id) return false;
+
+  const values = {
+    name: String(rec.name || "Walk-in Customer").trim(),
+    email: typeof rec.email === "string" && rec.email.trim() ? rec.email.trim() : null,
+    address:
+      typeof rec.address === "string" && rec.address.trim()
+        ? rec.address.trim()
+        : null,
+    phonenumber:
+      typeof rec.phonenumber === "string" && rec.phonenumber.trim()
+        ? rec.phonenumber.trim()
+        : null,
+    updatedAt: String(rec.updatedAt || nowIso),
+  };
+
+  const existing = tx
+    .select({ id: customers.id })
+    .from(customers)
+    .where(eq(customers.id, id))
+    .limit(1)
+    .get();
+
+  if (existing) {
+    tx.update(customers).set(values).where(eq(customers.id, id)).run();
+  } else {
+    tx.insert(customers)
+      .values({
+        id,
+        userId: ownerId,
+        ...values,
+        createdAt: String(rec.createdAt || nowIso),
+      })
+      .run();
+  }
+  return true;
+}
+
+function deleteCustomerSafeTx(tx: SyncTx, id: string): boolean {
+  const existing = tx
+    .select({ id: customers.id })
+    .from(customers)
+    .where(eq(customers.id, id))
+    .limit(1)
+    .get();
+  if (!existing) return false;
+
+  const usedInSales = tx
+    .select({ id: sales.id })
+    .from(sales)
+    .where(eq(sales.customerId, id))
+    .limit(1)
+    .get();
+  if (usedInSales) return false;
+
+  tx.delete(customers).where(eq(customers.id, id)).run();
+  return true;
+}
+
+function upsertSupplierTx(
+  tx: SyncTx,
+  rec: Record<string, unknown>,
+  ownerId: string,
+  nowIso: string,
+): boolean {
+  const id = String(rec.id || "").trim();
+  if (!id) return false;
+
+  const name = String(rec.name || "Supplier").trim();
+  const values = {
+    name,
+    companyName: String(rec.companyName || name || "").trim(),
+    email: typeof rec.email === "string" && rec.email.trim() ? rec.email.trim() : null,
+    address:
+      typeof rec.address === "string" && rec.address.trim()
+        ? rec.address.trim()
+        : null,
+    phonenumber:
+      typeof rec.phonenumber === "string" && rec.phonenumber.trim()
+        ? rec.phonenumber.trim()
+        : null,
+    isActive: rec.isActive === false ? 0 : 1,
+    updatedAt: String(rec.updatedAt || nowIso),
+  };
+
+  const existing = tx
+    .select({ id: suppliers.id })
+    .from(suppliers)
+    .where(eq(suppliers.id, id))
+    .limit(1)
+    .get();
+
+  if (existing) {
+    tx.update(suppliers).set(values).where(eq(suppliers.id, id)).run();
+  } else {
+    tx.insert(suppliers)
+      .values({
+        id,
+        userId: ownerId,
+        ...values,
+        createdAt: String(rec.createdAt || nowIso),
+      })
+      .run();
+  }
+  return true;
+}
+
+function upsertSupplierTransactionTx(
+  tx: SyncTx,
+  rec: Record<string, unknown>,
+  ownerId: string,
+  nowIso: string,
+): boolean {
+  const id = String(rec.id || "").trim();
+  const supplierId = String(rec.supplierId || "").trim();
+  if (!id || !supplierId) return false;
+
+  const supExists = tx
+    .select({ id: suppliers.id })
+    .from(suppliers)
+    .where(eq(suppliers.id, supplierId))
+    .limit(1)
+    .get();
+  if (!supExists) return false;
+
+  const rawTxUserId =
+    typeof rec.userId === "string" ? rec.userId.trim() : "";
+  const txUserExists = rawTxUserId
+    ? tx
+        .select({ id: users.id })
+        .from(users)
+        .where(eq(users.id, rawTxUserId))
+        .limit(1)
+        .get()
+    : null;
+  const resolvedUserId = txUserExists?.id ?? ownerId;
+
+  let txNo = String(rec.transactionNo || `SUP-${id.slice(0, 8)}`).trim();
+  const txNoConflict = tx
+    .select({ id: supplierTransactions.id })
+    .from(supplierTransactions)
+    .where(
+      and(
+        eq(supplierTransactions.transactionNo, txNo),
+        ne(supplierTransactions.id, id),
+      ),
+    )
+    .limit(1)
+    .get();
+  if (txNoConflict) {
+    txNo = `${txNo}-${id.slice(0, 4)}`;
+  }
+
+  const paymentMode = (
+    ["cash", "momo", "bank", "cheque"].includes(String(rec.paymentMode || ""))
+      ? String(rec.paymentMode)
+      : "cash"
+  ) as PaymentMode;
+  const status = (
+    ["completed", "pending", "cancelled"].includes(String(rec.status || ""))
+      ? String(rec.status)
+      : "completed"
+  ) as "completed" | "pending" | "cancelled";
+
+  const values = {
+    transactionNo: txNo,
+    supplierId,
+    userId: resolvedUserId,
+    deliveredBy:
+      typeof rec.deliveredBy === "string" ? rec.deliveredBy : null,
+    transactionDate: String(rec.transactionDate || rec.createdAt || nowIso),
+    totalAmount: Math.max(0, Number(rec.totalAmount ?? 0) || 0),
+    amountPaid: Math.max(0, Number(rec.amountPaid ?? 0) || 0),
+    balance: Math.max(0, Number(rec.balance ?? 0) || 0),
+    paymentMode,
+    status,
+    notes: typeof rec.notes === "string" ? rec.notes : "",
+    updatedAt: String(rec.updatedAt || nowIso),
+  };
+
+  const existing = tx
+    .select({ id: supplierTransactions.id })
+    .from(supplierTransactions)
+    .where(eq(supplierTransactions.id, id))
+    .limit(1)
+    .get();
+
+  if (existing) {
+    tx.update(supplierTransactions)
+      .set(values)
+      .where(eq(supplierTransactions.id, id))
+      .run();
+  } else {
+    tx.insert(supplierTransactions)
+      .values({
+        id,
+        ...values,
+        createdAt: String(rec.createdAt || rec.transactionDate || nowIso),
+      })
+      .run();
+  }
+  return true;
+}
+
+function upsertInventoryTx(
+  tx: SyncTx,
+  rec: Record<string, unknown>,
+  ownerId: string,
+  nowIso: string,
+): boolean {
+  const id = String(rec.id || "").trim();
+  const productId = String(rec.productId || "").trim();
+  if (!id || !productId) return false;
+
+  const prod = tx
+    .select({ id: products.id, categoryId: products.categoryId })
+    .from(products)
+    .where(eq(products.id, productId))
+    .limit(1)
+    .get();
+  if (!prod) return false;
+
+  const categoryId = resolveCategoryIdTx(
+    tx,
+    ownerId,
+    nowIso,
+    typeof rec.productCategoryId === "string"
+      ? rec.productCategoryId
+      : prod.categoryId,
+    typeof rec.categoryName === "string" ? rec.categoryName : null,
+  );
+
+  const rawUserId = typeof rec.userId === "string" ? rec.userId.trim() : "";
+  const userExists = rawUserId
+    ? tx
+        .select({ id: users.id })
+        .from(users)
+        .where(eq(users.id, rawUserId))
+        .limit(1)
+        .get()
+    : null;
+  const resolvedUserId = userExists?.id ?? ownerId;
+
+  const values = {
+    userId: resolvedUserId,
+    productId,
+    productCategoryId: categoryId,
+    quantity: Math.trunc(Number(rec.quantity ?? 0) || 0),
+    restockDate: String(rec.restockDate || nowIso).slice(0, 10),
+    notes: typeof rec.notes === "string" ? rec.notes : "",
+    updatedAt: String(rec.updatedAt || nowIso),
+  };
+
+  const existing = tx
+    .select({ id: inventory.id })
+    .from(inventory)
+    .where(eq(inventory.id, id))
+    .limit(1)
+    .get();
+
+  if (existing) {
+    tx.update(inventory).set(values).where(eq(inventory.id, id)).run();
+  } else {
+    tx.insert(inventory)
+      .values({
+        id,
+        ...values,
+        createdAt: String(rec.createdAt || nowIso),
+      })
+      .run();
+  }
+  return true;
+}
+
+function upsertSaleTx(
+  tx: SyncTx,
+  rec: Record<string, unknown>,
+  itemList: Array<Record<string, unknown>>,
+  ownerId: string,
+  nowIso: string,
+): boolean {
+  const id = String(rec.id || "").trim();
+  if (!id) return false;
+
+  let customerId = typeof rec.customerId === "string" ? rec.customerId.trim() : "";
+  if (customerId) {
+    const custExists = tx
+      .select({ id: customers.id })
+      .from(customers)
+      .where(eq(customers.id, customerId))
+      .limit(1)
+      .get();
+    if (!custExists) {
+      tx.insert(customers)
+        .values({
+          id: customerId,
+          userId: ownerId,
+          name: String(rec.customerName || "Walk-in Customer"),
+          phonenumber:
+            typeof rec.customerPhone === "string" ? rec.customerPhone : null,
+          createdAt: String(rec.saleDate || nowIso),
+          updatedAt: nowIso,
+        })
+        .run();
+    }
+  } else {
+    customerId = `cust-fallback-${id.slice(0, 8)}`;
+    const custExists = tx
+      .select({ id: customers.id })
+      .from(customers)
+      .where(eq(customers.id, customerId))
+      .limit(1)
+      .get();
+    if (!custExists) {
+      tx.insert(customers)
+        .values({
+          id: customerId,
+          userId: ownerId,
+          name: String(rec.customerName || "Walk-in Customer"),
+          phonenumber:
+            typeof rec.customerPhone === "string" ? rec.customerPhone : null,
+          createdAt: String(rec.saleDate || nowIso),
+          updatedAt: nowIso,
+        })
+        .run();
+    }
+  }
+
+  const rawSaleUserId = typeof rec.userId === "string" ? rec.userId.trim() : "";
+  const userExists = rawSaleUserId
+    ? tx
+        .select({ id: users.id })
+        .from(users)
+        .where(eq(users.id, rawSaleUserId))
+        .limit(1)
+        .get()
+    : null;
+  const saleUserId = userExists?.id ?? ownerId;
+
+  let receiptNumber = String(rec.receiptNo || `INVP-${id.slice(0, 8)}`).trim();
+  const receiptConflict = tx
+    .select({ id: sales.id })
+    .from(sales)
+    .where(and(eq(sales.receiptNumber, receiptNumber), ne(sales.id, id)))
+    .limit(1)
+    .get();
+  if (receiptConflict) {
+    receiptNumber = `${receiptNumber}-${id.slice(0, 4)}`;
+  }
+
+  const paymentMode = (
+    ["cash", "momo", "bank", "cheque"].includes(String(rec.paymentMode || ""))
+      ? String(rec.paymentMode)
+      : "cash"
+  ) as PaymentMode;
+  const status = (
+    ["pending", "completed", "failed", "refunded"].includes(String(rec.status || ""))
+      ? String(rec.status)
+      : "completed"
+  ) as SaleStatus;
+
+  const values = {
+    customerId,
+    userId: saleUserId,
+    receiptNumber,
+    date: String(rec.saleDate || nowIso),
+    details: typeof rec.notes === "string" ? rec.notes : "",
+    totalAmount: Math.max(0, Number(rec.totalAmount ?? 0) || 0),
+    discountAmount: Math.max(0, Number(rec.discountAmount ?? 0) || 0),
+    taxAmount: Math.max(0, Number(rec.taxAmount ?? 0) || 0),
+    amountPaid: Math.max(0, Number(rec.amountPaid ?? rec.totalAmount ?? 0) || 0),
+    paymentMode,
+    status,
+    updatedAt: nowIso,
+  };
+
+  const existing = tx
+    .select({ id: sales.id })
+    .from(sales)
+    .where(eq(sales.id, id))
+    .limit(1)
+    .get();
+
+  if (existing) {
+    tx.update(sales).set(values).where(eq(sales.id, id)).run();
+  } else {
+    tx.insert(sales)
+      .values({
+        id,
+        ...values,
+        createdAt: String(rec.saleDate || nowIso),
+      })
+      .run();
+  }
+
+  if (itemList.length > 0) {
+    tx.delete(saleItems).where(eq(saleItems.salesId, id)).run();
+    for (const it of itemList) {
+      const productId = String(it.productId || "").trim();
+      const itemId = String(it.id || generateId("si")).trim();
+      if (!productId) continue;
+      const prodExists = tx
+        .select({ id: products.id })
+        .from(products)
+        .where(eq(products.id, productId))
+        .limit(1)
+        .get();
+      if (!prodExists) continue;
+
+      tx.insert(saleItems)
+        .values({
+          id: itemId,
+          salesId: id,
+          productId,
+          quantity: Math.max(0, Math.trunc(Number(it.quantity ?? 0) || 0)),
+          unitPrice: Math.max(0, Number(it.unitPrice ?? 0) || 0),
+          createdAt: String(rec.saleDate || nowIso),
+          updatedAt: nowIso,
+        })
+        .run();
+    }
+  }
+
+  return true;
+}
+
+function upsertEmployeeTx(
+  tx: SyncTx,
+  rec: Record<string, unknown>,
+  nowIso: string,
+): boolean {
+  const id = String(rec.id || "").trim();
+  if (!id) return false;
+
+  const existing = tx
+    .select()
+    .from(users)
+    .where(eq(users.id, id))
+    .limit(1)
+    .get();
+
+  const rawUsername = String(
+    rec.username ?? existing?.username ?? `user-${id.slice(0, 6)}`,
+  ).trim();
+  const rawEmail = String(
+    rec.email ?? existing?.email ?? `${rawUsername.toLowerCase()}@local`,
+  )
+    .trim()
+    .toLowerCase();
+
+  let safeUsername = rawUsername || `user-${id.slice(0, 6)}`;
+  const usernameConflict = tx
+    .select({ id: users.id })
+    .from(users)
+    .where(and(eq(users.username, safeUsername), ne(users.id, id)))
+    .limit(1)
+    .get();
+  if (usernameConflict) {
+    safeUsername = `${safeUsername}-${id.slice(0, 4)}`;
+  }
+
+  let safeEmail = rawEmail || `${safeUsername.toLowerCase()}@local`;
+  const emailConflict = tx
+    .select({ id: users.id })
+    .from(users)
+    .where(and(eq(users.email, safeEmail), ne(users.id, id)))
+    .limit(1)
+    .get();
+  if (emailConflict) {
+    safeEmail = `${id.slice(0, 6)}+${safeEmail}`;
+  }
+
+  const patch: Partial<typeof users.$inferInsert> = {
+    username: safeUsername,
+    email: safeEmail,
+    updatedAt: String(rec.updatedAt || nowIso),
+  };
+  if (typeof rec.firstname === "string") patch.firstname = rec.firstname;
+  if (typeof rec.lastname === "string") patch.lastname = rec.lastname;
+  if (rec.phonenumber !== undefined) {
+    patch.phonenumber =
+      typeof rec.phonenumber === "string" && rec.phonenumber.trim()
+        ? rec.phonenumber.trim()
+        : null;
+  }
+  if (rec.role === "admin" || rec.role === "member") {
+    patch.role = rec.role;
+  }
+  if (typeof rec.twoFactorEnabled === "boolean") {
+    patch.twoFactorEnabled = rec.twoFactorEnabled ? 1 : 0;
+  }
+  if (rec.twoFactorMethod === "email" || rec.twoFactorMethod === "sms") {
+    patch.twoFactorMethod = rec.twoFactorMethod;
+  }
+  if (rec.lockedUntil !== undefined) {
+    patch.lockedUntil =
+      typeof rec.lockedUntil === "string" ? rec.lockedUntil : null;
+  }
+  if (rec.lastLoginAt !== undefined) {
+    patch.lastLoginAt =
+      typeof rec.lastLoginAt === "string" ? rec.lastLoginAt : null;
+  }
+
+  if (existing) {
+    tx.update(users).set(patch).where(eq(users.id, id)).run();
+  } else {
+    tx.insert(users)
+      .values({
+        id,
+        username: safeUsername,
+        email: safeEmail,
+        passwordHash: "synced-cloud-account",
+        firstname: patch.firstname ?? "",
+        lastname: patch.lastname ?? "",
+        phonenumber: patch.phonenumber ?? null,
+        role: patch.role ?? "member",
+        twoFactorEnabled: patch.twoFactorEnabled ?? 0,
+        twoFactorMethod: patch.twoFactorMethod ?? "email",
+        lockedUntil: patch.lockedUntil ?? null,
+        lastLoginAt: patch.lastLoginAt ?? null,
+        createdAt: String(rec.createdAt || nowIso),
+        updatedAt: patch.updatedAt ?? nowIso,
+      })
+      .run();
+  }
+  return true;
+}
+
+function deleteEmployeeSafeTx(
+  tx: SyncTx,
+  id: string,
+  currentUserId: string | null | undefined,
+  nowIso: string,
+): boolean {
+  if (currentUserId && id === currentUserId) return false;
+  const existing = tx
+    .select({ id: users.id })
+    .from(users)
+    .where(eq(users.id, id))
+    .limit(1)
+    .get();
+  if (!existing) return false;
+
+  const hasRefs =
+    tx.select({ id: sales.id }).from(sales).where(eq(sales.userId, id)).limit(1).get() ||
+    tx.select({ id: products.id }).from(products).where(eq(products.userId, id)).limit(1).get() ||
+    tx.select({ id: customers.id }).from(customers).where(eq(customers.userId, id)).limit(1).get() ||
+    tx.select({ id: suppliers.id }).from(suppliers).where(eq(suppliers.userId, id)).limit(1).get() ||
+    tx.select({ id: inventory.id }).from(inventory).where(eq(inventory.userId, id)).limit(1).get() ||
+    tx.select({ id: supplierTransactions.id }).from(supplierTransactions).where(eq(supplierTransactions.userId, id)).limit(1).get() ||
+    tx.select({ id: broadcastMessages.id }).from(broadcastMessages).where(eq(broadcastMessages.senderId, id)).limit(1).get();
+
+  if (hasRefs) {
+    tx.update(users)
+      .set({ lockedUntil: "2099-12-31T23:59:59.000Z", updatedAt: nowIso })
+      .where(eq(users.id, id))
+      .run();
+  } else {
+    tx.delete(users).where(eq(users.id, id)).run();
+  }
+  return true;
+}
+
+function upsertSettingsTx(
+  tx: SyncTx,
+  rec: Record<string, unknown>,
+  ownerId: string,
+  nowIso: string,
+): boolean {
+  const existingSetting = tx
+    .select({ id: settings.id })
+    .from(settings)
+    .limit(1)
+    .get();
+
+  const patch: Partial<typeof settings.$inferInsert> = {
+    updatedAt: nowIso,
+  };
+  if (typeof rec.storeName === "string") patch.businessName = rec.storeName;
+  if (typeof rec.storeAddress === "string") patch.businessAddress = rec.storeAddress;
+  if (typeof rec.storePhone === "string") patch.businessPhone = rec.storePhone;
+  if (typeof rec.storeEmail === "string") patch.businessEmail = rec.storeEmail;
+  if (typeof rec.currency === "string") patch.currency = rec.currency;
+  if (typeof rec.taxRate === "number") patch.taxRate = rec.taxRate;
+  if (typeof rec.stockAlertThreshold === "number") {
+    patch.stockAlertThreshold = Math.max(1, Math.trunc(rec.stockAlertThreshold));
+  }
+  if (typeof rec.language === "string") patch.language = rec.language;
+  if (typeof rec.notificationEmail === "boolean") {
+    patch.notificationEmail = rec.notificationEmail ? 1 : 0;
+  }
+  if (typeof rec.notificationPush === "boolean") {
+    patch.notificationPush = rec.notificationPush ? 1 : 0;
+  }
+  if (typeof rec.notificationSms === "boolean") {
+    patch.notificationSms = rec.notificationSms ? 1 : 0;
+  }
+  if (typeof rec.stockAudioAlert === "boolean") {
+    patch.stockAudioAlert = rec.stockAudioAlert ? 1 : 0;
+  }
+  if (typeof rec.stockAudioTone === "string") {
+    patch.stockAudioTone = rec.stockAudioTone;
+  }
+  if (typeof rec.stockAudioVolume === "number") {
+    patch.stockAudioVolume = rec.stockAudioVolume;
+  }
+  if (typeof rec.eodReportEnabled === "boolean") {
+    patch.eodReportEnabled = rec.eodReportEnabled ? 1 : 0;
+  }
+  if (typeof rec.eodBusinessClosingTime === "string") {
+    patch.eodBusinessClosingTime = rec.eodBusinessClosingTime;
+  }
+  if (typeof rec.eodAdminEmail === "string") {
+    patch.eodAdminEmail = rec.eodAdminEmail;
+  }
+  if (typeof rec.eodAdminPhone === "string") {
+    patch.eodAdminPhone = rec.eodAdminPhone;
+  }
+  if (typeof rec.business247 === "boolean") {
+    patch.business247 = rec.business247 ? 1 : 0;
+  }
+  if (typeof rec.businessOpeningTime === "string") {
+    patch.businessOpeningTime = rec.businessOpeningTime;
+  }
+  if (typeof rec.businessClosingTime === "string") {
+    patch.businessClosingTime = rec.businessClosingTime;
+  }
+  if (Array.isArray(rec.businessHoursSchedule)) {
+    patch.businessHoursSchedule = JSON.stringify(rec.businessHoursSchedule);
+  }
+  if (typeof rec.businessHoursNotes === "string") {
+    patch.businessHoursNotes = rec.businessHoursNotes;
+  }
+  if (typeof rec.printAfterSale === "boolean") {
+    patch.printAfterSale = rec.printAfterSale ? 1 : 0;
+  }
+  if (typeof rec.paperSize === "string") {
+    patch.paperSize = rec.paperSize === "a4" ? "a4" : "thermal_80mm";
+  }
+
+  if (existingSetting) {
+    tx.update(settings)
+      .set(patch)
+      .where(eq(settings.id, existingSetting.id))
+      .run();
+    return true;
+  }
+
+  tx.insert(settings)
+    .values({
+      id: generateId("set"),
+      userId: ownerId,
+      businessName: patch.businessName ?? "Inventory Pro",
+      businessAddress: patch.businessAddress ?? "",
+      businessPhone: patch.businessPhone ?? "",
+      businessEmail: patch.businessEmail ?? "",
+      currency: patch.currency ?? "GHS",
+      taxRate: patch.taxRate ?? 0,
+      stockAlertThreshold: patch.stockAlertThreshold ?? 5,
+      language: patch.language ?? "en",
+      notificationEmail: patch.notificationEmail ?? 0,
+      notificationPush: patch.notificationPush ?? 0,
+      notificationSms: patch.notificationSms ?? 0,
+      stockAudioAlert: patch.stockAudioAlert ?? 1,
+      stockAudioTone: patch.stockAudioTone ?? "chime",
+      stockAudioVolume: patch.stockAudioVolume ?? 0.5,
+      eodReportEnabled: patch.eodReportEnabled ?? 0,
+      eodBusinessClosingTime: patch.eodBusinessClosingTime ?? "18:00",
+      eodAdminEmail: patch.eodAdminEmail ?? "",
+      eodAdminPhone: patch.eodAdminPhone ?? "",
+      business247: patch.business247 ?? 0,
+      businessOpeningTime: patch.businessOpeningTime ?? "08:00",
+      businessClosingTime: patch.businessClosingTime ?? "18:00",
+      businessHoursSchedule:
+        patch.businessHoursSchedule ?? JSON.stringify(DEFAULT_WEEKLY_SCHEDULE),
+      businessHoursNotes: patch.businessHoursNotes ?? "",
+      printAfterSale: patch.printAfterSale ?? 1,
+      paperSize: patch.paperSize ?? "thermal_80mm",
+      createdAt: nowIso,
+      updatedAt: nowIso,
+    })
+    .run();
+  return true;
+}
+
+function upsertBroadcastMessageTx(
+  tx: SyncTx,
+  rec: Record<string, unknown>,
+  ownerId: string,
+  nowIso: string,
+): boolean {
+  const id = String(rec.id || "").trim();
+  if (!id) return false;
+
+  const rawSenderId =
+    typeof rec.senderId === "string" ? rec.senderId.trim() : "";
+  const senderExists = rawSenderId
+    ? tx
+        .select({ id: users.id })
+        .from(users)
+        .where(eq(users.id, rawSenderId))
+        .limit(1)
+        .get()
+    : null;
+  const senderId = senderExists?.id ?? ownerId;
+
+  const recipientGroup = (
+    ["employees", "customers", "suppliers"].includes(String(rec.recipientGroup || ""))
+      ? String(rec.recipientGroup)
+      : "employees"
+  ) as BroadcastRecipientGroup;
+  const channel = (
+    ["in_app", "sms", "email"].includes(String(rec.channel || ""))
+      ? String(rec.channel)
+      : "in_app"
+  ) as BroadcastChannel;
+  const status = (
+    ["sent", "queued", "partial", "failed"].includes(String(rec.status || ""))
+      ? String(rec.status)
+      : "sent"
+  ) as BroadcastStatus;
+
+  const values = {
+    senderId,
+    senderName: String(rec.senderName || "Admin"),
+    recipientGroup,
+    channel,
+    subject: typeof rec.subject === "string" ? rec.subject : null,
+    content: String(rec.content || ""),
+    recipientCount: Math.max(0, Math.trunc(Number(rec.recipientCount ?? 0) || 0)),
+    status,
+    updatedAt: nowIso,
+  };
+
+  const existing = tx
+    .select({ id: broadcastMessages.id })
+    .from(broadcastMessages)
+    .where(eq(broadcastMessages.id, id))
+    .limit(1)
+    .get();
+
+  if (existing) {
+    tx.update(broadcastMessages)
+      .set(values)
+      .where(eq(broadcastMessages.id, id))
+      .run();
+  } else {
+    tx.insert(broadcastMessages)
+      .values({
+        id,
+        ...values,
+        createdAt: String(rec.createdAt || nowIso),
+      })
+      .run();
+  }
+  return true;
+}
+
 export function applyRemoteSyncEvent(
   db: ExpoSqliteDrizzleDb,
-  event: SyncEventDto,
-): void {
+  rawEvent: SyncEventDto,
+  currentUserId?: string | null,
+): ApplySyncEventResult {
+  const event = normalizeIncomingSyncEvent(rawEvent);
   const nowIso = event.createdAt || new Date().toISOString();
   const payload = event.payload ?? {};
 
+  let applied = false;
+  let requiresRefresh = false;
+  let storeUpdated = false;
+  let currentUserUpdated = false;
+  let notificationsChanged = false;
+
   db.transaction((tx) => {
-    if (
-      event.entityType === "product" &&
-      (event.action === "stock_delta" || event.action === "upsert") &&
-      event.entityId &&
-      (typeof payload.stockQuantity === "number" ||
-        typeof payload.photoUrl === "string")
-    ) {
-      const productPatch: Partial<typeof products.$inferInsert> = {
-        updatedAt: nowIso,
-      };
-      if (typeof payload.stockQuantity === "number") {
-        productPatch.stockQuantity = Math.max(
-          0,
-          Math.trunc(Number(payload.stockQuantity)),
-        );
+    const ownerId = resolveOwnerUserIdTx(tx, currentUserId);
+    const recordsList = Array.isArray(payload.records)
+      ? (payload.records as Array<Record<string, unknown>>)
+      : null;
+    const deletedIdsList = Array.isArray(payload.deletedIds)
+      ? (payload.deletedIds as Array<unknown>).map((v) => String(v)).filter(Boolean)
+      : null;
+    const singleRecord =
+      payload.record && typeof payload.record === "object"
+        ? (payload.record as Record<string, unknown>)
+        : null;
+
+    if (event.entityType === "category" && ownerId) {
+      if (event.action === "delete" && event.entityId) {
+        applied = deleteCategorySafeTx(tx, event.entityId, nowIso);
+      } else if (event.action === "refresh") {
+        if (recordsList) {
+          for (const rec of recordsList) {
+            if (upsertCategoryTx(tx, rec, ownerId, nowIso)) applied = true;
+          }
+        }
+        if (deletedIdsList) {
+          for (const did of deletedIdsList) {
+            if (deleteCategorySafeTx(tx, did, nowIso)) applied = true;
+          }
+        }
+        if (!recordsList && !deletedIdsList) {
+          requiresRefresh = true;
+        }
+      } else if (event.action === "upsert") {
+        if (singleRecord) {
+          applied = upsertCategoryTx(tx, singleRecord, ownerId, nowIso);
+        } else if (payload.missing !== true) {
+          requiresRefresh = true;
+        }
       }
-      if (typeof payload.photoUrl === "string") {
-        productPatch.photoUrl = payload.photoUrl;
+    } else if (event.entityType === "product" && ownerId) {
+      if (event.action === "delete" && event.entityId) {
+        applied = deleteProductSafeTx(tx, event.entityId, nowIso);
+      } else if (event.action === "refresh") {
+        if (recordsList) {
+          for (const rec of recordsList) {
+            if (upsertProductTx(tx, rec, ownerId, nowIso)) applied = true;
+          }
+        }
+        if (deletedIdsList) {
+          for (const did of deletedIdsList) {
+            if (deleteProductSafeTx(tx, did, nowIso)) applied = true;
+          }
+        }
+        if (!recordsList && !deletedIdsList) {
+          requiresRefresh = true;
+        }
+      } else if (event.action === "stock_delta" && event.entityId) {
+        if (singleRecord) {
+          applied = upsertProductTx(tx, singleRecord, ownerId, nowIso);
+        } else {
+          const absQty =
+            typeof payload.stockQuantity === "number"
+              ? payload.stockQuantity
+              : typeof payload.stock_quantity === "number"
+                ? payload.stock_quantity
+                : null;
+          if (absQty !== null) {
+            tx.update(products)
+              .set({
+                stockQuantity: Math.max(0, Math.trunc(absQty)),
+                ...(typeof payload.photoUrl === "string"
+                  ? { photoUrl: payload.photoUrl }
+                  : {}),
+                updatedAt: nowIso,
+              })
+              .where(eq(products.id, event.entityId))
+              .run();
+            applied = true;
+          } else if (typeof payload.delta === "number") {
+            const existingProd = tx
+              .select({ stockQuantity: products.stockQuantity })
+              .from(products)
+              .where(eq(products.id, event.entityId))
+              .limit(1)
+              .get();
+            if (existingProd) {
+              tx.update(products)
+                .set({
+                  stockQuantity: Math.max(
+                    0,
+                    Number(existingProd.stockQuantity || 0) +
+                      Math.trunc(payload.delta),
+                  ),
+                  updatedAt: nowIso,
+                })
+                .where(eq(products.id, event.entityId))
+                .run();
+              applied = true;
+            }
+          }
+        }
+      } else if (event.action === "upsert" && event.entityId) {
+        if (singleRecord) {
+          applied = upsertProductTx(tx, singleRecord, ownerId, nowIso);
+        } else if (
+          typeof payload.stockQuantity === "number" ||
+          typeof payload.photoUrl === "string"
+        ) {
+          const productPatch: Partial<typeof products.$inferInsert> = {
+            updatedAt: nowIso,
+          };
+          if (typeof payload.stockQuantity === "number") {
+            productPatch.stockQuantity = Math.max(
+              0,
+              Math.trunc(Number(payload.stockQuantity)),
+            );
+          }
+          if (typeof payload.photoUrl === "string") {
+            productPatch.photoUrl = payload.photoUrl;
+          }
+          tx.update(products)
+            .set(productPatch)
+            .where(eq(products.id, event.entityId))
+            .run();
+          applied = true;
+        } else if (payload.missing !== true) {
+          requiresRefresh = true;
+        }
       }
-      tx.update(products)
-        .set(productPatch)
-        .where(eq(products.id, event.entityId))
-        .run();
-    } else if (event.entityType === "settings" && event.action === "upsert") {
-      const existingSetting = tx
-        .select({ id: settings.id })
-        .from(settings)
-        .limit(1)
-        .get();
-      if (existingSetting) {
-        const patch: Partial<typeof settings.$inferInsert> = {
-          updatedAt: nowIso,
-        };
-        if (typeof payload.storeName === "string") patch.businessName = payload.storeName;
-        if (typeof payload.storeAddress === "string") patch.businessAddress = payload.storeAddress;
-        if (typeof payload.storePhone === "string") patch.businessPhone = payload.storePhone;
-        if (typeof payload.storeEmail === "string") patch.businessEmail = payload.storeEmail;
-        if (typeof payload.currency === "string") patch.currency = payload.currency;
-        if (typeof payload.taxRate === "number") patch.taxRate = payload.taxRate;
-        if (typeof payload.stockAlertThreshold === "number") {
-          patch.stockAlertThreshold = payload.stockAlertThreshold;
+    } else if (event.entityType === "customer" && ownerId) {
+      if (event.action === "delete" && event.entityId) {
+        applied = deleteCustomerSafeTx(tx, event.entityId);
+      } else if (event.action === "refresh") {
+        if (recordsList) {
+          for (const rec of recordsList) {
+            if (upsertCustomerTx(tx, rec, ownerId, nowIso)) applied = true;
+          }
         }
-        if (typeof payload.language === "string") patch.language = payload.language;
-        if (typeof payload.notificationEmail === "boolean") {
-          patch.notificationEmail = payload.notificationEmail ? 1 : 0;
+        if (deletedIdsList) {
+          for (const did of deletedIdsList) {
+            if (deleteCustomerSafeTx(tx, did)) applied = true;
+          }
         }
-        if (typeof payload.notificationPush === "boolean") {
-          patch.notificationPush = payload.notificationPush ? 1 : 0;
+        if (!recordsList && !deletedIdsList) {
+          requiresRefresh = true;
         }
-        if (typeof payload.notificationSms === "boolean") {
-          patch.notificationSms = payload.notificationSms ? 1 : 0;
+      } else if (event.action === "upsert") {
+        if (singleRecord) {
+          applied = upsertCustomerTx(tx, singleRecord, ownerId, nowIso);
+        } else if (payload.missing !== true) {
+          requiresRefresh = true;
         }
-        if (typeof payload.stockAudioAlert === "boolean") {
-          patch.stockAudioAlert = payload.stockAudioAlert ? 1 : 0;
+      }
+    } else if (event.entityType === "supplier" && ownerId) {
+      if (event.action === "delete" && event.entityId) {
+        tx.delete(suppliers).where(eq(suppliers.id, event.entityId)).run();
+        applied = true;
+      } else if (event.action === "refresh") {
+        if (recordsList) {
+          for (const rec of recordsList) {
+            if (upsertSupplierTx(tx, rec, ownerId, nowIso)) applied = true;
+          }
         }
-        if (typeof payload.stockAudioTone === "string") {
-          patch.stockAudioTone = payload.stockAudioTone;
+        if (deletedIdsList && deletedIdsList.length > 0) {
+          tx.delete(suppliers).where(inArray(suppliers.id, deletedIdsList)).run();
+          applied = true;
         }
-        if (typeof payload.stockAudioVolume === "number") {
-          patch.stockAudioVolume = payload.stockAudioVolume;
+        if (!recordsList && !deletedIdsList) {
+          requiresRefresh = true;
         }
-        if (typeof payload.eodReportEnabled === "boolean") {
-          patch.eodReportEnabled = payload.eodReportEnabled ? 1 : 0;
+      } else if (event.action === "upsert") {
+        if (singleRecord) {
+          applied = upsertSupplierTx(tx, singleRecord, ownerId, nowIso);
+        } else if (payload.missing !== true) {
+          requiresRefresh = true;
         }
-        if (typeof payload.eodBusinessClosingTime === "string") {
-          patch.eodBusinessClosingTime = payload.eodBusinessClosingTime;
-        }
-        if (typeof payload.eodAdminEmail === "string") {
-          patch.eodAdminEmail = payload.eodAdminEmail;
-        }
-        if (typeof payload.eodAdminPhone === "string") {
-          patch.eodAdminPhone = payload.eodAdminPhone;
-        }
-        if (typeof payload.business247 === "boolean") {
-          patch.business247 = payload.business247 ? 1 : 0;
-        }
-        if (typeof payload.businessOpeningTime === "string") {
-          patch.businessOpeningTime = payload.businessOpeningTime;
-        }
-        if (typeof payload.businessClosingTime === "string") {
-          patch.businessClosingTime = payload.businessClosingTime;
-        }
-        if (Array.isArray(payload.businessHoursSchedule)) {
-          patch.businessHoursSchedule = JSON.stringify(payload.businessHoursSchedule);
-        }
-        if (typeof payload.businessHoursNotes === "string") {
-          patch.businessHoursNotes = payload.businessHoursNotes;
-        }
-        if (typeof payload.printAfterSale === "boolean") {
-          patch.printAfterSale = payload.printAfterSale ? 1 : 0;
-        }
-        if (typeof payload.paperSize === "string") {
-          patch.paperSize = payload.paperSize;
-        }
-        tx.update(settings)
-          .set(patch)
-          .where(eq(settings.id, existingSetting.id))
+      }
+    } else if (event.entityType === "supplier_transaction" && ownerId) {
+      if (event.action === "delete" && event.entityId) {
+        tx.delete(supplierTransactions)
+          .where(eq(supplierTransactions.id, event.entityId))
           .run();
+        applied = true;
+      } else if (event.action === "refresh") {
+        if (recordsList) {
+          for (const rec of recordsList) {
+            if (upsertSupplierTransactionTx(tx, rec, ownerId, nowIso)) {
+              applied = true;
+            }
+          }
+        }
+        if (deletedIdsList && deletedIdsList.length > 0) {
+          tx.delete(supplierTransactions)
+            .where(inArray(supplierTransactions.id, deletedIdsList))
+            .run();
+          applied = true;
+        }
+        if (!recordsList && !deletedIdsList) {
+          requiresRefresh = true;
+        }
+      } else if (event.action === "upsert") {
+        if (singleRecord) {
+          applied = upsertSupplierTransactionTx(tx, singleRecord, ownerId, nowIso);
+        } else if (payload.missing !== true) {
+          requiresRefresh = true;
+        }
       }
-    } else if (
-      event.entityType === "employee" &&
-      event.action === "upsert" &&
-      event.entityId
-    ) {
-      const empPatch: Partial<typeof users.$inferInsert> = {
-        updatedAt: nowIso,
-      };
-      if (typeof payload.twoFactorEnabled === "boolean") {
-        empPatch.twoFactorEnabled = payload.twoFactorEnabled ? 1 : 0;
+    } else if (event.entityType === "inventory" && ownerId) {
+      if (event.action === "delete" && event.entityId) {
+        tx.delete(inventory).where(eq(inventory.id, event.entityId)).run();
+        applied = true;
+      } else if (event.action === "refresh") {
+        if (recordsList) {
+          for (const rec of recordsList) {
+            if (upsertInventoryTx(tx, rec, ownerId, nowIso)) applied = true;
+          }
+        }
+        if (deletedIdsList && deletedIdsList.length > 0) {
+          tx.delete(inventory).where(inArray(inventory.id, deletedIdsList)).run();
+          applied = true;
+        }
+        if (!recordsList && !deletedIdsList) {
+          requiresRefresh = true;
+        }
+      } else if (event.action === "upsert") {
+        if (singleRecord) {
+          applied = upsertInventoryTx(tx, singleRecord, ownerId, nowIso);
+        } else if (payload.missing !== true) {
+          requiresRefresh = true;
+        }
       }
-      if (payload.twoFactorMethod === "email" || payload.twoFactorMethod === "sms") {
-        empPatch.twoFactorMethod = payload.twoFactorMethod;
+    } else if (event.entityType === "sale" && ownerId) {
+      if (event.action === "delete" && event.entityId) {
+        tx.delete(sales).where(eq(sales.id, event.entityId)).run();
+        applied = true;
+      } else if (event.action === "refresh") {
+        if (deletedIdsList && deletedIdsList.length > 0) {
+          tx.delete(sales).where(inArray(sales.id, deletedIdsList)).run();
+          applied = true;
+        }
+        if (!deletedIdsList) {
+          requiresRefresh = true;
+        }
+      } else if (event.action === "upsert") {
+        if (singleRecord) {
+          const itemsList = Array.isArray(payload.items)
+            ? (payload.items as Array<Record<string, unknown>>)
+            : [];
+          applied = upsertSaleTx(tx, singleRecord, itemsList, ownerId, nowIso);
+        } else if (payload.refunded === true && event.entityId) {
+          tx.update(sales)
+            .set({ status: "refunded", updatedAt: nowIso })
+            .where(eq(sales.id, event.entityId))
+            .run();
+          applied = true;
+        } else if (payload.missing !== true) {
+          requiresRefresh = true;
+        }
       }
-      if (Object.keys(empPatch).length > 1) {
-        tx.update(users)
-          .set(empPatch)
-          .where(eq(users.id, event.entityId))
-          .run();
+    } else if (event.entityType === "settings" && ownerId) {
+      if (event.action === "upsert" || event.action === "refresh") {
+        const rec = singleRecord ?? payload;
+        if (Object.keys(rec).length > 0) {
+          storeUpdated = upsertSettingsTx(tx, rec, ownerId, nowIso);
+          applied = storeUpdated;
+        } else {
+          requiresRefresh = true;
+        }
+      }
+    } else if (event.entityType === "employee") {
+      if (event.action === "delete" && event.entityId) {
+        applied = deleteEmployeeSafeTx(tx, event.entityId, currentUserId, nowIso);
+      } else if (event.action === "refresh") {
+        if (recordsList) {
+          for (const rec of recordsList) {
+            if (upsertEmployeeTx(tx, rec, nowIso)) {
+              applied = true;
+              if (currentUserId && String(rec.id || "") === currentUserId) {
+                currentUserUpdated = true;
+              }
+            }
+          }
+        }
+        if (deletedIdsList) {
+          for (const did of deletedIdsList) {
+            if (deleteEmployeeSafeTx(tx, did, currentUserId, nowIso)) {
+              applied = true;
+            }
+          }
+        }
+        if (!recordsList && !deletedIdsList) {
+          requiresRefresh = true;
+        }
+      } else if (event.action === "upsert" && event.entityId) {
+        if (singleRecord) {
+          applied = upsertEmployeeTx(tx, singleRecord, nowIso);
+          if (applied && currentUserId && event.entityId === currentUserId) {
+            currentUserUpdated = true;
+          }
+        } else {
+          const empPatch: Partial<typeof users.$inferInsert> = {
+            updatedAt: nowIso,
+          };
+          if (typeof payload.twoFactorEnabled === "boolean") {
+            empPatch.twoFactorEnabled = payload.twoFactorEnabled ? 1 : 0;
+          }
+          if (
+            payload.twoFactorMethod === "email" ||
+            payload.twoFactorMethod === "sms"
+          ) {
+            empPatch.twoFactorMethod = payload.twoFactorMethod;
+          }
+          if (Object.keys(empPatch).length > 1) {
+            tx.update(users)
+              .set(empPatch)
+              .where(eq(users.id, event.entityId))
+              .run();
+            applied = true;
+            if (currentUserId && event.entityId === currentUserId) {
+              currentUserUpdated = true;
+            }
+          }
+        }
       }
     } else if (event.entityType === "notification") {
       const targetUserId =
-        typeof payload.user_id === "string" ? payload.user_id : null;
-      if (event.action === "upsert" && event.entityId && payload.is_read === true) {
-        tx.update(notifications)
-          .set({ isRead: 1, updatedAt: nowIso })
-          .where(eq(notifications.id, event.entityId))
-          .run();
-      } else if (event.action === "refresh" && event.entityId === "all") {
-        if (targetUserId) {
-          tx.update(notifications)
-            .set({ isRead: 1, updatedAt: nowIso })
-            .where(and(eq(notifications.userId, targetUserId), eq(notifications.isRead, 0)))
-            .run();
-        }
-      } else if (event.action === "delete") {
-        if (event.entityId === "all") {
-          if (targetUserId) {
-            tx.delete(notifications)
-              .where(eq(notifications.userId, targetUserId))
+        typeof payload.userId === "string"
+          ? payload.userId
+          : typeof payload.user_id === "string"
+            ? payload.user_id
+            : singleRecord && typeof singleRecord.userId === "string"
+              ? singleRecord.userId
+              : null;
+
+      const matchesViewer =
+        !currentUserId || !targetUserId || targetUserId === currentUserId;
+
+      if (matchesViewer) {
+        if (event.action === "upsert" && event.entityId) {
+          if (singleRecord && ownerId) {
+            const notifUserId = String(
+              singleRecord.userId || targetUserId || currentUserId || ownerId,
+            );
+            const userExists = tx
+              .select({ id: users.id })
+              .from(users)
+              .where(eq(users.id, notifUserId))
+              .limit(1)
+              .get();
+            const safeUserId = userExists?.id ?? ownerId;
+            const isReadVal =
+              singleRecord.isRead === true ||
+              payload.isRead === true ||
+              payload.is_read === true
+                ? 1
+                : 0;
+            const existing = tx
+              .select({ id: notifications.id })
+              .from(notifications)
+              .where(eq(notifications.id, event.entityId))
+              .limit(1)
+              .get();
+
+            if (existing) {
+              tx.update(notifications)
+                .set({
+                  type: String(singleRecord.type || "system"),
+                  title: String(singleRecord.title || "Notification"),
+                  message:
+                    typeof singleRecord.message === "string"
+                      ? singleRecord.message
+                      : null,
+                  isRead: isReadVal,
+                  referenceType:
+                    typeof singleRecord.referenceType === "string"
+                      ? singleRecord.referenceType
+                      : null,
+                  referenceId:
+                    typeof singleRecord.referenceId === "string"
+                      ? singleRecord.referenceId
+                      : null,
+                  updatedAt: String(singleRecord.updatedAt || nowIso),
+                })
+                .where(eq(notifications.id, event.entityId))
+                .run();
+            } else {
+              tx.insert(notifications)
+                .values({
+                  id: event.entityId,
+                  userId: safeUserId,
+                  type: String(singleRecord.type || "system"),
+                  title: String(singleRecord.title || "Notification"),
+                  message:
+                    typeof singleRecord.message === "string"
+                      ? singleRecord.message
+                      : null,
+                  isRead: isReadVal,
+                  referenceType:
+                    typeof singleRecord.referenceType === "string"
+                      ? singleRecord.referenceType
+                      : null,
+                  referenceId:
+                    typeof singleRecord.referenceId === "string"
+                      ? singleRecord.referenceId
+                      : null,
+                  createdAt: String(singleRecord.createdAt || nowIso),
+                  updatedAt: String(singleRecord.updatedAt || nowIso),
+                })
+                .run();
+            }
+            applied = true;
+            notificationsChanged = true;
+          } else if (payload.is_read === true || payload.isRead === true) {
+            tx.update(notifications)
+              .set({ isRead: 1, updatedAt: nowIso })
+              .where(eq(notifications.id, event.entityId))
+              .run();
+            applied = true;
+            notificationsChanged = true;
+          }
+        } else if (event.action === "refresh") {
+          const scopeUid = targetUserId ?? currentUserId ?? null;
+          if (scopeUid) {
+            tx.update(notifications)
+              .set({ isRead: 1, updatedAt: nowIso })
+              .where(
+                and(
+                  eq(notifications.userId, scopeUid),
+                  eq(notifications.isRead, 0),
+                ),
+              )
               .run();
           } else {
-            tx.delete(notifications).run();
+            tx.update(notifications)
+              .set({ isRead: 1, updatedAt: nowIso })
+              .where(eq(notifications.isRead, 0))
+              .run();
           }
-        } else if (event.entityId) {
-          tx.delete(notifications)
-            .where(eq(notifications.id, event.entityId))
-            .run();
+          applied = true;
+          notificationsChanged = true;
+        } else if (event.action === "delete") {
+          if (event.entityId === "all" || payload.allDeleted === true) {
+            const scopeUid = targetUserId ?? currentUserId ?? null;
+            if (scopeUid) {
+              tx.delete(notifications)
+                .where(eq(notifications.userId, scopeUid))
+                .run();
+            } else {
+              tx.delete(notifications).run();
+            }
+          } else if (event.entityId) {
+            tx.delete(notifications)
+              .where(eq(notifications.id, event.entityId))
+              .run();
+          }
+          applied = true;
+          notificationsChanged = true;
         }
       }
-    } else if (
-      event.entityType === "message" &&
-      event.action === "upsert" &&
-      event.entityId &&
-      typeof payload.status === "string" &&
-      ["sent", "queued", "partial", "failed"].includes(payload.status)
-    ) {
-      tx.update(broadcastMessages)
-        .set({
-          status: payload.status as BroadcastStatus,
-          updatedAt: nowIso,
-        })
-        .where(eq(broadcastMessages.id, event.entityId))
-        .run();
+    } else if (event.entityType === "message" && ownerId) {
+      if (event.action === "delete" && event.entityId) {
+        tx.delete(broadcastMessages)
+          .where(eq(broadcastMessages.id, event.entityId))
+          .run();
+        applied = true;
+      } else if (event.action === "refresh") {
+        if (recordsList) {
+          for (const rec of recordsList) {
+            if (upsertBroadcastMessageTx(tx, rec, ownerId, nowIso)) applied = true;
+          }
+        }
+        if (deletedIdsList && deletedIdsList.length > 0) {
+          tx.delete(broadcastMessages)
+            .where(inArray(broadcastMessages.id, deletedIdsList))
+            .run();
+          applied = true;
+        }
+        if (!recordsList && !deletedIdsList) {
+          requiresRefresh = true;
+        }
+      } else if (event.action === "upsert" && event.entityId) {
+        if (singleRecord) {
+          applied = upsertBroadcastMessageTx(tx, singleRecord, ownerId, nowIso);
+        } else if (
+          typeof payload.status === "string" &&
+          ["sent", "queued", "partial", "failed"].includes(payload.status)
+        ) {
+          tx.update(broadcastMessages)
+            .set({
+              status: payload.status as BroadcastStatus,
+              updatedAt: nowIso,
+            })
+            .where(eq(broadcastMessages.id, event.entityId))
+            .run();
+          applied = true;
+        } else if (payload.missing !== true) {
+          requiresRefresh = true;
+        }
+      }
+    } else if (event.action === "refresh") {
+      requiresRefresh = true;
     }
 
     if (event.cursor > 0) {
@@ -922,6 +2349,15 @@ export function applyRemoteSyncEvent(
     }
     setSyncMetaTx(tx, "last_synced_at", nowIso);
   });
+
+  return {
+    applied,
+    requiresRefresh,
+    entityType: event.entityType,
+    storeUpdated,
+    currentUserUpdated,
+    notificationsChanged,
+  };
 }
 
 export function enqueueOutboxMutation(

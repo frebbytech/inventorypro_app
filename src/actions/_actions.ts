@@ -1018,10 +1018,24 @@ export async function removeData({
       old_values: { ids },
     });
 
+    const tableEntityMap: Record<string, string> = {
+      product_categories: "category",
+      products: "product",
+      customers: "customer",
+      suppliers: "supplier",
+      supplier_transactions: "supplier_transaction",
+      inventory: "inventory",
+      sales: "sale",
+      notifications: "notification",
+      broadcast_messages: "message",
+      users: "employee",
+      settings: "settings",
+    };
+
     revalidatePath(`/admin/${table}`);
     await emitSyncEvent({
       tenantId: currentUser.tenant_id,
-      entityType: table === "product_categories" ? "category" : (table.replace(/s$/, "") as any),
+      entityType: (tableEntityMap[table] || table.replace(/s$/, "")) as any,
       entityId: ids.map(String).join(","),
       action: "refresh",
       actorUserId: currentUser.id,
