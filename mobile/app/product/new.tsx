@@ -41,6 +41,7 @@ import {
 import { useTheme } from "@/theme";
 import { LOW_STOCK_THRESHOLD } from "@/types/domain";
 import { formatCurrency } from "@/utils/formatters";
+import { isLocalDeviceImageUri } from "@/utils/productImage";
 import {
   buildProductTemplateCsv,
   parseCsvTextToProducts,
@@ -199,7 +200,17 @@ export default function NewProductScreen() {
         setExistingCategories((prev) => [...prev, created.categoryName].sort());
       }
 
-      toast.success("Product created", `${created.name} added to catalog.`);
+      if (
+        workspaceMode === "synced" &&
+        isLocalDeviceImageUri(created.photoUrl)
+      ) {
+        toast.info(
+          "Saved offline with local photo",
+          `${created.name} and its photo will upload automatically when synced.`,
+        );
+      } else {
+        toast.success("Product created", `${created.name} added to catalog.`);
+      }
       router.replace({
         pathname: "/product/[id]",
         params: { id: created.id },

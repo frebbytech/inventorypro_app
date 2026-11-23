@@ -1,5 +1,5 @@
-import { and, asc, eq, inArray, ne, sql } from "drizzle-orm";
-import type { ExpoSqliteDrizzleDb } from "./client";
+import { and, asc, desc, eq, inArray, ne, sql } from "drizzle-orm";
+import { reclaimSqliteSpace, type ExpoSqliteDrizzleDb } from "./client";
 import { generateId } from "./crypto";
 import {
   auditLogs,
@@ -16,6 +16,7 @@ import {
   supplierTransactions,
   syncMeta,
   syncOutbox,
+  userSessions,
   users,
 } from "./schema";
 import type {
@@ -186,6 +187,7 @@ export function replaceLocalSnapshotWithCloud(
     tx.delete(auditLogs).run();
     tx.delete(settings).run();
     tx.delete(syncOutbox).run();
+    tx.delete(userSessions).run();
 
     // Ensure authenticated cloud user & synced tenant staff exist locally for FK references
     const currentUserEmail =
@@ -339,7 +341,12 @@ export function replaceLocalSnapshotWithCloud(
         ),
         businessHoursNotes: snapshot.store.businessHoursNotes || "",
         printAfterSale: snapshot.store.printAfterSale === false ? 0 : 1,
-        paperSize: snapshot.store.paperSize === "a4" ? "a4" : "thermal_80mm",
+        paperSize:
+          snapshot.store.paperSize === "a4"
+            ? "a4"
+            : snapshot.store.paperSize === "thermal_58mm"
+              ? "thermal_58mm"
+              : "thermal_80mm",
         createdAt: nowIso,
         updatedAt: nowIso,
       })
@@ -697,6 +704,8 @@ export function replaceLocalSnapshotWithCloud(
     setSyncMetaTx(tx, "tenant_id", snapshot.tenant.id);
     setSyncMetaTx(tx, "tenant_slug", snapshot.tenant.slug);
   });
+
+  reclaimSqliteSpace();
 }
 
 function setSyncMetaTx(
@@ -1707,7 +1716,12 @@ function upsertSettingsTx(
     patch.printAfterSale = rec.printAfterSale ? 1 : 0;
   }
   if (typeof rec.paperSize === "string") {
-    patch.paperSize = rec.paperSize === "a4" ? "a4" : "thermal_80mm";
+    patch.paperSize =
+      rec.paperSize === "a4"
+        ? "a4"
+        : rec.paperSize === "thermal_58mm"
+          ? "thermal_58mm"
+          : "thermal_80mm";
   }
 
   if (existingSetting) {
@@ -2405,17 +2419,8 @@ export function enqueueOutboxMutation(
   };
 }
 
-export function listPendingOutboxItems(
-  db: ExpoSqliteDrizzleDb,
-): SyncOutboxItem[] {
-  const rows = db
-    .select()
-    .from(syncOutbox)
-    .where(inArray(syncOutbox.status, ["pending", "processing"]))
-    .orderBy(asc(syncOutbox.createdAt))
-    .all();
-
-  return rows.map((r) => ({
+function mapOutboxRow(r: typeof syncOutbox.$inferSelect): SyncOutboxItem {
+  return {
     id: r.id,
     clientMutationId: r.clientMutationId,
     entityType: r.entityType,
@@ -2427,7 +2432,32 @@ export function listPendingOutboxItems(
     retryCount: Number(r.retryCount) || 0,
     lastError: r.lastError ?? null,
     createdAt: r.createdAt,
-  }));
+  };
+}
+
+export function listPendingOutboxItems(
+  db: ExpoSqliteDrizzleDb,
+): SyncOutboxItem[] {
+  const rows = db
+    .select()
+    .from(syncOutbox)
+    .where(inArray(syncOutbox.status, ["pending", "processing"]))
+    .orderBy(asc(syncOutbox.createdAt))
+    .all();
+
+  return rows.map(mapOutboxRow);
+}
+
+export function listAllOutboxItems(
+  db: ExpoSqliteDrizzleDb,
+): SyncOutboxItem[] {
+  const rows = db
+    .select()
+    .from(syncOutbox)
+    .orderBy(desc(syncOutbox.createdAt))
+    .all();
+
+  return rows.map(mapOutboxRow);
 }
 
 export function getOutboxCounts(db: ExpoSqliteDrizzleDb): {
@@ -2466,6 +2496,72 @@ export function markOutboxItemState(
         : Number(existing.retryCount || 0),
       lastError: options?.error ?? null,
     })
+    .where(eq(syncOutbox.id, id))
+    .run();
+}
+
+export function resetOutboxItemForRetry(
+  db: ExpoSqliteDrizzleDb,
+  id: string,
+): boolean {
+  const existing = db
+    .select({ id: syncOutbox.id })
+    .from(syncOutbox)
+    .where(eq(syncOutbox.id, id))
+    .limit(1)
+    .get();
+  if (!existing) return false;
+
+  db.update(syncOutbox)
+    .set({
+      status: "pending",
+      lastError: null,
+    })
+    .where(eq(syncOutbox.id, id))
+    .run();
+  return true;
+}
+
+export function resetAllFailedOutboxItemsForRetry(
+  db: ExpoSqliteDrizzleDb,
+): number {
+  const rows = db
+    .select({ id: syncOutbox.id })
+    .from(syncOutbox)
+    .where(inArray(syncOutbox.status, ["conflict", "failed"]))
+    .all();
+  if (rows.length === 0) return 0;
+
+  db.update(syncOutbox)
+    .set({
+      status: "pending",
+      lastError: null,
+    })
+    .where(inArray(syncOutbox.status, ["conflict", "failed"]))
+    .run();
+  return rows.length;
+}
+
+export function getOutboxItemById(
+  db: ExpoSqliteDrizzleDb,
+  id: string,
+): SyncOutboxItem | null {
+  const row = db
+    .select()
+    .from(syncOutbox)
+    .where(eq(syncOutbox.id, id))
+    .limit(1)
+    .get();
+  return row ? mapOutboxRow(row) : null;
+}
+
+export function updateOutboxItemPayload(
+  db: ExpoSqliteDrizzleDb,
+  id: string,
+  payloadJson: string,
+): void {
+  db.update(syncOutbox)
+    .set({ payloadJson })
     .where(eq(syncOutbox.id, id))
     .run();
 }

@@ -1,7 +1,12 @@
+export type TenantAccessMode = "both" | "mobile_only" | "web_only";
+
 export interface SuperAdminOverviewMetrics {
   totalTenants: number;
   activeTenants: number;
   suspendedTenants: number;
+  mobileOnlyTenants: number;
+  webOnlyTenants: number;
+  dualAccessTenants: number;
   totalMembers: number;
   totalProducts: number;
   totalSalesRevenue: number;
@@ -20,6 +25,7 @@ export interface TenantSummaryItem {
   name: string;
   slug: string;
   status: "active" | "suspended";
+  accessMode: TenantAccessMode;
   currency: string;
   ownerUserId: string | null;
   ownerUsername: string;

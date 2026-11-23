@@ -31,7 +31,7 @@ export interface TenantInfo {
 
 export type TwoFactorMethod = "email" | "sms";
 export type StockAudioTone = "chime" | "bell" | "marimba" | "ping";
-export type PaperSize = "thermal_80mm" | "a4";
+export type PaperSize = "thermal_58mm" | "thermal_80mm" | "a4";
 
 export interface DaySchedule {
   day: string;
@@ -1020,4 +1020,19 @@ export interface SyncOutboxItem {
   createdAt: string;
 }
 
+export type PrinterTransport = "system" | "tcp" | "bluetooth";
 
+export interface ThermalPrinterConfig {
+  transport: PrinterTransport;
+  host: string;
+  port: number;
+  bluetoothAddress: string;
+  bluetoothName: string;
+  autoCut: boolean;
+  openCashDrawer: boolean;
+}
+
+export interface BluetoothPrinterDevice {
+  name: string;
+  address: string;
+}

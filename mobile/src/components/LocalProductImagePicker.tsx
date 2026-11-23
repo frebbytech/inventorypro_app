@@ -16,6 +16,7 @@ import {
   AlertCircle,
   Camera,
   CameraOff,
+  CloudUpload,
   Image as ImageIcon,
   RefreshCw,
   Settings,
@@ -45,7 +46,7 @@ export function LocalProductImagePicker({
   onChange,
 }: LocalProductImagePickerProps) {
   const { theme } = useTheme();
-  const { workspaceMode, serverUrl, uploadProductImage } = useAuth();
+  const { workspaceMode, syncStatus, serverUrl, uploadProductImage } = useAuth();
   const { colors, spacing, radii, typography, fontFamilies } = theme;
 
   const [picking, setPicking] = useState(false);
@@ -58,13 +59,24 @@ export function LocalProductImagePicker({
 
   const [permission, requestPermission] = useCameraPermissions();
   const cameraRef = useRef<CameraView | null>(null);
+  const sessionPickedUrisRef = useRef<Set<string>>(new Set());
 
   useEffect(() => {
     setImageError(false);
   }, [value]);
 
+  const cleanupPreviousSessionFile = (previousUri: string) => {
+    if (previousUri && sessionPickedUrisRef.current.has(previousUri)) {
+      deleteLocalProductImageIfManaged(previousUri);
+      sessionPickedUrisRef.current.delete(previousUri);
+    }
+  };
+
   const attachResolvedImage = async (savedLocalUri: string) => {
-    if (workspaceMode !== "synced") {
+    cleanupPreviousSessionFile(value);
+
+    if (workspaceMode !== "synced" || syncStatus === "offline") {
+      sessionPickedUrisRef.current.add(savedLocalUri);
       onChange(savedLocalUri);
       return;
     }
@@ -75,13 +87,44 @@ export function LocalProductImagePicker({
       deleteLocalProductImageIfManaged(savedLocalUri);
       onChange(cloudUrl);
     } catch (err) {
-      if (err instanceof ApiError && err.status >= 400 && err.status < 500) {
+      if (err instanceof ApiError && err.status >= 400 && err.status < 500 && err.status !== 408 && err.status !== 429) {
         deleteLocalProductImageIfManaged(savedLocalUri);
         setErrorMessage(err.message || "Unable to upload product photo.");
       } else {
         // Offline or transient server failure: keep local URI so outbox uploads it when online
+        sessionPickedUrisRef.current.add(savedLocalUri);
         onChange(savedLocalUri);
       }
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  const handleUploadDeferredNow = async () => {
+    if (
+      uploading ||
+      picking ||
+      capturing ||
+      workspaceMode !== "synced" ||
+      !isLocalDeviceImageUri(value)
+    ) {
+      return;
+    }
+    setErrorMessage(null);
+    setUploading(true);
+    try {
+      const cloudUrl = await uploadProductImage(value);
+      if (sessionPickedUrisRef.current.has(value)) {
+        deleteLocalProductImageIfManaged(value);
+        sessionPickedUrisRef.current.delete(value);
+      }
+      onChange(cloudUrl);
+    } catch (err) {
+      setErrorMessage(
+        err instanceof Error
+          ? err.message
+          : "Still offline. Photo remains safely queued on device.",
+      );
     } finally {
       setUploading(false);
     }
@@ -151,9 +194,7 @@ export function LocalProductImagePicker({
 
   const handleRemoveImage = () => {
     setErrorMessage(null);
-    if (isLocalDeviceImageUri(value)) {
-      deleteLocalProductImageIfManaged(value);
-    }
+    cleanupPreviousSessionFile(value);
     onChange("");
   };
 
@@ -277,6 +318,17 @@ export function LocalProductImagePicker({
               style={{ flex: 1 }}
               leftIcon={<Camera size={14} color={colors.foreground} />}
               onPress={() => void handleOpenCamera()}
+            />
+          ) : null}
+          {isSyncedPendingUpload && syncStatus !== "offline" ? (
+            <Button
+              title="Upload Now"
+              variant="default"
+              size="sm"
+              loading={uploading}
+              disabled={picking || capturing}
+              leftIcon={<CloudUpload size={14} color="#FFFFFF" />}
+              onPress={() => void handleUploadDeferredNow()}
             />
           ) : null}
           {value.trim() ? (

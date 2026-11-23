@@ -19,8 +19,8 @@ const globalForKnex = globalThis as typeof globalThis & {
 // 3. Initialize the database instance
 const db: Knex = globalForKnex.knexInstance || knex(config);
 
-// 4. Save to global scope in non-production environments
-if (process.env.NODE_ENV !== "production") {
+// 4. Cache singleton on globalThis across chunks & warm serverless invocations
+if (!globalForKnex.knexInstance) {
   globalForKnex.knexInstance = db;
 }
 

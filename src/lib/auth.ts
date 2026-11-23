@@ -10,6 +10,7 @@ import {
   DEFAULT_TENANT_SLUG,
   ensureMultiTenantSchema,
   normalizeSlug,
+  normalizeTenantAccessMode,
 } from "@/lib/tenant";
 import { ensureBaseTables } from "@/lib/base-schema";
 
@@ -89,92 +90,92 @@ export function buildDefaultSettingsRow(opts: {
   };
 }
 
-let isAuthDbInitialized = false;
-let authDbInitPromise: Promise<void> | null = null;
+const globalForAuthSchema = globalThis as typeof globalThis & {
+  __inventoryProAuthInitialized?: boolean;
+  __inventoryProAuthInitPromise?: Promise<void> | null;
+};
 
 export async function ensureAuthSchema() {
-  if (!isAuthDbInitialized) {
-    if (!authDbInitPromise) {
-      authDbInitPromise = (async () => {
+  if (!globalForAuthSchema.__inventoryProAuthInitialized) {
+    if (!globalForAuthSchema.__inventoryProAuthInitPromise) {
+      globalForAuthSchema.__inventoryProAuthInitPromise = (async () => {
         await ensureBaseTables(db);
-        const trx = await db.transaction();
-
-        try {
-          const hasUsersTable = await trx.schema.hasTable("users");
-          if (!hasUsersTable) {
-            await trx.rollback();
-            return;
-          }
-
-          const adminUser = await trx("users").where("role", "admin").first();
-
-      if (!adminUser) {
-        const adminId = generateId();
-        const defaultHash = await hashPassword(
-          process.env.INITIAL_ADMIN_PASSWORD || "Admin123!",
-        );
-
-        const hasTenants = await trx.schema.hasTable("tenants");
-        if (hasTenants) {
-          await trx("tenants")
-            .insert({
-              id: DEFAULT_TENANT_ID,
-              name: DEFAULT_TENANT_NAME,
-              slug: DEFAULT_TENANT_SLUG,
-              owner_user_id: adminId,
-              status: "active",
-            })
-            .onConflict("id")
-            .ignore();
+        const hasUsersTable = await db.schema.hasTable("users");
+        if (!hasUsersTable) {
+          return;
         }
 
-        const hasTenantCol = await trx.schema.hasColumn("users", "tenant_id");
-        await trx("users").insert({
-          id: adminId,
-          ...(hasTenantCol ? { tenant_id: DEFAULT_TENANT_ID } : {}),
-          username: "frebbytech",
-          email: "inventorypro@frebbytech.com",
-          firstname: "System",
-          lastname: "Admin",
-          role: "admin",
-          password_hash: defaultHash,
-        });
+        const existingAdmin = await db("users")
+          .where("role", "admin")
+          .first("id");
 
-        const hasSettings = await trx.schema.hasTable("settings");
-        if (hasSettings) {
-          const hasSettingsTenant = await trx.schema.hasColumn(
-            "settings",
-            "tenant_id",
+        if (!existingAdmin) {
+          const defaultHash = await hashPassword(
+            process.env.INITIAL_ADMIN_PASSWORD || "Admin123!",
           );
-          const defaults = buildDefaultSettingsRow({
-            userId: adminId,
-            tenantId: DEFAULT_TENANT_ID,
-            businessName: "Inventory Pro",
-            businessEmail: "inventorypro@frebbytech.com",
-            businessPhone: "+233543772591",
-            businessAddress: "AK-459-6364,Kumasi",
-          });
-          if (!hasSettingsTenant) {
-            delete (defaults as any).tenant_id;
-          }
-          await trx("settings").insert(defaults);
-        }
-      }
 
-          await trx.commit();
-          isAuthDbInitialized = true;
-        } catch (err) {
-          await trx.rollback();
-          console.error("Critical failure initializing auth schema:", err);
-          throw err;
+          await db.transaction(async (trx) => {
+            const adminUser = await trx("users").where("role", "admin").first("id");
+            if (adminUser) return;
+
+            const adminId = generateId();
+            const hasTenants = await trx.schema.hasTable("tenants");
+            if (hasTenants) {
+              await trx("tenants")
+                .insert({
+                  id: DEFAULT_TENANT_ID,
+                  name: DEFAULT_TENANT_NAME,
+                  slug: DEFAULT_TENANT_SLUG,
+                  owner_user_id: adminId,
+                  status: "active",
+                })
+                .onConflict("id")
+                .ignore();
+            }
+
+            const hasTenantCol = await trx.schema.hasColumn("users", "tenant_id");
+            await trx("users").insert({
+              id: adminId,
+              ...(hasTenantCol ? { tenant_id: DEFAULT_TENANT_ID } : {}),
+              username: "frebbytech",
+              email: "inventorypro@frebbytech.com",
+              firstname: "System",
+              lastname: "Admin",
+              role: "admin",
+              password_hash: defaultHash,
+            });
+
+            const hasSettings = await trx.schema.hasTable("settings");
+            if (hasSettings) {
+              const hasSettingsTenant = await trx.schema.hasColumn(
+                "settings",
+                "tenant_id",
+              );
+              const defaults = buildDefaultSettingsRow({
+                userId: adminId,
+                tenantId: DEFAULT_TENANT_ID,
+                businessName: "Inventory Pro",
+                businessEmail: "inventorypro@frebbytech.com",
+                businessPhone: "+233543772591",
+                businessAddress: "AK-459-6364,Kumasi",
+              });
+              if (!hasSettingsTenant) {
+                delete (defaults as any).tenant_id;
+              }
+              await trx("settings").insert(defaults);
+            }
+          });
         }
+
+        globalForAuthSchema.__inventoryProAuthInitialized = true;
       })().catch((err) => {
-        authDbInitPromise = null;
+        globalForAuthSchema.__inventoryProAuthInitPromise = null;
+        console.error("Critical failure initializing auth schema:", err);
         throw err;
       });
     }
 
-    await authDbInitPromise;
+    await globalForAuthSchema.__inventoryProAuthInitPromise;
   }
 
   await ensureMultiTenantSchema();
@@ -200,6 +201,7 @@ export async function createJWT(payload: {
 }): Promise<string> {
   return new SignJWT(payload)
     .setProtectedHeader({ alg: "HS256" })
+    .setJti(generateId("jti"))
     .setIssuedAt()
     .setExpirationTime("7d")
     .sign(JWT_SECRET);
@@ -244,7 +246,38 @@ export async function removeAuthCookie() {
   cookieStore.delete(COOKIE_NAME);
 }
 
-async function loadSessionUserById(userId: string): Promise<SessionUser | null> {
+async function isSessionTokenActiveInDb(
+  userId: string,
+  token: string,
+): Promise<boolean> {
+  const sessionRow = await db("user_sessions")
+    .where({ user_id: userId, token })
+    .first("id", "is_active", "expires_at")
+    .catch(() => null);
+
+  if (!sessionRow) {
+    return true;
+  }
+  if (Number(sessionRow.is_active) === 0) {
+    return false;
+  }
+  if (
+    sessionRow.expires_at &&
+    new Date(sessionRow.expires_at).getTime() < Date.now()
+  ) {
+    return false;
+  }
+  void db("user_sessions")
+    .where("id", sessionRow.id)
+    .update({ last_activity_at: new Date().toISOString() })
+    .catch(() => {});
+  return true;
+}
+
+async function loadSessionUserById(
+  userId: string,
+  channel: "web" | "mobile" = "web",
+): Promise<SessionUser | null> {
   const user = await db("users as u")
     .leftJoin("tenants as t", "u.tenant_id", "t.id")
     .select(
@@ -253,6 +286,7 @@ async function loadSessionUserById(userId: string): Promise<SessionUser | null> 
       "t.name as tenant_name",
       "t.slug as tenant_slug",
       "t.status as tenant_status",
+      "t.access_mode as tenant_access_mode",
       "u.username",
       "u.email",
       "u.firstname",
@@ -267,6 +301,10 @@ async function loadSessionUserById(userId: string): Promise<SessionUser | null> 
   if (!user) return null;
   if (user.tenant_status === "suspended") return null;
 
+  const accessMode = normalizeTenantAccessMode(user.tenant_access_mode);
+  if (channel === "web" && accessMode === "mobile_only") return null;
+  if (channel === "mobile" && accessMode === "web_only") return null;
+
   return {
     id: user.id,
     tenant_id: user.tenant_id || DEFAULT_TENANT_ID,
@@ -280,6 +318,33 @@ async function loadSessionUserById(userId: string): Promise<SessionUser | null> 
     role: user.role === "admin" ? "admin" : "member",
     last_login_at: user.last_login_at || null,
   };
+}
+
+export async function getWebSessionRejectionReason(): Promise<
+  "mobile_only" | "suspended" | null
+> {
+  try {
+    const cookieStore = await cookies();
+    const token = cookieStore.get(COOKIE_NAME)?.value;
+    if (!token) return null;
+    const decoded = await verifyJWT(token);
+    if (!decoded?.userId) return null;
+
+    await ensureAuthSchema();
+    const user = await db("users as u")
+      .leftJoin("tenants as t", "u.tenant_id", "t.id")
+      .select("t.status as tenant_status", "t.access_mode as tenant_access_mode")
+      .where("u.id", decoded.userId)
+      .first();
+    if (!user) return null;
+    if (user.tenant_status === "suspended") return "suspended";
+    if (normalizeTenantAccessMode(user.tenant_access_mode) === "mobile_only") {
+      return "mobile_only";
+    }
+    return null;
+  } catch {
+    return null;
+  }
 }
 
 export async function getAuthSessionInfo(): Promise<{
@@ -304,7 +369,10 @@ export async function getAuthSessionInfo(): Promise<{
 
   await ensureAuthSchema();
 
-  const session = await loadSessionUserById(decoded.userId);
+  const isActive = await isSessionTokenActiveInDb(decoded.userId, token);
+  if (!isActive) return null;
+
+  const session = await loadSessionUserById(decoded.userId, "web");
   if (!session) return null;
   if (decoded.tenantId && session.tenant_id !== decoded.tenantId) {
     return null;
@@ -334,7 +402,10 @@ export async function getAuthSession(): Promise<SessionUser | null> {
 
   await ensureAuthSchema();
 
-  const session = await loadSessionUserById(decoded.userId);
+  const isActive = await isSessionTokenActiveInDb(decoded.userId, token);
+  if (!isActive) return null;
+
+  const session = await loadSessionUserById(decoded.userId, "web");
   if (!session) return null;
   if (decoded.tenantId && session.tenant_id !== decoded.tenantId) {
     return null;
@@ -370,29 +441,10 @@ export async function getBearerAuthSession(
   const decoded = await verifyJWT(token);
   if (!decoded?.userId) return null;
 
-  // Check if token was explicitly revoked in user_sessions
-  const sessionRow = await db("user_sessions")
-    .where({ user_id: decoded.userId, token })
-    .first("id", "is_active", "expires_at")
-    .catch(() => null);
+  const isActive = await isSessionTokenActiveInDb(decoded.userId, token);
+  if (!isActive) return null;
 
-  if (sessionRow) {
-    if (Number(sessionRow.is_active) === 0) {
-      return null;
-    }
-    if (
-      sessionRow.expires_at &&
-      new Date(sessionRow.expires_at).getTime() < Date.now()
-    ) {
-      return null;
-    }
-    void db("user_sessions")
-      .where("id", sessionRow.id)
-      .update({ last_activity_at: new Date().toISOString() })
-      .catch(() => {});
-  }
-
-  const session = await loadSessionUserById(decoded.userId);
+  const session = await loadSessionUserById(decoded.userId, "mobile");
   if (!session) return null;
   if (decoded.tenantId && session.tenant_id !== decoded.tenantId) {
     return null;
@@ -415,6 +467,7 @@ export async function registerWorkspaceAccount(input: {
   phonenumber?: string;
   businessAddress?: string;
   currency?: string;
+  accessMode?: "both" | "mobile_only" | "web_only";
 }): Promise<{
   tenant: { id: string; name: string; slug: string };
   user: SessionUser;
@@ -425,6 +478,7 @@ export async function registerWorkspaceAccount(input: {
   const username = input.username.trim();
   const email = input.email.trim().toLowerCase();
   const password = input.password;
+  const accessMode = normalizeTenantAccessMode(input.accessMode);
 
   if (!storeName || !username || !email || !password) {
     throw new Error("Store name, username, email, and password are required.");
@@ -475,6 +529,7 @@ export async function registerWorkspaceAccount(input: {
       slug: candidateSlug,
       owner_user_id: adminId,
       status: "active",
+      access_mode: accessMode,
       created_at: nowIso,
       updated_at: nowIso,
     });

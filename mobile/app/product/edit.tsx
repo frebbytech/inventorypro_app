@@ -17,6 +17,7 @@ import {
   Save,
 } from "lucide-react-native";
 import { useApiClient } from "@/api/ApiProvider";
+import { useAuth } from "@/api/AuthProvider";
 import { EmptyState } from "@/components/EmptyState";
 import { LoadingState } from "@/components/LoadingState";
 import { LocalProductImagePicker } from "@/components/LocalProductImagePicker";
@@ -33,11 +34,13 @@ import {
 import { useTheme } from "@/theme";
 import { LOW_STOCK_THRESHOLD } from "@/types/domain";
 import { formatCurrency } from "@/utils/formatters";
+import { isLocalDeviceImageUri } from "@/utils/productImage";
 
 export default function EditProductScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const { theme } = useTheme();
   const api = useApiClient();
+  const { workspaceMode } = useAuth();
   const toast = useToast();
   const router = useRouter();
   const { colors, spacing, radii, typography, fontFamilies } = theme;
@@ -172,7 +175,7 @@ export default function EditProductScreen() {
     setSaving(true);
     setError(null);
     try {
-      await api.updateProduct(String(id), {
+      const updated = await api.updateProduct(String(id), {
         name: cleanName,
         categoryName: effectiveCategory,
         barcode: barcode.trim(),
@@ -183,7 +186,17 @@ export default function EditProductScreen() {
         lowStockThreshold,
         active: isActive,
       });
-      toast.success("Product updated", `${cleanName} changes saved.`);
+      if (
+        workspaceMode === "synced" &&
+        isLocalDeviceImageUri(updated.photoUrl)
+      ) {
+        toast.info(
+          "Saved offline with local photo",
+          `${cleanName} and its photo will upload automatically when synced.`,
+        );
+      } else {
+        toast.success("Product updated", `${cleanName} changes saved.`);
+      }
       router.back();
     } catch (err) {
       const msg = err instanceof Error ? err.message : "Failed to update product.";

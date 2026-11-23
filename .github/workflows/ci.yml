@@ -1,0 +1,61 @@
+name: Web & Mobile CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  web-and-api:
+    name: Web Typecheck, Lint & Vitest Suite
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+
+      - name: Install root dependencies
+        run: npm ci
+
+      - name: Run TypeScript type-check
+        run: npm run type-check
+
+      - name: Run ESLint
+        run: npm run lint
+
+      - name: Run automated test suite
+        run: npm test
+
+  mobile-checks:
+    name: Mobile Typecheck & Expo Config Check
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install mobile dependencies
+        run: npm ci --prefix mobile
+
+      - name: Run mobile TypeScript check
+        run: npm --prefix mobile run typecheck
+
+      - name: Validate Expo app config & EAS profiles
+        run: |
+          node -e "JSON.parse(require('fs').readFileSync('mobile/app.json', 'utf8'));"
+          node -e "JSON.parse(require('fs').readFileSync('mobile/eas.json', 'utf8'));"
+          npm --prefix mobile run config:check

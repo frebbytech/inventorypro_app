@@ -1,12 +1,62 @@
 import { Platform, Share } from "react-native";
 import * as Print from "expo-print";
 import * as Sharing from "expo-sharing";
-import type { SaleReceiptDetail, SalesReportData } from "@/types/domain";
+import type {
+  PaperSize,
+  SaleReceiptDetail,
+  SalesReportData,
+} from "@/types/domain";
 import {
   capitalizeLabel,
   formatCurrency,
   formatDateTime,
 } from "./formatters";
+
+export interface ReceiptPaperLayoutConfig {
+  id: PaperSize;
+  shortLabel: string;
+  label: string;
+  pageCss: string;
+  ticketCssWidth: string;
+  textColumns: number;
+  isThermal: boolean;
+}
+
+export const RECEIPT_PAPER_LAYOUTS: Record<PaperSize, ReceiptPaperLayoutConfig> = {
+  thermal_58mm: {
+    id: "thermal_58mm",
+    shortLabel: "58mm",
+    label: "Thermal 58mm",
+    pageCss: "@page { size: 58mm auto; margin: 2mm; }",
+    ticketCssWidth: "54mm",
+    textColumns: 32,
+    isThermal: true,
+  },
+  thermal_80mm: {
+    id: "thermal_80mm",
+    shortLabel: "80mm",
+    label: "Thermal 80mm",
+    pageCss: "@page { size: 80mm auto; margin: 3mm; }",
+    ticketCssWidth: "74mm",
+    textColumns: 42,
+    isThermal: true,
+  },
+  a4: {
+    id: "a4",
+    shortLabel: "A4 Sheet",
+    label: "A4 Sheet",
+    pageCss: "@page { size: A4; margin: 14mm; }",
+    ticketCssWidth: "660px",
+    textColumns: 48,
+    isThermal: false,
+  },
+};
+
+export function getReceiptPaperLayout(paperSize?: PaperSize | null): ReceiptPaperLayoutConfig {
+  if (paperSize === "thermal_58mm") return RECEIPT_PAPER_LAYOUTS.thermal_58mm;
+  if (paperSize === "a4") return RECEIPT_PAPER_LAYOUTS.a4;
+  return RECEIPT_PAPER_LAYOUTS.thermal_80mm;
+}
 
 function escapeHtml(value: string): string {
   return value
@@ -17,54 +67,90 @@ function escapeHtml(value: string): string {
     .replace(/'/g, "&#39;");
 }
 
-export function buildReceiptPlainText(receipt: SaleReceiptDetail): string {
+function padLine(left: string, right: string, width: number): string {
+  const cleanLeft = left.trim();
+  const cleanRight = right.trim();
+  const minGap = 1;
+  const maxLeft = Math.max(4, width - cleanRight.length - minGap);
+  const clippedLeft =
+    cleanLeft.length > maxLeft ? `${cleanLeft.slice(0, maxLeft - 1)}…` : cleanLeft;
+  const spaces = Math.max(minGap, width - clippedLeft.length - cleanRight.length);
+  return `${clippedLeft}${" ".repeat(spaces)}${cleanRight}`;
+}
+
+export function buildReceiptPlainText(
+  receipt: SaleReceiptDetail,
+  paperSize: PaperSize = "thermal_80mm",
+): string {
+  const layout = getReceiptPaperLayout(paperSize);
+  const cols = layout.textColumns;
+  const divider = "-".repeat(cols);
+
   const lines: string[] = [
     receipt.storeName.toUpperCase(),
     receipt.storeAddress,
     [receipt.storePhone, receipt.storeEmail].filter(Boolean).join(" · "),
-    "--------------------------------",
+    divider,
     receipt.status === "refunded" ? "*** REFUNDED RECEIPT ***" : "OFFICIAL RECEIPT",
-    `Receipt #: ${receipt.receiptNo}`,
-    `Date: ${formatDateTime(receipt.saleDate)}`,
-    `Customer: ${receipt.customerName}${receipt.customerPhone ? ` (${receipt.customerPhone})` : ""}`,
-    `Payment: ${capitalizeLabel(receipt.paymentMode)}`,
-    `Served By: ${receipt.attendantName}`,
-    "--------------------------------",
+    padLine("Receipt #:", receipt.receiptNo, cols),
+    padLine("Date:", formatDateTime(receipt.saleDate), cols),
+    padLine(
+      "Customer:",
+      `${receipt.customerName}${receipt.customerPhone ? ` (${receipt.customerPhone})` : ""}`,
+      cols,
+    ),
+    padLine("Payment:", capitalizeLabel(receipt.paymentMode), cols),
+    padLine("Served By:", receipt.attendantName, cols),
+    divider,
   ];
 
   for (const item of receipt.items) {
+    lines.push(item.productName);
     lines.push(
-      `${item.productName}\n  ${item.quantity} x ${item.unitPrice.toFixed(2)} = ${formatCurrency(item.subtotal, receipt.currency)}`,
+      padLine(
+        `  ${item.quantity} x ${item.unitPrice.toFixed(2)}`,
+        formatCurrency(item.subtotal, receipt.currency),
+        cols,
+      ),
     );
   }
 
-  lines.push("--------------------------------");
-  lines.push(`Subtotal: ${formatCurrency(receipt.subtotal, receipt.currency)}`);
+  lines.push(divider);
+  lines.push(padLine("Subtotal:", formatCurrency(receipt.subtotal, receipt.currency), cols));
   if (receipt.discountAmount > 0) {
     lines.push(
-      `Discount: -${formatCurrency(receipt.discountAmount, receipt.currency)}`,
+      padLine("Discount:", `-${formatCurrency(receipt.discountAmount, receipt.currency)}`, cols),
     );
   }
   if (receipt.taxAmount > 0) {
     lines.push(
-      `Tax (${(receipt.taxRate * 100).toFixed(1)}%): ${formatCurrency(receipt.taxAmount, receipt.currency)}`,
+      padLine(
+        `Tax (${(receipt.taxRate * 100).toFixed(1)}%):`,
+        formatCurrency(receipt.taxAmount, receipt.currency),
+        cols,
+      ),
     );
   }
-  lines.push(`TOTAL: ${formatCurrency(receipt.totalAmount, receipt.currency)}`);
+  lines.push(padLine("TOTAL:", formatCurrency(receipt.totalAmount, receipt.currency), cols));
   lines.push(
-    `Amount Paid: ${formatCurrency(receipt.amountPaid, receipt.currency)}`,
+    padLine("Amount Paid:", formatCurrency(receipt.amountPaid, receipt.currency), cols),
   );
   if (receipt.notes) {
     lines.push(`Notes: ${receipt.notes}`);
   }
-  lines.push("--------------------------------");
+  lines.push(divider);
   lines.push("Thank you for your business!");
 
   return lines.join("\n");
 }
 
-export function buildReceiptHtml(receipt: SaleReceiptDetail): string {
+export function buildReceiptHtml(
+  receipt: SaleReceiptDetail,
+  paperSize: PaperSize = "thermal_80mm",
+): string {
+  const layout = getReceiptPaperLayout(paperSize);
   const isRefunded = receipt.status === "refunded";
+  const is58mm = paperSize === "thermal_58mm";
   const rowsHtml = receipt.items
     .map(
       (item) => `
@@ -84,84 +170,97 @@ export function buildReceiptHtml(receipt: SaleReceiptDetail): string {
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>${escapeHtml(receipt.receiptNo)}</title>
     <style>
+      ${layout.pageCss}
       * { box-sizing: border-box; }
       body {
-        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-        color: #0f172a;
+        font-family: ${
+          layout.isThermal
+            ? '"SFMono-Regular", Menlo, Consolas, "Courier New", monospace'
+            : '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif'
+        };
+        color: #000000;
         margin: 0;
-        padding: 20px;
+        padding: ${layout.isThermal ? "4px" : "20px"};
         background: #ffffff;
       }
       .ticket {
-        max-width: 340px;
+        width: 100%;
+        max-width: ${layout.ticketCssWidth};
         margin: 0 auto;
-        border: 1px solid #cbd5e1;
-        border-radius: 10px;
-        padding: 18px 16px;
+        border: ${layout.isThermal ? "none" : "1px solid #cbd5e1"};
+        border-radius: ${layout.isThermal ? "0" : "10px"};
+        padding: ${is58mm ? "4px 2px" : layout.isThermal ? "8px 6px" : "22px 24px"};
       }
-      .header { text-align: center; border-bottom: 1px dashed #cbd5e1; padding-bottom: 12px; }
-      .store { font-size: 17px; font-weight: 700; margin: 0 0 4px; }
-      .contact { font-size: 11px; color: #475569; margin: 2px 0; }
+      .header { text-align: center; border-bottom: 1px dashed #64748b; padding-bottom: ${is58mm ? "8px" : "10px"}; }
+      .store { font-size: ${is58mm ? "13px" : layout.isThermal ? "15px" : "19px"}; font-weight: 700; margin: 0 0 3px; }
+      .contact { font-size: ${is58mm ? "9px" : "11px"}; color: ${layout.isThermal ? "#1e293b" : "#475569"}; margin: 2px 0; }
       .title {
         text-align: center;
-        font-size: 12px;
+        font-size: ${is58mm ? "10px" : "12px"};
         font-weight: 700;
-        letter-spacing: 1.5px;
-        margin: 12px 0 10px;
+        letter-spacing: 1.4px;
+        margin: ${is58mm ? "8px 0 6px" : "12px 0 10px"};
       }
       .refund-banner {
-        background: #fef3c7;
-        color: #b45309;
-        border: 1px solid #f59e0b;
-        border-radius: 6px;
+        background: ${layout.isThermal ? "#ffffff" : "#fef3c7"};
+        color: ${layout.isThermal ? "#000000" : "#b45309"};
+        border: 1px solid ${layout.isThermal ? "#000000" : "#f59e0b"};
+        border-radius: 4px;
         text-align: center;
-        font-size: 11px;
+        font-size: ${is58mm ? "9px" : "11px"};
         font-weight: 700;
-        padding: 5px 8px;
-        margin-bottom: 10px;
+        padding: 4px 6px;
+        margin-bottom: 8px;
       }
-      .meta { font-size: 12px; margin-bottom: 12px; }
-      .meta-row { display: flex; justify-content: space-between; gap: 8px; margin: 3px 0; }
-      .meta-label { color: #64748b; }
-      table { width: 100%; border-collapse: collapse; border-top: 1px dashed #cbd5e1; border-bottom: 1px dashed #cbd5e1; }
+      .meta { font-size: ${is58mm ? "9.5px" : "11.5px"}; margin-bottom: 10px; }
+      .meta-row { display: flex; justify-content: space-between; gap: 6px; margin: 2px 0; }
+      .meta-label { color: ${layout.isThermal ? "#1e293b" : "#64748b"}; }
+      table { width: 100%; border-collapse: collapse; border-top: 1px dashed #64748b; border-bottom: 1px dashed #64748b; }
       th {
-        font-size: 10px;
+        font-size: ${is58mm ? "8.5px" : "10px"};
         text-transform: uppercase;
-        color: #64748b;
-        padding: 8px 2px;
-        border-bottom: 1px solid #e2e8f0;
+        color: ${layout.isThermal ? "#000000" : "#64748b"};
+        padding: ${is58mm ? "5px 1px" : "7px 2px"};
+        border-bottom: 1px solid #cbd5e1;
         text-align: left;
       }
-      td { font-size: 12px; padding: 7px 2px; border-bottom: 1px solid #f1f5f9; }
+      td {
+        font-size: ${is58mm ? "9.5px" : "11.5px"};
+        padding: ${is58mm ? "4px 1px" : "6px 2px"};
+        border-bottom: 1px solid #e2e8f0;
+        vertical-align: top;
+      }
+      .item-name { word-break: break-word; padding-right: 4px; }
       tr:last-child td { border-bottom: none; }
-      .num { font-variant-numeric: tabular-nums; }
+      .num { font-variant-numeric: tabular-nums; white-space: nowrap; }
       .center { text-align: center; }
       .right { text-align: right; }
-      .strong { font-weight: 600; }
-      .totals { margin-top: 12px; font-size: 12px; }
-      .total-row { display: flex; justify-content: space-between; margin: 4px 0; }
+      .strong { font-weight: 700; }
+      .totals { margin-top: 10px; font-size: ${is58mm ? "9.5px" : "12px"}; }
+      .total-row { display: flex; justify-content: space-between; gap: 8px; margin: 3px 0; }
       .total-final {
-        border-top: 1px solid #cbd5e1;
-        margin-top: 8px;
-        padding-top: 8px;
-        font-size: 15px;
+        border-top: 1px solid #0f172a;
+        margin-top: 6px;
+        padding-top: 6px;
+        font-size: ${is58mm ? "12px" : "14.5px"};
         font-weight: 700;
       }
       .notes {
-        margin-top: 10px;
-        padding: 8px;
-        background: #f8fafc;
-        border-radius: 6px;
-        font-size: 11px;
-        color: #475569;
+        margin-top: 8px;
+        padding: 6px;
+        background: ${layout.isThermal ? "#ffffff" : "#f8fafc"};
+        border: ${layout.isThermal ? "1px dashed #94a3b8" : "none"};
+        border-radius: 4px;
+        font-size: ${is58mm ? "9px" : "11px"};
+        color: #1e293b;
       }
       .footer {
         text-align: center;
-        margin-top: 14px;
-        padding-top: 10px;
-        border-top: 1px dashed #cbd5e1;
-        font-size: 11px;
-        color: #64748b;
+        margin-top: 12px;
+        padding-top: 8px;
+        border-top: 1px dashed #64748b;
+        font-size: ${is58mm ? "9px" : "11px"};
+        color: ${layout.isThermal ? "#1e293b" : "#64748b"};
       }
     </style>
   </head>
@@ -174,7 +273,7 @@ export function buildReceiptHtml(receipt: SaleReceiptDetail): string {
         ${receipt.storeEmail ? `<div class="contact">${escapeHtml(receipt.storeEmail)}</div>` : ""}
       </div>
 
-      <div class="title">RECEIPT</div>
+      <div class="title">RECEIPT (${escapeHtml(layout.shortLabel.toUpperCase())})</div>
       ${isRefunded ? `<div class="refund-banner">STATUS: REFUNDED</div>` : ""}
 
       <div class="meta">
@@ -218,21 +317,30 @@ export function buildReceiptHtml(receipt: SaleReceiptDetail): string {
 </html>`;
 }
 
-export async function shareReceiptText(receipt: SaleReceiptDetail): Promise<void> {
-  const message = buildReceiptPlainText(receipt);
+export async function shareReceiptText(
+  receipt: SaleReceiptDetail,
+  paperSize: PaperSize = "thermal_80mm",
+): Promise<void> {
+  const message = buildReceiptPlainText(receipt, paperSize);
   await Share.share({
     title: `Receipt ${receipt.receiptNo}`,
     message,
   });
 }
 
-export async function printReceipt(receipt: SaleReceiptDetail): Promise<void> {
-  const html = buildReceiptHtml(receipt);
+export async function printReceipt(
+  receipt: SaleReceiptDetail,
+  paperSize: PaperSize = "thermal_80mm",
+): Promise<void> {
+  const html = buildReceiptHtml(receipt, paperSize);
   await Print.printAsync({ html });
 }
 
-export async function exportReceiptPdf(receipt: SaleReceiptDetail): Promise<void> {
-  const html = buildReceiptHtml(receipt);
+export async function exportReceiptPdf(
+  receipt: SaleReceiptDetail,
+  paperSize: PaperSize = "thermal_80mm",
+): Promise<void> {
+  const html = buildReceiptHtml(receipt, paperSize);
   if (Platform.OS === "web") {
     await Print.printAsync({ html });
     return;

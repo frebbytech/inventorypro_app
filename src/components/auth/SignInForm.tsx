@@ -107,6 +107,21 @@ export default function SignInForm() {
     return () => clearInterval(id);
   }, []);
 
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const params = new URLSearchParams(window.location.search);
+    const reason = params.get("reason");
+    if (reason === "mobile_only") {
+      setError(
+        "This workspace is restricted to Mobile App access only. Your browser session was ended—please sign in using the InventoryPro mobile app.",
+      );
+    } else if (reason === "suspended") {
+      setError(
+        "This store workspace is currently suspended. Contact your Super Admin.",
+      );
+    }
+  }, []);
+
   async function onSubmit(data: SignInValues) {
     setError(null);
     setInfoMessage(null);

@@ -256,9 +256,13 @@ export default function AccountScreen() {
               <Badge
                 label={syncStatusLabel}
                 variant={
-                  workspaceMode === "synced" && syncStatus === "live"
-                    ? "default"
-                    : "outline"
+                  workspaceMode === "mobile_only"
+                    ? "outline"
+                    : syncStatus === "conflict" || conflictOutboxCount > 0
+                      ? "danger"
+                      : syncStatus === "live"
+                        ? "default"
+                        : "outline"
                 }
               />
             </View>
@@ -371,14 +375,17 @@ export default function AccountScreen() {
                 </View>
 
                 {pendingOutboxCount > 0 ? (
-                  <View
-                    style={[
+                  <Pressable
+                    onPress={() => router.push("/sync-queue")}
+                    accessibilityRole="button"
+                    style={({ pressed }) => [
                       styles.noticeBanner,
                       {
                         backgroundColor: colors.muted,
                         borderColor: colors.border,
                         borderRadius: radii.lg,
                         padding: spacing.sm,
+                        opacity: pressed ? 0.85 : 1,
                       },
                     ]}
                   >
@@ -392,18 +399,22 @@ export default function AccountScreen() {
                       {pendingOutboxCount} offline change
                       {pendingOutboxCount === 1 ? "" : "s"} queued to upload
                     </Text>
-                  </View>
+                    <ChevronRight size={15} color={colors.mutedForeground} />
+                  </Pressable>
                 ) : null}
 
                 {conflictOutboxCount > 0 || syncError ? (
-                  <View
-                    style={[
+                  <Pressable
+                    onPress={() => router.push("/sync-queue")}
+                    accessibilityRole="button"
+                    style={({ pressed }) => [
                       styles.noticeBanner,
                       {
                         backgroundColor: colors.dangerTint,
                         borderColor: colors.dangerBorder,
                         borderRadius: radii.lg,
                         padding: spacing.sm,
+                        opacity: pressed ? 0.85 : 1,
                       },
                     ]}
                   >
@@ -417,7 +428,8 @@ export default function AccountScreen() {
                       {syncError ||
                         `${conflictOutboxCount} sync conflict(s) rejected by server stock rules.`}
                     </Text>
-                  </View>
+                    <ChevronRight size={15} color={colors.dangerText} />
+                  </Pressable>
                 ) : null}
 
                 <View style={styles.syncActionsRow}>
@@ -430,22 +442,37 @@ export default function AccountScreen() {
                     leftIcon={<RefreshCw size={14} color={colors.foreground} />}
                     onPress={() => void handleManualSync()}
                   />
+                  <Button
+                    title={
+                      pendingOutboxCount + conflictOutboxCount > 0
+                        ? `Sync Queue (${pendingOutboxCount + conflictOutboxCount})`
+                        : "Sync Queue"
+                    }
+                    variant={conflictOutboxCount > 0 ? "destructive" : "outline"}
+                    size="sm"
+                    style={{ flex: 1 }}
+                    onPress={() => router.push("/sync-queue")}
+                  />
+                </View>
+
+                <View style={styles.syncActionsRow}>
                   {conflictOutboxCount > 0 ? (
                     <Button
                       title="Use Cloud State"
-                      variant="destructive"
-                      size="sm"
-                      style={{ flex: 1 }}
-                      onPress={() => void discardSyncConflicts()}
-                    />
-                  ) : (
-                    <Button
-                      title="Mobile-Only"
                       variant="ghost"
                       size="sm"
-                      onPress={handleConfirmSwitchToMobileOnly}
+                      style={{ flex: 1 }}
+                      textStyle={{ color: colors.dangerText }}
+                      onPress={() => void discardSyncConflicts()}
                     />
-                  )}
+                  ) : null}
+                  <Button
+                    title="Switch to Mobile-Only"
+                    variant="ghost"
+                    size="sm"
+                    style={{ flex: 1 }}
+                    onPress={handleConfirmSwitchToMobileOnly}
+                  />
                 </View>
               </>
             )}

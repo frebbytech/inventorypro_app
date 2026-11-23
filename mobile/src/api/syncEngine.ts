@@ -1,23 +1,34 @@
 import { eq } from "drizzle-orm";
 import { AppState, type AppStateStatus } from "react-native";
-import { ensureDbReady } from "@/db/client";
+import {
+  ensureDbReady,
+  isSqliteFullError,
+  resetDatabaseForCloudSync,
+} from "@/db/client";
 import { products } from "@/db/schema";
 import {
   applyRemoteSyncEvent,
   clearFailedOutboxItems,
   exportLocalDataForMerge,
   getOutboxCounts,
+  getOutboxItemById,
   getSyncMetaValue,
+  listAllOutboxItems,
   listPendingOutboxItems,
   markOutboxItemState,
   removeOutboxItem,
   replaceLocalSnapshotWithCloud,
+  resetAllFailedOutboxItemsForRetry,
+  resetOutboxItemForRetry,
   setSyncMetaValue,
+  updateOutboxItemPayload,
   type ApplySyncEventResult,
 } from "@/db/syncStore";
 import {
   deleteLocalProductImageIfManaged,
+  extractLocalPhotoUrisFromOutboxPayload,
   isLocalDeviceImageUri,
+  localProductImageExists,
 } from "@/utils/productImage";
 import { ApiError, type HttpApiClient } from "./httpAdapter";
 import {
@@ -28,6 +39,7 @@ import type {
   SyncBootstrapResponse,
   SyncEventDto,
   SyncMergeResponse,
+  SyncOutboxItem,
   SyncStatus,
 } from "@/types/domain";
 
@@ -191,18 +203,26 @@ export class SyncEngine {
     this.setState({ status: "syncing", lastError: null });
     const accessToken = this.getAccessToken() ?? undefined;
     const snapshot = await this.httpClient.syncBootstrap(accessToken);
-    const db = await ensureDbReady();
-    replaceLocalSnapshotWithCloud(db, snapshot);
+    let db = await ensureDbReady();
+    try {
+      replaceLocalSnapshotWithCloud(db, snapshot);
+    } catch (err) {
+      if (!isSqliteFullError(err)) {
+        throw err;
+      }
+      db = await resetDatabaseForCloudSync();
+      replaceLocalSnapshotWithCloud(db, snapshot);
+    }
     await setStoredSyncCursor(snapshot.latestCursor || 0);
     const counts = getOutboxCounts(db);
 
     this.setState({
-      status: "live",
+      status: counts.conflict > 0 ? "conflict" : "live",
       lastCursor: snapshot.latestCursor || 0,
       lastSyncedAt: snapshot.syncedAt || new Date().toISOString(),
       pendingOutboxCount: counts.pending,
       conflictOutboxCount: counts.conflict,
-      lastError: null,
+      lastError: counts.conflict > 0 ? this.state.lastError : null,
     });
     this.onBootstrapSynced?.(snapshot);
     return snapshot;
@@ -219,8 +239,17 @@ export class SyncEngine {
     for (const product of payload.products) {
       if (product.photoUrl && isLocalDeviceImageUri(product.photoUrl)) {
         const localUri = product.photoUrl;
+        if (!localProductImageExists(localUri)) {
+          product.photoUrl = undefined;
+          continue;
+        }
         try {
-          product.photoUrl = await this.httpClient.uploadProductImage(localUri);
+          const uploaded = await this.httpClient.uploadProductImage(localUri);
+          product.photoUrl = uploaded;
+          db.update(products)
+            .set({ photoUrl: uploaded })
+            .where(eq(products.photoUrl, localUri))
+            .run();
           deleteLocalProductImageIfManaged(localUri);
         } catch {
           // Skip unuploadable local URI rather than aborting merge
@@ -244,11 +273,190 @@ export class SyncEngine {
     }
   }
 
+  async listOutboxItems(): Promise<SyncOutboxItem[]> {
+    const db = await ensureDbReady();
+    return listAllOutboxItems(db);
+  }
+
+  async retryOutboxItem(id: string): Promise<void> {
+    const db = await ensureDbReady();
+    resetOutboxItemForRetry(db, id);
+    await this.refreshOutboxCounts();
+    await this.catchUpNow();
+  }
+
+  async retryAllConflicts(): Promise<void> {
+    const db = await ensureDbReady();
+    resetAllFailedOutboxItemsForRetry(db);
+    await this.refreshOutboxCounts();
+    await this.catchUpNow();
+  }
+
+  private cleanupUnreferencedLocalPhotos(
+    db: Awaited<ReturnType<typeof ensureDbReady>>,
+    candidateUris: string[],
+  ): void {
+    const unique = Array.from(
+      new Set(candidateUris.filter((u) => isLocalDeviceImageUri(u))),
+    );
+    if (unique.length === 0) return;
+
+    const remainingOutbox = listAllOutboxItems(db);
+    const referencedInOutbox = new Set<string>();
+    for (const row of remainingOutbox) {
+      for (const uri of extractLocalPhotoUrisFromOutboxPayload(row.payloadJson)) {
+        referencedInOutbox.add(uri);
+      }
+    }
+
+    const productRows = db
+      .select({ photoUrl: products.photoUrl })
+      .from(products)
+      .all();
+    const referencedInProducts = new Set(
+      productRows
+        .map((r) => r.photoUrl || "")
+        .filter((u) => isLocalDeviceImageUri(u)),
+    );
+
+    for (const uri of unique) {
+      if (!referencedInOutbox.has(uri) && !referencedInProducts.has(uri)) {
+        deleteLocalProductImageIfManaged(uri);
+      }
+    }
+  }
+
+  private async resolveDeferredProductMedia(
+    db: Awaited<ReturnType<typeof ensureDbReady>>,
+    item: SyncOutboxItem,
+  ): Promise<string> {
+    if (
+      item.entityType !== "product" ||
+      (item.operation !== "create" &&
+        item.operation !== "update" &&
+        item.operation !== "bulk_create")
+    ) {
+      return item.payloadJson;
+    }
+
+    let parsed: Record<string, unknown> | null = null;
+    try {
+      const raw = JSON.parse(item.payloadJson) as unknown;
+      if (raw && typeof raw === "object" && !Array.isArray(raw)) {
+        parsed = raw as Record<string, unknown>;
+      }
+    } catch {
+      return item.payloadJson;
+    }
+
+    if (!parsed) return item.payloadJson;
+
+    const uploadSingle = async (localUri: string): Promise<string> => {
+      if (!localProductImageExists(localUri)) {
+        throw new ApiError(
+          "Local product photo file is no longer on this device. Edit or discard this queued item and re-select the photo.",
+          422,
+        );
+      }
+      const uploadedUrl = await this.httpClient.uploadProductImage(localUri);
+      db.update(products)
+        .set({ photoUrl: uploadedUrl })
+        .where(eq(products.photoUrl, localUri))
+        .run();
+      deleteLocalProductImageIfManaged(localUri);
+      return uploadedUrl;
+    };
+
+    let mutated = false;
+
+    if (
+      (item.operation === "create" || item.operation === "update") &&
+      typeof parsed.photoUrl === "string" &&
+      isLocalDeviceImageUri(parsed.photoUrl)
+    ) {
+      const uploadedUrl = await uploadSingle(parsed.photoUrl);
+      parsed.photoUrl = uploadedUrl;
+      mutated = true;
+    } else if (
+      item.operation === "bulk_create" &&
+      Array.isArray(parsed.items)
+    ) {
+      for (const entry of parsed.items) {
+        if (
+          entry &&
+          typeof entry === "object" &&
+          typeof (entry as Record<string, unknown>).photoUrl === "string" &&
+          isLocalDeviceImageUri(
+            (entry as Record<string, unknown>).photoUrl as string,
+          )
+        ) {
+          const rec = entry as Record<string, unknown>;
+          const uploadedUrl = await uploadSingle(rec.photoUrl as string);
+          rec.photoUrl = uploadedUrl;
+          mutated = true;
+          // Persist progress after each image so a later failure won't re-upload it
+          const partialJson = JSON.stringify(parsed);
+          updateOutboxItemPayload(db, item.id, partialJson);
+        }
+      }
+    }
+
+    if (!mutated) {
+      return item.payloadJson;
+    }
+
+    const nextPayloadJson = JSON.stringify(parsed);
+    updateOutboxItemPayload(db, item.id, nextPayloadJson);
+    return nextPayloadJson;
+  }
+
+  async discardOutboxItem(
+    id: string,
+  ): Promise<{ refreshedFromCloud: boolean }> {
+    const db = await ensureDbReady();
+    const target = getOutboxItemById(db, id);
+    const candidateUris = target
+      ? extractLocalPhotoUrisFromOutboxPayload(target.payloadJson)
+      : [];
+    removeOutboxItem(db, id);
+    await this.refreshOutboxCounts();
+    if (this.getAccessToken()) {
+      try {
+        await this.bootstrapAndHydrate();
+        this.cleanupUnreferencedLocalPhotos(db, candidateUris);
+        return { refreshedFromCloud: true };
+      } catch {
+        const counts = getOutboxCounts(db);
+        this.setState({
+          status: counts.conflict > 0 ? "conflict" : "offline",
+        });
+      }
+    }
+    this.cleanupUnreferencedLocalPhotos(db, candidateUris);
+    return { refreshedFromCloud: false };
+  }
+
   async discardConflicts(): Promise<void> {
     const db = await ensureDbReady();
+    const failedItems = listAllOutboxItems(db).filter(
+      (r) => r.status === "conflict" || r.status === "failed",
+    );
+    const candidateUris = failedItems.flatMap((r) =>
+      extractLocalPhotoUrisFromOutboxPayload(r.payloadJson),
+    );
     clearFailedOutboxItems(db);
     await this.refreshOutboxCounts();
-    await this.bootstrapAndHydrate();
+    if (this.getAccessToken()) {
+      try {
+        await this.bootstrapAndHydrate();
+      } catch {
+        const counts = getOutboxCounts(db);
+        this.setState({
+          status: counts.conflict > 0 ? "conflict" : "offline",
+        });
+      }
+    }
+    this.cleanupUnreferencedLocalPhotos(db, candidateUris);
   }
 
   async flushOutbox(): Promise<void> {
@@ -260,41 +468,23 @@ export class SyncEngine {
       const items = listPendingOutboxItems(db);
       if (items.length === 0) {
         await this.refreshOutboxCounts();
+        const counts = getOutboxCounts(db);
+        if (this.state.status === "syncing") {
+          this.setState({
+            status: counts.conflict > 0 ? "conflict" : "live",
+            lastError: counts.conflict > 0 ? this.state.lastError : null,
+          });
+        }
         return;
       }
 
       this.setState({ status: "syncing" });
+      let hadNetworkError = false;
 
       for (const item of items) {
         markOutboxItemState(db, item.id, "processing");
         try {
-          let bodyToSend = item.payloadJson;
-          let uploadedPhotoUrl: string | null = null;
-          let originalLocalPhotoUri: string | null = null;
-
-          if (
-            item.entityType === "product" &&
-            (item.operation === "create" || item.operation === "update")
-          ) {
-            try {
-              const parsed = JSON.parse(item.payloadJson) as Record<string, unknown>;
-              if (
-                typeof parsed?.photoUrl === "string" &&
-                isLocalDeviceImageUri(parsed.photoUrl)
-              ) {
-                originalLocalPhotoUri = parsed.photoUrl;
-                uploadedPhotoUrl = await this.httpClient.uploadProductImage(
-                  originalLocalPhotoUri,
-                );
-                parsed.photoUrl = uploadedPhotoUrl;
-                bodyToSend = JSON.stringify(parsed);
-              }
-            } catch (uploadOrParseErr) {
-              if (originalLocalPhotoUri) {
-                throw uploadOrParseErr;
-              }
-            }
-          }
+          const bodyToSend = await this.resolveDeferredProductMedia(db, item);
 
           await this.httpClient.rawRequest(item.endpoint, {
             method: item.method,
@@ -302,14 +492,6 @@ export class SyncEngine {
             clientMutationId: item.clientMutationId,
             tokenOverride: this.getAccessToken() ?? undefined,
           });
-
-          if (uploadedPhotoUrl && originalLocalPhotoUri) {
-            db.update(products)
-              .set({ photoUrl: uploadedPhotoUrl })
-              .where(eq(products.photoUrl, originalLocalPhotoUri))
-              .run();
-            deleteLocalProductImageIfManaged(originalLocalPhotoUri);
-          }
 
           removeOutboxItem(db, item.id);
         } catch (err) {
@@ -325,6 +507,7 @@ export class SyncEngine {
             continue;
           }
 
+          hadNetworkError = true;
           markOutboxItemState(db, item.id, "pending", {
             error: err instanceof Error ? err.message : "Network error",
             incrementRetry: true,
@@ -338,6 +521,13 @@ export class SyncEngine {
       }
 
       await this.refreshOutboxCounts();
+      if (!hadNetworkError) {
+        const counts = getOutboxCounts(db);
+        this.setState({
+          status: counts.conflict > 0 ? "conflict" : "live",
+          lastError: counts.conflict > 0 ? this.state.lastError : null,
+        });
+      }
     } finally {
       this.flushing = false;
     }
@@ -392,6 +582,11 @@ export class SyncEngine {
         lastError: null,
       });
     } catch (err) {
+      if (isSqliteFullError(err)) {
+        await resetDatabaseForCloudSync().catch(() => {});
+        await this.bootstrapAndHydrate().catch(() => {});
+        return;
+      }
       if (!(err instanceof ApiError && err.status === 401)) {
         this.setState({
           status: "offline",

@@ -15,6 +15,7 @@ import {
   DEFAULT_TENANT_ID,
   DEFAULT_TENANT_NAME,
   DEFAULT_TENANT_SLUG,
+  normalizeTenantAccessMode,
 } from "@/lib/tenant";
 import {
   getTenantStoreProfile,
@@ -52,6 +53,7 @@ export async function POST(req: Request) {
         "t.name as tenant_name",
         "t.slug as tenant_slug",
         "t.status as tenant_status",
+        "t.access_mode as tenant_access_mode",
       )
       .where((qb) => {
         qb.whereRaw("LOWER(u.username) = ?", [identifier.toLowerCase()]).orWhereRaw(
@@ -146,6 +148,49 @@ export async function POST(req: Request) {
         await db("users")
           .where("id", user.id)
           .update({ failed_login_attempts: attempts, locked_until: lockUntil });
+
+        const lockTenantId = String(user.tenant_id || DEFAULT_TENANT_ID);
+        const lockNotifId = generateId();
+        const lockNowIso = new Date().toISOString();
+        const lockTitle = "Security Alert: Account Temporarily Locked";
+        const lockMsg = `Mobile sign-in for ${user.username} was locked for 15 minutes after 5 failed password attempts.`;
+        await db("notifications")
+          .insert({
+            id: lockNotifId,
+            tenant_id: lockTenantId,
+            user_id: user.id,
+            type: "system",
+            title: lockTitle,
+            message: lockMsg,
+            reference_type: "security",
+            reference_id: user.id,
+            is_read: 0,
+            created_at: lockNowIso,
+            updated_at: lockNowIso,
+          })
+          .then(async () => {
+            const { dispatchExpoPushNotifications } = await import(
+              "@/lib/pushNotifications"
+            );
+            await dispatchExpoPushNotifications({
+              tenantId: lockTenantId,
+              items: [
+                {
+                  userId: String(user.id),
+                  title: lockTitle,
+                  body: lockMsg,
+                  data: {
+                    notificationId: lockNotifId,
+                    type: "security",
+                    referenceType: "security",
+                    referenceId: String(user.id),
+                  },
+                },
+              ],
+            });
+          })
+          .catch(() => {});
+
         return NextResponse.json(
           {
             error:
@@ -172,6 +217,16 @@ export async function POST(req: Request) {
     await db("users")
       .where("id", user.id)
       .update({ failed_login_attempts: 0, locked_until: null });
+
+    if (normalizeTenantAccessMode(user.tenant_access_mode) === "web_only") {
+      return NextResponse.json(
+        {
+          error:
+            "This workspace is restricted to Web Only access. Sign in via the web dashboard or contact your Super Admin.",
+        },
+        { status: 403 },
+      );
+    }
 
     if (Boolean(user.two_factor_enabled)) {
       const dispatch = await issueAndSendTwoFactorCode({
@@ -219,6 +274,13 @@ export async function POST(req: Request) {
     });
 
     await db("users").where("id", user.id).update({ last_login_at: nowIso });
+    await db("user_sessions")
+      .where("user_id", user.id)
+      .andWhere((qb) => {
+        qb.where("expires_at", "<", nowIso).orWhere("is_active", 0);
+      })
+      .del()
+      .catch(() => {});
     await db("user_sessions")
       .insert({
         id: generateId(),

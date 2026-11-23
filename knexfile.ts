@@ -84,10 +84,14 @@ export const resolveDatabasePath = (): string => {
     ""
   ).trim();
 
-  const localFallbackUrl = `file:${path.resolve("./inventory_pro.db")}`;
+  const isVercel = Boolean(process.env.VERCEL);
+  const localFallbackPath = isVercel
+    ? "/tmp/inventory_pro.db"
+    : path.resolve("./inventory_pro.db");
+  const localFallbackUrl = `file:${localFallbackPath}`;
   let finalUrl = rawUrl.trim();
 
-  // If no custom URL/path is provided, default to local project SQLite/LibSQL database
+  // If no custom URL/path is provided, default to local SQLite/LibSQL database
   if (!finalUrl) {
     return localFallbackUrl;
   }
@@ -122,13 +126,13 @@ export const resolveDatabasePath = (): string => {
   if (isRemoteScheme && !isLocalHost) {
     if (!effectiveToken) {
       console.warn(
-        "[db] Remote DATABASE_URL is configured without DATABASE_AUTH_TOKEN; falling back to local ./inventory_pro.db.",
+        "[db] Remote DATABASE_URL is configured without DATABASE_AUTH_TOKEN; falling back to local SQLite.",
       );
       return localFallbackUrl;
     }
     if (isMalformedOrExpiredJwt(effectiveToken)) {
       console.warn(
-        "[db] DATABASE_AUTH_TOKEN appears truncated, malformed, or expired; falling back to local ./inventory_pro.db.",
+        "[db] DATABASE_AUTH_TOKEN appears truncated, malformed, or expired; falling back to local SQLite.",
       );
       return localFallbackUrl;
     }
@@ -163,17 +167,43 @@ const formatDates = (obj: any): any => {
   return obj;
 };
 
+const resolvedFilename = resolveDatabasePath();
+const isRemoteLibsql = /^(libsql|https?|wss?):\/\//i.test(resolvedFilename);
+
 const config: Knex.Config = {
   client: Client_Libsql as any,
   connection: {
-    filename: resolveDatabasePath(),
+    filename: resolvedFilename,
   },
   useNullAsDefault: true,
-  pool: {
-    min: 1,
-    max: 1,
-    idleTimeoutMillis: 30000,
-  },
+  acquireConnectionTimeout: isRemoteLibsql ? 25000 : 15000,
+  pool: isRemoteLibsql
+    ? {
+        min: 0,
+        max: 10,
+        acquireTimeoutMillis: 25000,
+        createTimeoutMillis: 15000,
+        idleTimeoutMillis: 20000,
+        reapIntervalMillis: 2000,
+        propagateCreateError: false,
+      }
+    : {
+        min: 0,
+        max: 1,
+        acquireTimeoutMillis: 15000,
+        idleTimeoutMillis: 15000,
+        afterCreate: (conn: any, cb: (err: any, connection: any) => void) => {
+          if (typeof conn?.run === "function") {
+            conn.run("PRAGMA journal_mode=WAL;", () => {
+              conn.run("PRAGMA busy_timeout=5000;", () => {
+                cb(null, conn);
+              });
+            });
+          } else {
+            cb(null, conn);
+          }
+        },
+      },
   postProcessResponse: (result: any) => {
     return formatDates(result);
   },

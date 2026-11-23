@@ -18,6 +18,7 @@ import {
   AlertCircle,
   Barcode,
   Check,
+  Keyboard,
   Minus,
   Package,
   Plus,
@@ -31,7 +32,12 @@ import {
 } from "lucide-react-native";
 import { useApiClient } from "@/api/ApiProvider";
 import { useAuth } from "@/api/AuthProvider";
+import {
+  getStoredHidScannerEnabled,
+  setStoredHidScannerEnabled,
+} from "@/api/tokenStorage";
 import { EmptyState } from "@/components/EmptyState";
+import { HidScannerBanner } from "@/components/HidScannerBanner";
 import { LoadingState } from "@/components/LoadingState";
 import { SalesBarcodeScannerModal } from "@/components/SalesBarcodeScannerModal";
 import {
@@ -42,9 +48,11 @@ import {
   SegmentedTabs,
   useToast,
 } from "@/components/ui";
+import { useHidBarcodeScanner } from "@/hooks/useHidBarcodeScanner";
 import { useTheme } from "@/theme";
 import type { CustomerItem, PaymentMode, ProductItem } from "@/types/domain";
 import { formatCurrency } from "@/utils/formatters";
+import { hapticError, hapticLight, hapticSuccess, hapticWarning } from "@/utils/haptics";
 import { resolveProductImageUri } from "@/utils/productImage";
 
 interface CartLine {
@@ -137,6 +145,8 @@ export default function NewSaleScreen() {
   cartRef.current = cart;
   const [cartOpen, setCartOpen] = useState(false);
   const [scannerOpen, setScannerOpen] = useState(scan === "1");
+  const [hidScannerEnabled, setHidScannerEnabled] = useState(false);
+  const [searchInputFocused, setSearchInputFocused] = useState(false);
 
   const [customerName, setCustomerName] = useState("");
   const [customerPhone, setCustomerPhone] = useState("");
@@ -149,6 +159,10 @@ export default function NewSaleScreen() {
   const [applyTax, setApplyTax] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    void getStoredHidScannerEnabled().then(setHidScannerEnabled);
+  }, []);
 
   useEffect(() => {
     if (!cartOpen || customers.length > 0) return;
@@ -275,6 +289,75 @@ export default function NewSaleScreen() {
     [addToCart],
   );
 
+  const handleHidBarcodeScan = useCallback(
+    async (rawBarcode: string) => {
+      const code = rawBarcode.trim();
+      if (!code) return;
+      const lower = code.toLowerCase();
+      let matched =
+        products.find((p) => p.barcode.trim().toLowerCase() === lower) ?? null;
+      if (!matched) {
+        matched = await api.lookupProductByBarcode(code).catch(() => null);
+      }
+
+      if (!matched) {
+        void hapticError();
+        toast.error(
+          "Barcode not found",
+          `No active product matches barcode "${code}".`,
+        );
+        return;
+      }
+
+      if (!matched.active) {
+        void hapticWarning();
+        toast.warning(
+          "Product inactive",
+          `${matched.name} is archived and cannot be sold.`,
+        );
+        return;
+      }
+
+      const added = addScannedProductToCart(matched);
+      if (added.ok) {
+        void hapticSuccess();
+        toast.success(
+          `Added ${matched.name}`,
+          `Qty in cart: ${added.quantity} · ${formatCurrency(matched.unitPrice, store?.currency || "GHS")}`,
+        );
+      } else {
+        void hapticError();
+        toast.warning(
+          "Stock limit reached",
+          added.reason || `${matched.name} cannot be added.`,
+        );
+      }
+    },
+    [products, api, addScannedProductToCart, toast, store?.currency],
+  );
+
+  const hidScanner = useHidBarcodeScanner({
+    enabled: hidScannerEnabled,
+    suspended:
+      cartOpen || scannerOpen || customerPickerOpen || searchInputFocused,
+    onScan: (code) => {
+      void handleHidBarcodeScan(code);
+    },
+  });
+
+  const handleToggleHidScanner = () => {
+    const next = !hidScannerEnabled;
+    void hapticLight();
+    setHidScannerEnabled(next);
+    void setStoredHidScannerEnabled(next);
+    if (next) {
+      toast.info(
+        "HID Scanner Mode On",
+        "Scan items directly with a Bluetooth or USB-C barcode gun.",
+      );
+    }
+  };
+
   const updateCartQty = useCallback((id: string, delta: number) => {
     setError(null);
     setCart((prev) =>
@@ -323,6 +406,7 @@ export default function NewSaleScreen() {
           quantity: line.quantity,
         })),
       });
+      void hapticSuccess();
       setCartOpen(false);
       toast.success(
         "Sale completed",
@@ -330,9 +414,13 @@ export default function NewSaleScreen() {
       );
       router.replace({
         pathname: "/sales/[id]",
-        params: { id: receipt.id },
+        params: {
+          id: receipt.id,
+          ...(store?.printAfterSale ? { autoPrint: "1" } : {}),
+        },
       });
     } catch (err) {
+      void hapticError();
       const msg = err instanceof Error ? err.message : "Failed to record sale.";
       setError(msg);
       toast.error("Sale failed", msg);
@@ -391,46 +479,72 @@ export default function NewSaleScreen() {
         }}
       />
 
-      {/* Search bar + camera barcode scanner trigger for the products list */}
+      {/* Search bar + HID wedge toggle + camera barcode scanner trigger */}
       <View
-        style={[
-          styles.searchRow,
-          {
-            paddingHorizontal: spacing.base,
-            paddingTop: spacing.md,
-            paddingBottom: spacing.sm,
-          },
-        ]}
+        style={{
+          paddingHorizontal: spacing.base,
+          paddingTop: spacing.md,
+          paddingBottom: spacing.sm,
+          gap: spacing.xs + 2,
+        }}
       >
-        <View style={{ flex: 1 }}>
-          <Input
-            value={searchQuery}
-            onChangeText={setSearchQuery}
-            placeholder="Search products by name, category, or barcode..."
-            returnKeyType="search"
-            autoCapitalize="none"
-            autoCorrect={false}
-            leftIcon={<Search size={18} color={colors.mutedForeground} />}
-            rightSlot={
-              searchQuery.length > 0 ? (
-                <Pressable
-                  onPress={() => setSearchQuery("")}
-                  hitSlop={8}
-                  accessibilityLabel="Clear search"
-                >
-                  <X size={16} color={colors.mutedForeground} />
-                </Pressable>
-              ) : null
+        <View style={styles.searchRow}>
+          <View style={{ flex: 1 }}>
+            <Input
+              value={searchQuery}
+              onChangeText={setSearchQuery}
+              onFocus={() => setSearchInputFocused(true)}
+              onBlur={() => setSearchInputFocused(false)}
+              placeholder="Search products by name, category, or barcode..."
+              returnKeyType="search"
+              autoCapitalize="none"
+              autoCorrect={false}
+              leftIcon={<Search size={18} color={colors.mutedForeground} />}
+              rightSlot={
+                searchQuery.length > 0 ? (
+                  <Pressable
+                    onPress={() => setSearchQuery("")}
+                    hitSlop={8}
+                    accessibilityLabel="Clear search"
+                  >
+                    <X size={16} color={colors.mutedForeground} />
+                  </Pressable>
+                ) : null
+              }
+            />
+          </View>
+          <Button
+            variant={hidScannerEnabled ? "default" : "outline"}
+            size="icon"
+            style={{ height: 48, width: 48 }}
+            accessibilityLabel="Toggle Bluetooth or USB HID barcode scanner mode"
+            leftIcon={
+              <Keyboard
+                size={20}
+                color={
+                  hidScannerEnabled ? colors.primaryForeground : colors.foreground
+                }
+              />
             }
+            onPress={handleToggleHidScanner}
+          />
+          <Button
+            variant="outline"
+            size="icon"
+            style={{ height: 48, width: 48 }}
+            accessibilityLabel="Scan product barcode with camera"
+            leftIcon={<ScanBarcode size={20} color={colors.foreground} />}
+            onPress={() => setScannerOpen(true)}
           />
         </View>
-        <Button
-          variant="outline"
-          size="icon"
-          style={{ height: 48, width: 48 }}
-          accessibilityLabel="Scan product barcode"
-          leftIcon={<ScanBarcode size={20} color={colors.foreground} />}
-          onPress={() => setScannerOpen(true)}
+
+        <HidScannerBanner
+          scanner={hidScanner}
+          enabled={hidScannerEnabled}
+          suspended={
+            cartOpen || scannerOpen || customerPickerOpen || searchInputFocused
+          }
+          contextHint="Scan product barcode to add directly to cart"
         />
       </View>
 
@@ -461,7 +575,10 @@ export default function NewSaleScreen() {
 
             return (
               <Pressable
-                onPress={() => addToCart(item)}
+                onPress={() => {
+                  void hapticLight();
+                  addToCart(item);
+                }}
                 accessibilityRole="button"
                 accessibilityLabel={`Add ${item.name} to cart`}
                 style={({ pressed }) => [
@@ -672,7 +789,10 @@ export default function NewSaleScreen() {
             <View style={styles.rowCenter}>
               {cart.length > 0 ? (
                 <Pressable
-                  onPress={() => setCart([])}
+                  onPress={() => {
+                    void hapticWarning();
+                    setCart([]);
+                  }}
                   disabled={submitting}
                   hitSlop={6}
                   style={{ paddingHorizontal: spacing.xs }}

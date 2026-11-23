@@ -12,6 +12,7 @@ import {
   DEFAULT_TENANT_ID,
   DEFAULT_TENANT_NAME,
   DEFAULT_TENANT_SLUG,
+  normalizeTenantAccessMode,
 } from "@/lib/tenant";
 import { emitSyncEvent } from "@/lib/sync-bus";
 import {
@@ -152,6 +153,7 @@ export async function loginUser(formData: {
         "t.name as tenant_name",
         "t.slug as tenant_slug",
         "t.status as tenant_status",
+        "t.access_mode as tenant_access_mode",
       )
       .where((qb) => {
         qb.whereRaw("LOWER(u.username) = ?", [identifier.toLowerCase()]).orWhereRaw(
@@ -279,6 +281,12 @@ export async function loginUser(formData: {
       locked_until: null,
     });
 
+    if (normalizeTenantAccessMode(user.tenant_access_mode) === "mobile_only") {
+      return Result.fail(
+        "This workspace is restricted to Mobile App access only. Sign in on the InventoryPro mobile app or contact your Super Admin.",
+      );
+    }
+
     // Enforce Two-Factor Authentication if enabled for this account
     if (Boolean(user.two_factor_enabled)) {
       const dispatch = await issueAndSendTwoFactorCode({
@@ -323,9 +331,18 @@ export async function loginUser(formData: {
 
     await setAuthCookie(token);
 
+    const nowIso = new Date().toISOString();
     await db("users")
       .where("id", user.id)
-      .update({ last_login_at: new Date().toISOString() });
+      .update({ last_login_at: nowIso });
+
+    await db("user_sessions")
+      .where("user_id", user.id)
+      .andWhere((qb) => {
+        qb.where("expires_at", "<", nowIso).orWhere("is_active", 0);
+      })
+      .del()
+      .catch(() => {});
 
     await db("user_sessions")
       .insert({
@@ -333,8 +350,11 @@ export async function loginUser(formData: {
         tenant_id: tenantId,
         user_id: user.id,
         token,
+        device_name: "Web Browser",
+        device_type: "web",
+        operating_system: "Web",
         is_active: 1,
-        last_activity_at: new Date().toISOString(),
+        last_activity_at: nowIso,
         expires_at: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(),
       })
       .catch(() => {});

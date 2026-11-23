@@ -7,6 +7,7 @@ import {
   DEFAULT_TENANT_SLUG,
   applyMultiTenantSchema,
   normalizeSlug,
+  normalizeTenantAccessMode,
   rebuildTenantScopedViews,
 } from "@/lib/tenant-schema";
 
@@ -15,28 +16,31 @@ export {
   DEFAULT_TENANT_NAME,
   DEFAULT_TENANT_SLUG,
   normalizeSlug,
+  normalizeTenantAccessMode,
   rebuildTenantScopedViews,
 };
 
-let multiTenantSchemaPromise: Promise<void> | null = null;
+const globalForTenantSchema = globalThis as typeof globalThis & {
+  __inventoryProMultiTenantSchemaPromise?: Promise<void> | null;
+};
 
 export async function ensureMultiTenantSchema(): Promise<void> {
-  if (multiTenantSchemaPromise) {
-    return multiTenantSchemaPromise;
+  if (globalForTenantSchema.__inventoryProMultiTenantSchemaPromise) {
+    return globalForTenantSchema.__inventoryProMultiTenantSchemaPromise;
   }
 
-  multiTenantSchemaPromise = (async () => {
+  globalForTenantSchema.__inventoryProMultiTenantSchemaPromise = (async () => {
     await ensureBaseTables(db);
     await applyMultiTenantSchema(db);
   })().catch((err) => {
-    multiTenantSchemaPromise = null;
+    globalForTenantSchema.__inventoryProMultiTenantSchemaPromise = null;
     console.error("Failed to ensure multi-tenant schema:", err);
     throw err;
   });
 
-  return multiTenantSchemaPromise;
+  return globalForTenantSchema.__inventoryProMultiTenantSchemaPromise;
 }
 
 export function resetMultiTenantSchemaCache() {
-  multiTenantSchemaPromise = null;
+  globalForTenantSchema.__inventoryProMultiTenantSchemaPromise = null;
 }

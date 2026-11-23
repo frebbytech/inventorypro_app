@@ -21,6 +21,7 @@ import { getApiSettings } from "./api-settings";
 import { DEFAULT_TENANT_ID } from "@/lib/tenant";
 import { runWithAuthContext, type RequestSessionContext } from "@/lib/request-context";
 import { emitSyncEvent } from "@/lib/sync-bus";
+import { dispatchExpoPushNotifications } from "@/lib/pushNotifications";
 
 /**
  * Fetch all eligible recipients for a given group within the current workspace
@@ -316,6 +317,20 @@ export async function sendBroadcastMessage(
               action: "refresh",
               actorUserId: sessionSnapshot.id,
             });
+            void dispatchExpoPushNotifications({
+              tenantId,
+              items: notificationRows.map((row) => ({
+                userId: row.user_id,
+                title: row.title,
+                body: row.message,
+                data: {
+                  notificationId: row.id,
+                  type: row.type,
+                  referenceType: row.reference_type,
+                  referenceId: row.reference_id,
+                },
+              })),
+            }).catch(() => {});
           } else if (channel === "email") {
             const emailById = new Map(
               eligibleRecipients.map((r) => [r.email as string, r.id]),

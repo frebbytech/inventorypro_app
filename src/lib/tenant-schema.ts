@@ -38,6 +38,15 @@ export function normalizeSlug(raw: string): string {
   return cleaned || `store-${Date.now().toString(36)}`;
 }
 
+export function normalizeTenantAccessMode(
+  raw: unknown,
+): "both" | "mobile_only" | "web_only" {
+  if (raw === "mobile_only" || raw === "web_only" || raw === "both") {
+    return raw;
+  }
+  return "both";
+}
+
 async function addColumnIfMissing(
   knexOrDb: Knex,
   tableName: string,
@@ -757,6 +766,56 @@ export async function applyMultiTenantSchema(knexOrDb: Knex): Promise<void> {
   const hasUsers = await knexOrDb.schema.hasTable("users");
   if (!hasUsers) return;
 
+  // Fast-path: if multi-tenant tables, latest evolved columns, default tenant, and views
+  // are already in place, skip 220+ sequential migration roundtrips on warm/cold starts.
+  try {
+    const [
+      hasTenants,
+      hasTenantsAccessMode,
+      hasSyncEvents,
+      hasIdempotencyKeys,
+      hasMobilePushTokens,
+      hasProductsVersion,
+      hasSettingsPaperSize,
+      hasUserSessionsTenant,
+      vCatalogRow,
+      defaultTenant,
+    ] = await Promise.all([
+      knexOrDb.schema.hasTable("tenants"),
+      knexOrDb.schema.hasColumn("tenants", "access_mode"),
+      knexOrDb.schema.hasTable("sync_events"),
+      knexOrDb.schema.hasTable("idempotency_keys"),
+      knexOrDb.schema.hasTable("mobile_push_tokens"),
+      knexOrDb.schema.hasColumn("products", "version"),
+      knexOrDb.schema.hasColumn("settings", "paper_size"),
+      knexOrDb.schema.hasColumn("user_sessions", "tenant_id"),
+      knexOrDb("sqlite_master")
+        .where({ type: "view", name: "v_product_catalog" })
+        .first("sql"),
+      knexOrDb("tenants").where("id", DEFAULT_TENANT_ID).first("id").catch(() => null),
+    ]);
+
+    const catalogSql = String(vCatalogRow?.sql || "");
+    if (
+      hasTenants &&
+      hasTenantsAccessMode &&
+      hasSyncEvents &&
+      hasIdempotencyKeys &&
+      hasMobilePushTokens &&
+      hasProductsVersion &&
+      hasSettingsPaperSize &&
+      hasUserSessionsTenant &&
+      defaultTenant?.id &&
+      catalogSql.includes("tenant_id") &&
+      catalogSql.includes("low_stock_threshold") &&
+      catalogSql.includes("version")
+    ) {
+      return;
+    }
+  } catch {
+    // Fall through to full migration if any fast check fails
+  }
+
   const hasTenants = await knexOrDb.schema.hasTable("tenants");
   if (!hasTenants) {
     await knexOrDb.schema.createTable("tenants", (table) => {
@@ -765,8 +824,13 @@ export async function applyMultiTenantSchema(knexOrDb: Knex): Promise<void> {
       table.string("slug", 120).notNullable().unique();
       table.string("owner_user_id", 64).nullable();
       table.string("status", 32).notNullable().defaultTo("active");
+      table.string("access_mode", 32).notNullable().defaultTo("both");
       table.timestamp("created_at").defaultTo(knexOrDb.fn.now());
       table.timestamp("updated_at").defaultTo(knexOrDb.fn.now());
+    });
+  } else {
+    await addColumnIfMissing(knexOrDb, "tenants", "access_mode", (table) => {
+      table.string("access_mode", 32).notNullable().defaultTo("both");
     });
   }
 
@@ -798,6 +862,29 @@ export async function applyMultiTenantSchema(knexOrDb: Knex): Promise<void> {
       table.unique(["tenant_id", "client_mutation_id"], {
         indexName: "idempotency_uq_tenant_mutation",
       });
+    });
+  }
+
+  const hasMobilePushTokens = await knexOrDb.schema.hasTable("mobile_push_tokens");
+  if (!hasMobilePushTokens) {
+    await knexOrDb.schema.createTable("mobile_push_tokens", (table) => {
+      table.string("id", 64).primary();
+      table.string("tenant_id", 64).notNullable().index();
+      table.string("user_id", 64).notNullable().index();
+      table.string("token", 512).notNullable();
+      table.string("platform", 32).notNullable().defaultTo("android");
+      table.string("device_name", 255).nullable();
+      table.integer("is_active").notNullable().defaultTo(1);
+      table.timestamp("last_seen_at").nullable();
+      table.timestamp("created_at").notNullable().defaultTo(knexOrDb.fn.now());
+      table.timestamp("updated_at").notNullable().defaultTo(knexOrDb.fn.now());
+      table.unique(["user_id", "token"], {
+        indexName: "mobile_push_tokens_uq_user_token",
+      });
+      table.index(
+        ["tenant_id", "user_id", "is_active"],
+        "mobile_push_tokens_idx_tenant_user_active",
+      );
     });
   }
 
@@ -943,10 +1030,17 @@ export async function applyMultiTenantSchema(knexOrDb: Knex): Promise<void> {
         slug: DEFAULT_TENANT_SLUG,
         owner_user_id: firstAdmin?.id || null,
         status: "active",
+        access_mode: "both",
       })
       .onConflict("id")
       .ignore();
   }
+
+  await knexOrDb("tenants")
+    .whereNull("access_mode")
+    .orWhere("access_mode", "")
+    .update({ access_mode: "both" })
+    .catch(() => {});
 
   for (const tableName of TENANT_SCOPED_TABLES) {
     const hasTbl = await knexOrDb.schema.hasTable(tableName);

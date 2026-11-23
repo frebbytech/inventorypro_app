@@ -248,6 +248,9 @@ export async function setStoredTenantInfo(
   );
 }
 
+const EXPO_PUSH_TOKEN_KEY = "inventory_pro_expo_push_token";
+const RECEIPT_PAPER_SIZE_KEY = "inventory_pro_receipt_paper_size";
+
 export async function getStoredSyncCursor(): Promise<number> {
   const raw = await getKey(SYNC_CURSOR_KEY);
   const parsed = Number(raw ?? "0");
@@ -257,3 +260,109 @@ export async function getStoredSyncCursor(): Promise<number> {
 export async function setStoredSyncCursor(cursor: number): Promise<void> {
   await setKey(SYNC_CURSOR_KEY, String(Math.max(0, Math.trunc(cursor || 0))));
 }
+
+export async function getStoredExpoPushToken(): Promise<string | null> {
+  const raw = await getKey(EXPO_PUSH_TOKEN_KEY);
+  return typeof raw === "string" && raw.trim() ? raw.trim() : null;
+}
+
+export async function setStoredExpoPushToken(token: string | null): Promise<void> {
+  const clean = typeof token === "string" ? token.trim() : "";
+  await setKey(EXPO_PUSH_TOKEN_KEY, clean || null);
+}
+
+export async function getStoredReceiptPaperSize(): Promise<
+  "thermal_58mm" | "thermal_80mm" | "a4" | null
+> {
+  const raw = await getKey(RECEIPT_PAPER_SIZE_KEY);
+  if (raw === "thermal_58mm" || raw === "thermal_80mm" || raw === "a4") {
+    return raw;
+  }
+  return null;
+}
+
+export async function setStoredReceiptPaperSize(
+  paperSize: "thermal_58mm" | "thermal_80mm" | "a4" | null,
+): Promise<void> {
+  await setKey(RECEIPT_PAPER_SIZE_KEY, paperSize);
+}
+
+const PRINTER_CONFIG_KEY = "inventory_pro_thermal_printer_config";
+const HID_SCANNER_ENABLED_KEY = "inventory_pro_hid_scanner_enabled";
+
+export interface StoredThermalPrinterConfig {
+  transport: "system" | "tcp" | "bluetooth";
+  host: string;
+  port: number;
+  bluetoothAddress: string;
+  bluetoothName: string;
+  autoCut: boolean;
+  openCashDrawer: boolean;
+}
+
+export const DEFAULT_THERMAL_PRINTER_CONFIG: StoredThermalPrinterConfig = {
+  transport: "system",
+  host: "",
+  port: 9100,
+  bluetoothAddress: "",
+  bluetoothName: "",
+  autoCut: true,
+  openCashDrawer: false,
+};
+
+export function normalizeThermalPrinterConfig(
+  raw: Partial<StoredThermalPrinterConfig> | null | undefined,
+): StoredThermalPrinterConfig {
+  const transport =
+    raw?.transport === "tcp" || raw?.transport === "bluetooth"
+      ? raw.transport
+      : "system";
+  const parsedPort = Number(raw?.port ?? 9100);
+  const port =
+    Number.isInteger(parsedPort) && parsedPort >= 1 && parsedPort <= 65535
+      ? parsedPort
+      : 9100;
+
+  return {
+    transport,
+    host: typeof raw?.host === "string" ? raw.host.trim() : "",
+    port,
+    bluetoothAddress:
+      typeof raw?.bluetoothAddress === "string"
+        ? raw.bluetoothAddress.trim()
+        : "",
+    bluetoothName:
+      typeof raw?.bluetoothName === "string" ? raw.bluetoothName.trim() : "",
+    autoCut: raw?.autoCut !== undefined ? Boolean(raw.autoCut) : true,
+    openCashDrawer: Boolean(raw?.openCashDrawer),
+  };
+}
+
+export async function getStoredPrinterConfig(): Promise<StoredThermalPrinterConfig> {
+  const raw = await getKey(PRINTER_CONFIG_KEY);
+  if (!raw) return { ...DEFAULT_THERMAL_PRINTER_CONFIG };
+  try {
+    const parsed = JSON.parse(raw) as Partial<StoredThermalPrinterConfig>;
+    return normalizeThermalPrinterConfig(parsed);
+  } catch {
+    return { ...DEFAULT_THERMAL_PRINTER_CONFIG };
+  }
+}
+
+export async function setStoredPrinterConfig(
+  config: Partial<StoredThermalPrinterConfig>,
+): Promise<StoredThermalPrinterConfig> {
+  const normalized = normalizeThermalPrinterConfig(config);
+  await setKey(PRINTER_CONFIG_KEY, JSON.stringify(normalized));
+  return normalized;
+}
+
+export async function getStoredHidScannerEnabled(): Promise<boolean> {
+  const raw = await getKey(HID_SCANNER_ENABLED_KEY);
+  return raw === "true";
+}
+
+export async function setStoredHidScannerEnabled(enabled: boolean): Promise<void> {
+  await setKey(HID_SCANNER_ENABLED_KEY, enabled ? "true" : "false");
+}
+

@@ -3,7 +3,7 @@ import { redirect } from "next/navigation";
 import Header from "@/components/layout/header";
 import Sidebar from "@/components/layout/sidebar";
 import { Toaster } from "@/components/ui/sonner";
-import { getAuthSession } from "@/lib/auth";
+import { getAuthSession, getWebSessionRejectionReason } from "@/lib/auth";
 import Footer from "@/components/layout/footer";
 import AppBreadcrumb from "@/components/custom/Breadcrumbs";
 import { navItems, userNavItems } from "@/constants/data";
@@ -18,7 +18,12 @@ async function AppLayout({
 }>) {
   const session = await getAuthSession();
   if (!session?.id) {
-    redirect("/auth/sign-in?session=expired");
+    const reason = await getWebSessionRejectionReason();
+    redirect(
+      reason
+        ? `/auth/sign-in?session=expired&reason=${encodeURIComponent(reason)}`
+        : "/auth/sign-in?session=expired",
+    );
   }
   const isAdmin = session.role === "admin";
   return (

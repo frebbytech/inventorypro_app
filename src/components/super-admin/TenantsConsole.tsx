@@ -12,10 +12,13 @@ import {
   Edit3,
   Eye,
   EyeOff,
+  Globe,
+  MonitorSmartphone,
   Plus,
   RefreshCw,
   Search,
   ShieldCheck,
+  Smartphone,
   Trash2,
   Users,
 } from "lucide-react";
@@ -28,6 +31,7 @@ import {
 import type {
   PlatformMobileServerConfig,
   SuperAdminOverviewMetrics,
+  TenantAccessMode,
   TenantGrowthPoint,
   TenantSummaryItem,
 } from "@/types/super-admin";
@@ -74,6 +78,31 @@ function slugPreview(raw: string): string {
     .replace(/^-+|-+$/g, "");
 }
 
+function renderAccessModeBadge(accessMode: TenantAccessMode) {
+  if (accessMode === "mobile_only") {
+    return (
+      <span className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-md border border-sky-500/30 bg-sky-500/10 px-2 py-0.5 text-xs font-medium text-sky-700 dark:text-sky-300">
+        <Smartphone className="h-3.5 w-3.5 shrink-0" />
+        <span>Mobile Only</span>
+      </span>
+    );
+  }
+  if (accessMode === "web_only") {
+    return (
+      <span className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-md border border-violet-500/30 bg-violet-500/10 px-2 py-0.5 text-xs font-medium text-violet-700 dark:text-violet-300">
+        <Globe className="h-3.5 w-3.5 shrink-0" />
+        <span>Web Only</span>
+      </span>
+    );
+  }
+  return (
+    <span className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-md border border-border bg-muted/40 px-2 py-0.5 text-xs font-medium text-foreground">
+      <MonitorSmartphone className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+      <span>Web + Mobile</span>
+    </span>
+  );
+}
+
 export default function TenantsConsole({
   initialMetrics,
   initialTenants,
@@ -97,6 +126,9 @@ export default function TenantsConsole({
   const [statusFilter, setStatusFilter] = useState<
     "all" | "active" | "suspended"
   >("all");
+  const [accessFilter, setAccessFilter] = useState<"all" | TenantAccessMode>(
+    "all",
+  );
   const [refreshing, setRefreshing] = useState(false);
   const [bannerError, setBannerError] = useState<string | null>(null);
   const [bannerInfo, setBannerInfo] = useState<string | null>(null);
@@ -110,6 +142,7 @@ export default function TenantsConsole({
   const [cSlug, setCSlug] = useState("");
   const [cCurrency, setCCurrency] = useState("GHS");
   const [cAddress, setCAddress] = useState("");
+  const [cAccessMode, setCAccessMode] = useState<TenantAccessMode>("both");
   const [cOwnerUsername, setCOwnerUsername] = useState("");
   const [cOwnerEmail, setCOwnerEmail] = useState("");
   const [cOwnerFirstname, setCOwnerFirstname] = useState("");
@@ -127,6 +160,7 @@ export default function TenantsConsole({
   const [eSlug, setESlug] = useState("");
   const [eCurrency, setECurrency] = useState("GHS");
   const [eStatus, setEStatus] = useState<"active" | "suspended">("active");
+  const [eAccessMode, setEAccessMode] = useState<TenantAccessMode>("both");
 
   // Delete tenant confirmation modal
   const [deletingTenant, setDeletingTenant] =
@@ -141,6 +175,7 @@ export default function TenantsConsole({
     const q = searchQuery.trim().toLowerCase();
     return tenants.filter((t) => {
       if (statusFilter !== "all" && t.status !== statusFilter) return false;
+      if (accessFilter !== "all" && t.accessMode !== accessFilter) return false;
       if (!q) return true;
       return (
         t.name.toLowerCase().includes(q) ||
@@ -150,7 +185,7 @@ export default function TenantsConsole({
         t.ownerFullname.toLowerCase().includes(q)
       );
     });
-  }, [tenants, searchQuery, statusFilter]);
+  }, [tenants, searchQuery, statusFilter, accessFilter]);
 
   async function reloadData() {
     setRefreshing(true);
@@ -178,6 +213,7 @@ export default function TenantsConsole({
     setCSlug("");
     setCCurrency("GHS");
     setCAddress("");
+    setCAccessMode("both");
     setCOwnerUsername("");
     setCOwnerEmail("");
     setCOwnerFirstname("");
@@ -211,6 +247,7 @@ export default function TenantsConsole({
         slug: cSlug.trim() || undefined,
         currency: cCurrency.trim().toUpperCase() || "GHS",
         businessAddress: cAddress.trim() || undefined,
+        accessMode: cAccessMode,
         ownerUsername: cOwnerUsername.trim(),
         ownerEmail: cOwnerEmail.trim(),
         ownerFirstname: cOwnerFirstname.trim() || "Store",
@@ -245,6 +282,7 @@ export default function TenantsConsole({
     setESlug(tenant.slug);
     setECurrency(tenant.currency);
     setEStatus(tenant.status);
+    setEAccessMode(tenant.accessMode);
     setEditError(null);
   }
 
@@ -267,6 +305,7 @@ export default function TenantsConsole({
         slug: eSlug.trim(),
         currency: eCurrency.trim().toUpperCase() || "GHS",
         status: eStatus,
+        accessMode: eAccessMode,
       });
 
       if (!res.success) {
@@ -444,8 +483,9 @@ export default function TenantsConsole({
           <p className="mt-2 font-mono text-2xl font-semibold tabular-nums text-foreground">
             {metrics.activeTenants}
           </p>
-          <p className="mt-1 text-xs text-muted-foreground">
-            Live multi-device sync enabled
+          <p className="mt-1 text-xs text-muted-foreground tabular-nums">
+            {metrics.mobileOnlyTenants} mobile-only ·{" "}
+            {metrics.dualAccessTenants} web + mobile
           </p>
         </div>
 
@@ -484,8 +524,8 @@ export default function TenantsConsole({
 
       {/* Filter & Search Bar + Tenants Table */}
       <section className="rounded-lg border border-border bg-card">
-        <div className="flex flex-col gap-3 border-b border-border p-4 sm:flex-row sm:items-center sm:justify-between">
-          <div className="relative w-full sm:max-w-sm">
+        <div className="flex flex-col gap-3 border-b border-border p-4 lg:flex-row lg:items-center lg:justify-between">
+          <div className="relative w-full lg:max-w-xs">
             <Search className="pointer-events-none absolute left-3 top-2.5 h-4 w-4 text-muted-foreground" />
             <Input
               value={searchQuery}
@@ -495,21 +535,47 @@ export default function TenantsConsole({
             />
           </div>
 
-          <div className="inline-flex rounded-md border border-border bg-muted/40 p-0.5 self-start sm:self-auto">
-            {(["all", "active", "suspended"] as const).map((tab) => (
-              <button
-                key={tab}
-                type="button"
-                onClick={() => setStatusFilter(tab)}
-                className={`rounded px-3 py-1.5 text-xs font-medium capitalize transition-colors ${
-                  statusFilter === tab
-                    ? "bg-card text-foreground"
-                    : "text-muted-foreground hover:text-foreground"
-                }`}
-              >
-                {tab}
-              </button>
-            ))}
+          <div className="flex flex-wrap items-center gap-2">
+            <div className="inline-flex rounded-md border border-border bg-muted/40 p-0.5">
+              {(["all", "active", "suspended"] as const).map((tab) => (
+                <button
+                  key={tab}
+                  type="button"
+                  onClick={() => setStatusFilter(tab)}
+                  className={`whitespace-nowrap shrink-0 rounded px-3 py-1.5 text-xs font-medium capitalize transition-colors ${
+                    statusFilter === tab
+                      ? "bg-card text-foreground"
+                      : "text-muted-foreground hover:text-foreground"
+                  }`}
+                >
+                  {tab}
+                </button>
+              ))}
+            </div>
+
+            <div className="inline-flex rounded-md border border-border bg-muted/40 p-0.5 overflow-x-auto">
+              {(
+                [
+                  { key: "all", label: "All Access" },
+                  { key: "both", label: "Web + Mobile" },
+                  { key: "mobile_only", label: "Mobile Only" },
+                  { key: "web_only", label: "Web Only" },
+                ] as const
+              ).map((tab) => (
+                <button
+                  key={tab.key}
+                  type="button"
+                  onClick={() => setAccessFilter(tab.key)}
+                  className={`whitespace-nowrap shrink-0 rounded px-3 py-1.5 text-xs font-medium transition-colors ${
+                    accessFilter === tab.key
+                      ? "bg-card text-foreground"
+                      : "text-muted-foreground hover:text-foreground"
+                  }`}
+                >
+                  {tab.label}
+                </button>
+              ))}
+            </div>
           </div>
         </div>
 
@@ -524,7 +590,7 @@ export default function TenantsConsole({
             <p className="mt-1 max-w-md text-sm text-muted-foreground">
               {tenants.length === 0
                 ? "Create the first business workspace to provision an isolated database scope and store owner account."
-                : "Adjust your search query or status filter to inspect other business workspaces."}
+                : "Adjust your search query, status filter, or platform access filter to inspect other business workspaces."}
             </p>
             {tenants.length === 0 ? (
               <Button
@@ -548,6 +614,7 @@ export default function TenantsConsole({
                 onClick={() => {
                   setSearchQuery("");
                   setStatusFilter("all");
+                  setAccessFilter("all");
                 }}
               >
                 Clear Filters
@@ -563,6 +630,7 @@ export default function TenantsConsole({
                   <th className="px-4 py-3">Primary Owner</th>
                   <th className="px-4 py-3">Members</th>
                   <th className="px-4 py-3">Activity</th>
+                  <th className="px-4 py-3">Platform Access</th>
                   <th className="px-4 py-3">Status</th>
                   <th className="px-4 py-3 text-right">Actions</th>
                 </tr>
@@ -616,6 +684,10 @@ export default function TenantsConsole({
                       <div className="text-xs text-muted-foreground">
                         Updated {formatShortDate(tenant.lastActivityAt)}
                       </div>
+                    </td>
+
+                    <td className="px-4 py-3 align-middle">
+                      {renderAccessModeBadge(tenant.accessMode)}
                     </td>
 
                     <td className="px-4 py-3 align-middle">
@@ -771,6 +843,32 @@ export default function TenantsConsole({
                   disabled={createLoading}
                 />
               </div>
+            </div>
+
+            <div className="space-y-1.5">
+              <Label htmlFor="new-tenant-access">Platform Access</Label>
+              <select
+                id="new-tenant-access"
+                value={cAccessMode}
+                onChange={(e) =>
+                  setCAccessMode(
+                    e.target.value === "mobile_only"
+                      ? "mobile_only"
+                      : e.target.value === "web_only"
+                        ? "web_only"
+                        : "both",
+                  )
+                }
+                disabled={createLoading}
+                className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+              >
+                <option value="both">Web + Mobile (full cloud & mobile app)</option>
+                <option value="mobile_only">Mobile Only (mobile app access only; web login blocked)</option>
+                <option value="web_only">Web Only (browser dashboard only; mobile login blocked)</option>
+              </select>
+              <p className="text-xs text-muted-foreground">
+                Controls whether workspace members can sign in on the web dashboard, mobile app, or both.
+              </p>
             </div>
 
             <div className="border-t border-border pt-3">
@@ -961,6 +1059,38 @@ export default function TenantsConsole({
                   Suspended (block sign-in & revoke active sync)
                 </option>
               </select>
+            </div>
+
+            <div className="space-y-1.5">
+              <Label htmlFor="edit-tenant-access">Platform Access</Label>
+              <select
+                id="edit-tenant-access"
+                value={eAccessMode}
+                onChange={(e) =>
+                  setEAccessMode(
+                    e.target.value === "mobile_only"
+                      ? "mobile_only"
+                      : e.target.value === "web_only"
+                        ? "web_only"
+                        : "both",
+                  )
+                }
+                disabled={editLoading}
+                className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+              >
+                <option value="both">Web + Mobile (full cloud & mobile app)</option>
+                <option value="mobile_only">Mobile Only (blocks web login & revokes web sessions)</option>
+                <option value="web_only">Web Only (blocks mobile login & revokes mobile sessions)</option>
+              </select>
+              {editingTenant &&
+                eAccessMode !== editingTenant.accessMode &&
+                eAccessMode !== "both" && (
+                  <p className="text-xs text-amber-700 dark:text-amber-400">
+                    {eAccessMode === "mobile_only"
+                      ? "Saving revokes all active browser sessions immediately while keeping mobile devices signed in."
+                      : "Saving revokes all active mobile app sessions immediately while keeping web browsers signed in."}
+                  </p>
+                )}
             </div>
 
             <DialogFooter className="pt-2">

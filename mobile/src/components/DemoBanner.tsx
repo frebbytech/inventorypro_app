@@ -32,7 +32,6 @@ export function DemoBanner({
     syncStatus,
     pendingOutboxCount,
     conflictOutboxCount,
-    triggerSyncNow,
     unreadNotificationsCount,
     refreshUnreadNotifications,
   } = useAuth();
@@ -59,7 +58,12 @@ export function DemoBanner({
     : "U";
 
   const navigateAndClose = (
-    path: "/(tabs)/account" | "/notifications" | "/security" | "/settings",
+    path:
+      | "/(tabs)/account"
+      | "/notifications"
+      | "/security"
+      | "/settings"
+      | "/sync-queue",
   ) => {
     setMenuOpen(false);
     router.push(path);
@@ -110,8 +114,12 @@ export function DemoBanner({
           ? `Offline · ${pendingOutboxCount}`
           : "Offline"
         : isSyncing
-          ? "Syncing"
-          : "Live";
+          ? pendingOutboxCount > 0
+            ? `Syncing · ${pendingOutboxCount}`
+            : "Syncing"
+          : pendingOutboxCount > 0
+            ? `Live · ${pendingOutboxCount}`
+            : "Live";
 
     const tintBg = isConflict
       ? colors.dangerTint
@@ -131,8 +139,9 @@ export function DemoBanner({
 
     return (
       <Pressable
-        onPress={() => void triggerSyncNow()}
-        accessibilityLabel={`Sync status: ${label}. Tap to sync now`}
+        onPress={() => router.push("/sync-queue")}
+        accessibilityLabel={`Sync status: ${label}. Tap to open sync queue and conflict inspector`}
+        accessibilityRole="button"
         style={({ pressed }) => [
           styles.syncChip,
           {
@@ -388,6 +397,45 @@ export function DemoBanner({
                   Security & Sessions
                 </Text>
               </Pressable>
+
+              {workspaceMode === "synced" ? (
+                <Pressable
+                  onPress={() => navigateAndClose("/sync-queue")}
+                  style={({ pressed }) => [
+                    styles.menuItem,
+                    {
+                      borderRadius: radii.lg,
+                      backgroundColor: pressed ? colors.accent : "transparent",
+                    },
+                  ]}
+                >
+                  <RefreshCw size={15} color={colors.mutedForeground} />
+                  <Text
+                    style={[
+                      typography.bodyMedium,
+                      { color: colors.foreground, flex: 1 },
+                    ]}
+                  >
+                    Sync Queue
+                  </Text>
+                  {pendingOutboxCount + conflictOutboxCount > 0 ? (
+                    <Text
+                      style={[
+                        typography.micro,
+                        {
+                          color:
+                            conflictOutboxCount > 0
+                              ? colors.dangerText
+                              : colors.primary,
+                          fontFamily: fontFamilies.bold,
+                        },
+                      ]}
+                    >
+                      {pendingOutboxCount + conflictOutboxCount}
+                    </Text>
+                  ) : null}
+                </Pressable>
+              ) : null}
 
               <Pressable
                 onPress={() => navigateAndClose("/settings")}

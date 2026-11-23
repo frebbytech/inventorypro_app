@@ -13,6 +13,8 @@ import { useRouter } from "expo-router";
 import {
   AlertCircle,
   Bell,
+  BellRing,
+  Bluetooth,
   Building2,
   Check,
   CheckCircle2,
@@ -31,10 +33,17 @@ import {
   RotateCcw,
   Send,
   ShieldCheck,
+  Smartphone,
   Sun,
   Volume2,
+  Wifi,
 } from "lucide-react-native";
 import { useAuth } from "@/api/AuthProvider";
+import {
+  DEFAULT_THERMAL_PRINTER_CONFIG,
+  getStoredPrinterConfig,
+  setStoredPrinterConfig,
+} from "@/api/tokenStorage";
 import {
   Badge,
   Button,
@@ -56,10 +65,19 @@ import {
 } from "@/theme";
 import {
   DEFAULT_WEEKLY_SCHEDULE,
+  type BluetoothPrinterDevice,
   type DaySchedule,
   type PaperSize,
+  type PrinterTransport,
   type StockAudioTone,
 } from "@/types/domain";
+import { hapticError, hapticLight, hapticSuccess } from "@/utils/haptics";
+import { sendTestLocalNotificationAsync } from "@/utils/pushNotifications";
+import {
+  listPairedBluetoothPrinters,
+  printThermalTestTicket,
+  validateTcpPrinterEndpoint,
+} from "@/utils/thermalPrinter";
 
 type SettingsTabValue = "business" | "alerts" | "hours" | "theme";
 
@@ -91,6 +109,7 @@ const AUDIO_VOLUME_PRESETS: ReadonlyArray<{ label: string; value: number }> = [
 ];
 
 const PAPER_SIZE_OPTIONS: ReadonlyArray<{ value: PaperSize; label: string }> = [
+  { value: "thermal_58mm", label: "Thermal 58mm" },
   { value: "thermal_80mm", label: "Thermal 80mm" },
   { value: "a4", label: "A4 Sheet" },
 ];
@@ -253,6 +272,11 @@ export default function SettingsScreen() {
     store,
     user,
     workspaceMode,
+    pushStatus,
+    expoPushToken,
+    pushStatusMessage,
+    registerDevicePushToken,
+    unregisterDevicePushToken,
     refreshStoreSettings,
     updateBusinessSettings,
     updateNotificationSettings,
@@ -343,6 +367,51 @@ export default function SettingsScreen() {
   const [businessError, setBusinessError] = useState<string | null>(null);
   const [businessSavedMsg, setBusinessSavedMsg] = useState<string | null>(null);
 
+  // --- Device-local ESC/POS Thermal Printer Hardware Config ---
+  const [printerTransport, setPrinterTransport] = useState<PrinterTransport>(
+    DEFAULT_THERMAL_PRINTER_CONFIG.transport,
+  );
+  const [printerHost, setPrinterHost] = useState(
+    DEFAULT_THERMAL_PRINTER_CONFIG.host,
+  );
+  const [printerPortText, setPrinterPortText] = useState(
+    String(DEFAULT_THERMAL_PRINTER_CONFIG.port),
+  );
+  const [printerBtName, setPrinterBtName] = useState(
+    DEFAULT_THERMAL_PRINTER_CONFIG.bluetoothName,
+  );
+  const [printerBtAddress, setPrinterBtAddress] = useState(
+    DEFAULT_THERMAL_PRINTER_CONFIG.bluetoothAddress,
+  );
+  const [printerAutoCut, setPrinterAutoCut] = useState(
+    DEFAULT_THERMAL_PRINTER_CONFIG.autoCut,
+  );
+  const [printerOpenCashDrawer, setPrinterOpenCashDrawer] = useState(
+    DEFAULT_THERMAL_PRINTER_CONFIG.openCashDrawer,
+  );
+  const [btPairedDevices, setBtPairedDevices] = useState<
+    BluetoothPrinterDevice[]
+  >([]);
+  const [scanningBtPrinters, setScanningBtPrinters] = useState(false);
+  const [savingPrinterConfig, setSavingPrinterConfig] = useState(false);
+  const [testingPrinter, setTestingPrinter] = useState(false);
+  const [printerFeedback, setPrinterFeedback] = useState<{
+    type: "success" | "error" | "info";
+    text: string;
+  } | null>(null);
+
+  useEffect(() => {
+    void getStoredPrinterConfig().then((cfg) => {
+      setPrinterTransport(cfg.transport);
+      setPrinterHost(cfg.host);
+      setPrinterPortText(String(cfg.port));
+      setPrinterBtName(cfg.bluetoothName);
+      setPrinterBtAddress(cfg.bluetoothAddress);
+      setPrinterAutoCut(cfg.autoCut);
+      setPrinterOpenCashDrawer(cfg.openCashDrawer);
+    });
+  }, []);
+
   // --- Tab 2: Alerts & EOD ---
   const [notificationEmail, setNotificationEmail] = useState(
     Boolean(store?.notificationEmail),
@@ -376,6 +445,8 @@ export default function SettingsScreen() {
   );
   const [savingAlerts, setSavingAlerts] = useState(false);
   const [sendingEodReport, setSendingEodReport] = useState(false);
+  const [registeringPush, setRegisteringPush] = useState(false);
+  const [sendingTestAlert, setSendingTestAlert] = useState(false);
   const [alertsError, setAlertsError] = useState<string | null>(null);
   const [alertsSavedMsg, setAlertsSavedMsg] = useState<string | null>(null);
 
@@ -584,17 +655,157 @@ export default function SettingsScreen() {
       setPrintAfterSale(Boolean(updated.printAfterSale));
       setPaperSize(updated.paperSize ?? "thermal_80mm");
       setBusinessSavedMsg("Business settings & receipt defaults saved.");
+      void hapticSuccess();
       toast.success(
         "Business settings saved",
         `${updated.storeName} preferences updated.`,
       );
     } catch (err) {
+      void hapticError();
       const msg =
         err instanceof Error ? err.message : "Failed to save business info.";
       setBusinessError(msg);
       toast.error("Could not save settings", msg);
     } finally {
       setSavingBusiness(false);
+    }
+  };
+
+  const buildCurrentPrinterConfig = () => {
+    const portNum = Math.trunc(Number(printerPortText.trim() || "9100"));
+    return {
+      transport: printerTransport,
+      host: printerHost.trim(),
+      port: Number.isFinite(portNum) ? portNum : 9100,
+      bluetoothName: printerBtName.trim(),
+      bluetoothAddress: printerBtAddress.trim(),
+      autoCut: printerAutoCut,
+      openCashDrawer: printerOpenCashDrawer,
+    };
+  };
+
+  const handleSavePrinterHardware = async () => {
+    setPrinterFeedback(null);
+    const candidate = buildCurrentPrinterConfig();
+    if (candidate.transport === "tcp") {
+      const endpointErr = validateTcpPrinterEndpoint(
+        candidate.host,
+        candidate.port,
+      );
+      if (endpointErr) {
+        void hapticError();
+        setPrinterFeedback({ type: "error", text: endpointErr });
+        return;
+      }
+    } else if (
+      candidate.transport === "bluetooth" &&
+      !candidate.bluetoothAddress
+    ) {
+      void hapticError();
+      setPrinterFeedback({
+        type: "error",
+        text: "Select a paired Bluetooth printer or enter its MAC / device address.",
+      });
+      return;
+    }
+
+    setSavingPrinterConfig(true);
+    try {
+      const saved = await setStoredPrinterConfig(candidate);
+      setPrinterPortText(String(saved.port));
+      void hapticSuccess();
+      setPrinterFeedback({
+        type: "success",
+        text: "Hardware printer profile saved on this terminal.",
+      });
+      toast.success("Printer profile saved", "Counter hardware settings updated.");
+    } catch (err) {
+      void hapticError();
+      setPrinterFeedback({
+        type: "error",
+        text:
+          err instanceof Error
+            ? err.message
+            : "Failed to save hardware printer profile.",
+      });
+    } finally {
+      setSavingPrinterConfig(false);
+    }
+  };
+
+  const handleScanBluetoothPrinters = async () => {
+    setPrinterFeedback(null);
+    setScanningBtPrinters(true);
+    try {
+      const res = await listPairedBluetoothPrinters();
+      setBtPairedDevices(res.devices);
+      if (!res.nativeSupported) {
+        setPrinterFeedback({
+          type: "info",
+          text: "Bluetooth serial discovery requires a native EAS Dev Client / Production build. You can still enter the printer MAC/ID manually.",
+        });
+      } else if (res.devices.length === 0) {
+        setPrinterFeedback({
+          type: "info",
+          text: "No paired Bluetooth printers found. Pair your printer in device Bluetooth settings first.",
+        });
+      } else {
+        void hapticSuccess();
+        setPrinterFeedback({
+          type: "success",
+          text: `Found ${res.devices.length} paired Bluetooth ${res.devices.length === 1 ? "device" : "devices"}.`,
+        });
+      }
+    } catch (err) {
+      void hapticError();
+      setPrinterFeedback({
+        type: "error",
+        text:
+          err instanceof Error
+            ? err.message
+            : "Failed to query paired Bluetooth printers.",
+      });
+    } finally {
+      setScanningBtPrinters(false);
+    }
+  };
+
+  const handleTestThermalPrinter = async () => {
+    setPrinterFeedback(null);
+    const candidate = buildCurrentPrinterConfig();
+    if (candidate.transport === "tcp") {
+      const endpointErr = validateTcpPrinterEndpoint(
+        candidate.host,
+        candidate.port,
+      );
+      if (endpointErr) {
+        void hapticError();
+        setPrinterFeedback({ type: "error", text: endpointErr });
+        return;
+      }
+    }
+    setTestingPrinter(true);
+    try {
+      await setStoredPrinterConfig(candidate);
+      const result = await printThermalTestTicket(
+        storeName.trim() || store?.storeName || "Inventory Pro",
+        paperSize,
+        candidate,
+      );
+      void hapticSuccess();
+      setPrinterFeedback({ type: "success", text: result.summary });
+      toast.success("Test print sent", result.summary);
+    } catch (err) {
+      void hapticError();
+      setPrinterFeedback({
+        type: "error",
+        text:
+          err instanceof Error
+            ? err.message
+            : "Unable to print test ticket to hardware printer.",
+      });
+    } finally {
+      setTestingPrinter(false);
     }
   };
 
@@ -640,8 +851,10 @@ export default function SettingsScreen() {
       setEodAdminEmail(updated.eodAdminEmail ?? "");
       setEodAdminPhone(updated.eodAdminPhone ?? "");
       setAlertsSavedMsg("Alerts, sound & EOD report preferences saved.");
+      void hapticSuccess();
       toast.success("Alerts & EOD saved", "Notification settings updated.");
     } catch (err) {
+      void hapticError();
       const msg =
         err instanceof Error
           ? err.message
@@ -653,17 +866,104 @@ export default function SettingsScreen() {
     }
   };
 
+  const handleEnableOrRefreshPush = async () => {
+    setAlertsError(null);
+    setAlertsSavedMsg(null);
+    setRegisteringPush(true);
+    try {
+      const result = await registerDevicePushToken({ promptPermission: true });
+      if (result.status === "granted" && result.token) {
+        void hapticSuccess();
+        setAlertsSavedMsg("Device push token registered with workspace.");
+        toast.success(
+          "Push alerts active",
+          "This device will receive low-stock, order & team notifications.",
+        );
+      } else if (result.status === "no_project_id") {
+        void hapticLight();
+        setAlertsSavedMsg(
+          result.reason ||
+            "Device notifications permitted; configure EAS projectId for remote push.",
+        );
+        toast.info(
+          "Local alerts ready",
+          result.reason || "EAS projectId is needed for remote Expo push tokens.",
+        );
+      } else {
+        void hapticError();
+        setAlertsError(
+          result.reason || "Unable to enable push notifications on this device.",
+        );
+      }
+    } catch (err) {
+      void hapticError();
+      setAlertsError(
+        err instanceof Error
+          ? err.message
+          : "Push notification registration failed.",
+      );
+    } finally {
+      setRegisteringPush(false);
+    }
+  };
+
+  const handleDisablePushOnDevice = async () => {
+    setAlertsError(null);
+    setAlertsSavedMsg(null);
+    setRegisteringPush(true);
+    try {
+      await unregisterDevicePushToken();
+      void hapticLight();
+      setAlertsSavedMsg("Device unregistered from remote push notifications.");
+      toast.info("Push unregistered", "This device token was removed.");
+    } catch (err) {
+      void hapticError();
+      setAlertsError(
+        err instanceof Error ? err.message : "Failed to unregister device.",
+      );
+    } finally {
+      setRegisteringPush(false);
+    }
+  };
+
+  const handleSendTestDeviceAlert = async () => {
+    setSendingTestAlert(true);
+    setAlertsError(null);
+    try {
+      const sent = await sendTestLocalNotificationAsync({
+        title: `${store?.storeName || "Inventory Pro"} Test Alert`,
+        body: "Device notification banner, sound & haptic alert verified.",
+      });
+      if (sent) {
+        void hapticSuccess();
+        toast.success(
+          "Test notification triggered",
+          "Check your device notification shade or banner.",
+        );
+      } else {
+        void hapticError();
+        setAlertsError(
+          "Permission denied or unsupported on this platform (e.g. web browser).",
+        );
+      }
+    } finally {
+      setSendingTestAlert(false);
+    }
+  };
+
   const handleSendDailyReportNow = async () => {
     setAlertsError(null);
     setSendingEodReport(true);
     try {
       const result = await sendDailyReportNow();
+      void hapticSuccess();
       toast.success(
         "EOD Report Dispatched",
         `Daily sales report for ${result.reportDate} sent.`,
       );
       setAlertsSavedMsg(`Daily report for ${result.reportDate} dispatched.`);
     } catch (err) {
+      void hapticError();
       const msg =
         err instanceof Error
           ? err.message
@@ -822,6 +1122,7 @@ export default function SettingsScreen() {
 
           {/* TAB 1: BUSINESS INFO */}
           {activeTab === "business" ? (
+            <>
             <Card>
               <CardHeader bordered>
                 <View style={styles.sectionTitleRow}>
@@ -1265,6 +1566,427 @@ export default function SettingsScreen() {
                 />
               </CardFooter>
             </Card>
+
+            {/* Device-Local ESC/POS Thermal Printer Hardware Profile */}
+            <Card>
+              <CardHeader bordered>
+                <View style={styles.sectionTitleRow}>
+                  <View
+                    style={[
+                      styles.sectionIconBox,
+                      {
+                        backgroundColor: colors.primaryTint,
+                        borderRadius: radii.lg,
+                      },
+                    ]}
+                  >
+                    <Printer size={18} color={colors.primary} />
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <CardTitle>Thermal Printer Hardware (ESC/POS)</CardTitle>
+                    <CardDescription>
+                      Configure counter receipt printer on this device (Wi-Fi/LAN
+                      port 9100, Bluetooth, or System Print).
+                    </CardDescription>
+                  </View>
+                </View>
+              </CardHeader>
+
+              <CardContent style={{ paddingTop: spacing.base, gap: spacing.md }}>
+                <View style={{ gap: 6 }}>
+                  <Text
+                    style={[
+                      typography.caption,
+                      {
+                        color: colors.foreground,
+                        fontFamily: fontFamilies.semibold,
+                      },
+                    ]}
+                  >
+                    Connection Transport
+                  </Text>
+                  <View style={styles.currencyRow}>
+                    {(
+                      [
+                        { value: "system", label: "System Print", icon: Printer },
+                        { value: "tcp", label: "Wi-Fi / LAN", icon: Wifi },
+                        { value: "bluetooth", label: "Bluetooth", icon: Bluetooth },
+                      ] as const
+                    ).map((opt) => {
+                      const selected = printerTransport === opt.value;
+                      const IconComp = opt.icon;
+                      return (
+                        <Pressable
+                          key={opt.value}
+                          onPress={() => {
+                            void hapticLight();
+                            setPrinterTransport(opt.value);
+                            setPrinterFeedback(null);
+                          }}
+                          style={[
+                            styles.currencyChip,
+                            {
+                              flexDirection: "row",
+                              alignItems: "center",
+                              gap: 6,
+                              backgroundColor: selected
+                                ? colors.primaryTint
+                                : colors.cardMuted,
+                              borderColor: selected
+                                ? colors.primary
+                                : colors.border,
+                              borderRadius: radii.md,
+                            },
+                          ]}
+                        >
+                          <IconComp
+                            size={14}
+                            color={
+                              selected ? colors.primary : colors.mutedForeground
+                            }
+                          />
+                          <Text
+                            style={[
+                              typography.caption,
+                              {
+                                color: selected
+                                  ? colors.primary
+                                  : colors.foreground,
+                                fontFamily: selected
+                                  ? fontFamilies.bold
+                                  : fontFamilies.semibold,
+                              },
+                            ]}
+                          >
+                            {opt.label}
+                          </Text>
+                        </Pressable>
+                      );
+                    })}
+                  </View>
+                </View>
+
+                {printerTransport === "tcp" ? (
+                  <View style={styles.twoColRow}>
+                    <View style={[styles.fieldGroup, { flex: 2 }]}>
+                      <Text
+                        style={[
+                          typography.caption,
+                          {
+                            color: colors.foreground,
+                            fontFamily: fontFamilies.semibold,
+                          },
+                        ]}
+                      >
+                        Printer IP / Host *
+                      </Text>
+                      <Input
+                        value={printerHost}
+                        onChangeText={(txt) => {
+                          setPrinterHost(txt);
+                          setPrinterFeedback(null);
+                        }}
+                        placeholder="192.168.1.100"
+                        autoCapitalize="none"
+                        autoCorrect={false}
+                        keyboardType="numbers-and-punctuation"
+                        leftIcon={
+                          <Wifi size={15} color={colors.mutedForeground} />
+                        }
+                      />
+                    </View>
+
+                    <View style={[styles.fieldGroup, { flex: 1 }]}>
+                      <Text
+                        style={[
+                          typography.caption,
+                          {
+                            color: colors.foreground,
+                            fontFamily: fontFamilies.semibold,
+                          },
+                        ]}
+                      >
+                        TCP Port
+                      </Text>
+                      <Input
+                        value={printerPortText}
+                        onChangeText={(txt) => {
+                          setPrinterPortText(txt.replace(/[^0-9]/g, ""));
+                          setPrinterFeedback(null);
+                        }}
+                        placeholder="9100"
+                        keyboardType="number-pad"
+                      />
+                    </View>
+                  </View>
+                ) : null}
+
+                {printerTransport === "bluetooth" ? (
+                  <View style={{ gap: spacing.sm }}>
+                    <View style={styles.twoColRow}>
+                      <View style={[styles.fieldGroup, { flex: 1 }]}>
+                        <Text
+                          style={[
+                            typography.caption,
+                            {
+                              color: colors.foreground,
+                              fontFamily: fontFamilies.semibold,
+                            },
+                          ]}
+                        >
+                          Printer Name
+                        </Text>
+                        <Input
+                          value={printerBtName}
+                          onChangeText={(txt) => {
+                            setPrinterBtName(txt);
+                            setPrinterFeedback(null);
+                          }}
+                          placeholder="XP-58IIH / RPP02N"
+                        />
+                      </View>
+                      <View style={[styles.fieldGroup, { flex: 1 }]}>
+                        <Text
+                          style={[
+                            typography.caption,
+                            {
+                              color: colors.foreground,
+                              fontFamily: fontFamilies.semibold,
+                            },
+                          ]}
+                        >
+                          MAC / Device ID *
+                        </Text>
+                        <Input
+                          value={printerBtAddress}
+                          onChangeText={(txt) => {
+                            setPrinterBtAddress(txt);
+                            setPrinterFeedback(null);
+                          }}
+                          placeholder="DC:0D:30:12:34:56"
+                          autoCapitalize="characters"
+                          autoCorrect={false}
+                        />
+                      </View>
+                    </View>
+
+                    <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+                      <Button
+                        title={
+                          scanningBtPrinters
+                            ? "Scanning Paired..."
+                            : "Scan Paired Printers"
+                        }
+                        variant="outline"
+                        size="sm"
+                        loading={scanningBtPrinters}
+                        leftIcon={
+                          <Bluetooth size={14} color={colors.foreground} />
+                        }
+                        onPress={() => void handleScanBluetoothPrinters()}
+                      />
+                    </View>
+
+                    {btPairedDevices.length > 0 ? (
+                      <View style={{ gap: 6 }}>
+                        {btPairedDevices.map((dev) => {
+                          const isSelected =
+                            printerBtAddress.toLowerCase() ===
+                            dev.address.toLowerCase();
+                          return (
+                            <Pressable
+                              key={dev.address}
+                              onPress={() => {
+                                setPrinterBtName(dev.name);
+                                setPrinterBtAddress(dev.address);
+                                setPrinterFeedback(null);
+                              }}
+                              style={[
+                                styles.currencyChip,
+                                {
+                                  flexDirection: "row",
+                                  justifyContent: "space-between",
+                                  alignItems: "center",
+                                  backgroundColor: isSelected
+                                    ? colors.primaryTint
+                                    : colors.cardMuted,
+                                  borderColor: isSelected
+                                    ? colors.primary
+                                    : colors.border,
+                                  borderRadius: radii.md,
+                                },
+                              ]}
+                            >
+                              <Text
+                                style={[
+                                  typography.caption,
+                                  {
+                                    color: colors.foreground,
+                                    fontFamily: fontFamilies.semibold,
+                                  },
+                                ]}
+                              >
+                                {dev.name} ({dev.address})
+                              </Text>
+                              {isSelected ? (
+                                <Check size={14} color={colors.primary} />
+                              ) : null}
+                            </Pressable>
+                          );
+                        })}
+                      </View>
+                    ) : null}
+                  </View>
+                ) : null}
+
+                {printerTransport !== "system" ? (
+                  <View
+                    style={[
+                      styles.subSectionBox,
+                      {
+                        backgroundColor: colors.cardMuted,
+                        borderColor: colors.border,
+                        borderRadius: radii.lg,
+                        padding: spacing.md,
+                        gap: 12,
+                      },
+                    ]}
+                  >
+                    <View style={styles.switchRow}>
+                      <View style={{ flex: 1 }}>
+                        <Text
+                          style={[
+                            typography.bodyMedium,
+                            { color: colors.foreground },
+                          ]}
+                        >
+                          Auto-Cut Thermal Paper
+                        </Text>
+                        <Text
+                          style={[
+                            typography.micro,
+                            { color: colors.mutedForeground },
+                          ]}
+                        >
+                          Send ESC/POS partial cut command after footer
+                        </Text>
+                      </View>
+                      <Switch
+                        value={printerAutoCut}
+                        onValueChange={setPrinterAutoCut}
+                        trackColor={{
+                          false: colors.border,
+                          true: colors.primary,
+                        }}
+                        thumbColor="#FFFFFF"
+                      />
+                    </View>
+
+                    <View style={styles.switchRow}>
+                      <View style={{ flex: 1 }}>
+                        <Text
+                          style={[
+                            typography.bodyMedium,
+                            { color: colors.foreground },
+                          ]}
+                        >
+                          Kick Cash Drawer
+                        </Text>
+                        <Text
+                          style={[
+                            typography.micro,
+                            { color: colors.mutedForeground },
+                          ]}
+                        >
+                          Pulse RJ11 cash drawer connected to thermal printer
+                        </Text>
+                      </View>
+                      <Switch
+                        value={printerOpenCashDrawer}
+                        onValueChange={setPrinterOpenCashDrawer}
+                        trackColor={{
+                          false: colors.border,
+                          true: colors.primary,
+                        }}
+                        thumbColor="#FFFFFF"
+                      />
+                    </View>
+                  </View>
+                ) : null}
+
+                {printerFeedback ? (
+                  <View
+                    style={[
+                      styles.feedbackBanner,
+                      {
+                        backgroundColor:
+                          printerFeedback.type === "error"
+                            ? colors.dangerTint
+                            : printerFeedback.type === "success"
+                              ? colors.successTint
+                              : colors.primaryTint,
+                        borderColor:
+                          printerFeedback.type === "error"
+                            ? colors.dangerBorder
+                            : printerFeedback.type === "success"
+                              ? colors.successBorder
+                              : colors.primary,
+                        borderRadius: radii.lg,
+                      },
+                    ]}
+                  >
+                    {printerFeedback.type === "error" ? (
+                      <AlertCircle size={15} color={colors.dangerText} />
+                    ) : (
+                      <CheckCircle2
+                        size={15}
+                        color={
+                          printerFeedback.type === "success"
+                            ? colors.successText
+                            : colors.primary
+                        }
+                      />
+                    )}
+                    <Text
+                      style={[
+                        typography.caption,
+                        {
+                          color:
+                            printerFeedback.type === "error"
+                              ? colors.dangerText
+                              : printerFeedback.type === "success"
+                                ? colors.successText
+                                : colors.foreground,
+                          flex: 1,
+                        },
+                      ]}
+                    >
+                      {printerFeedback.text}
+                    </Text>
+                  </View>
+                ) : null}
+              </CardContent>
+
+              <CardFooter style={styles.footerRow}>
+                <Button
+                  title={testingPrinter ? "Printing..." : "Send Test Print"}
+                  variant="outline"
+                  size="sm"
+                  loading={testingPrinter}
+                  disabled={testingPrinter || savingPrinterConfig}
+                  leftIcon={<Printer size={14} color={colors.foreground} />}
+                  onPress={() => void handleTestThermalPrinter()}
+                />
+                <Button
+                  title={savingPrinterConfig ? "Saving..." : "Save Printer"}
+                  size="sm"
+                  loading={savingPrinterConfig}
+                  disabled={savingPrinterConfig || testingPrinter}
+                  onPress={() => void handleSavePrinterHardware()}
+                />
+              </CardFooter>
+            </Card>
+          </>
           ) : null}
 
           {/* TAB 2: ALERTS & EOD */}
@@ -1376,6 +2098,155 @@ export default function SettingsScreen() {
                       />
                     </View>
                   ))}
+                </View>
+
+                {/* Device Push Registration & Hardware Test */}
+                <View
+                  style={[
+                    styles.subSectionBox,
+                    {
+                      backgroundColor: colors.cardMuted,
+                      borderColor: colors.border,
+                      borderRadius: radii.lg,
+                      padding: spacing.md,
+                      gap: 10,
+                    },
+                  ]}
+                >
+                  <View
+                    style={{
+                      flexDirection: "row",
+                      alignItems: "center",
+                      justifyContent: "space-between",
+                      gap: 8,
+                    }}
+                  >
+                    <View
+                      style={{
+                        flexDirection: "row",
+                        alignItems: "center",
+                        gap: 8,
+                        flex: 1,
+                      }}
+                    >
+                      <Smartphone size={16} color={colors.primary} />
+                      <View style={{ flex: 1 }}>
+                        <Text
+                          style={[
+                            typography.bodySemibold,
+                            { color: colors.foreground },
+                          ]}
+                        >
+                          Device Push Alerts
+                        </Text>
+                        <Text
+                          style={[
+                            typography.micro,
+                            { color: colors.mutedForeground },
+                          ]}
+                        >
+                          Register this handset for real-time stock & team push
+                          alerts.
+                        </Text>
+                      </View>
+                    </View>
+                    <Badge
+                      label={
+                        pushStatus === "granted" && expoPushToken
+                          ? "Active"
+                          : pushStatus === "denied"
+                            ? "Denied"
+                            : pushStatus === "no_project_id"
+                              ? "Local Ready"
+                              : pushStatus === "unsupported"
+                                ? "Web/Sim"
+                                : "Not Linked"
+                      }
+                      variant={
+                        pushStatus === "granted" && expoPushToken
+                          ? "success"
+                          : pushStatus === "denied"
+                            ? "danger"
+                            : pushStatus === "no_project_id"
+                              ? "secondary"
+                              : "outline"
+                      }
+                    />
+                  </View>
+
+                  {expoPushToken ? (
+                    <Text
+                      numberOfLines={1}
+                      style={[
+                        typography.micro,
+                        { color: colors.mutedForeground },
+                      ]}
+                    >
+                      Token: {expoPushToken.slice(0, 26)}…
+                      {expoPushToken.slice(-6)}
+                    </Text>
+                  ) : pushStatusMessage ? (
+                    <Text
+                      style={[
+                        typography.micro,
+                        { color: colors.mutedForeground },
+                      ]}
+                    >
+                      {pushStatusMessage}
+                    </Text>
+                  ) : null}
+
+                  <View
+                    style={{
+                      flexDirection: "row",
+                      flexWrap: "wrap",
+                      gap: 8,
+                    }}
+                  >
+                    <Button
+                      title={
+                        expoPushToken
+                          ? "Refresh Push Token"
+                          : "Enable Push on Device"
+                      }
+                      size="sm"
+                      loading={registeringPush}
+                      disabled={registeringPush || workspaceMode === "mobile_only"}
+                      leftIcon={<BellRing size={14} color={colors.primaryForeground} />}
+                      onPress={() => void handleEnableOrRefreshPush()}
+                    />
+                    <Button
+                      title={sendingTestAlert ? "Sending..." : "Send Test Alert"}
+                      variant="outline"
+                      size="sm"
+                      loading={sendingTestAlert}
+                      disabled={sendingTestAlert || Platform.OS === "web"}
+                      leftIcon={<Bell size={14} color={colors.foreground} />}
+                      onPress={() => void handleSendTestDeviceAlert()}
+                    />
+                    {expoPushToken ? (
+                      <Button
+                        title="Unlink Device"
+                        variant="ghost"
+                        size="sm"
+                        disabled={registeringPush}
+                        onPress={() => void handleDisablePushOnDevice()}
+                      />
+                    ) : null}
+                  </View>
+
+                  {workspaceMode === "mobile_only" ? (
+                    <Text
+                      style={[
+                        typography.micro,
+                        { color: colors.mutedForeground },
+                      ]}
+                    >
+                      Remote Expo push registration activates once connected to a
+                      Synced Cloud Workspace. Local test alerts work offline on
+                      iOS & Android.
+                    </Text>
+                  ) : null}
                 </View>
 
                 {/* Low-Stock Audio Alert */}

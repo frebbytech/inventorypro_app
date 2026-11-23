@@ -20,6 +20,11 @@ import {
   X,
 } from "lucide-react-native";
 import { useApiClient } from "@/api/ApiProvider";
+import { useAuth } from "@/api/AuthProvider";
+import {
+  getStoredReceiptPaperSize,
+  setStoredReceiptPaperSize,
+} from "@/api/tokenStorage";
 import { EmptyState } from "@/components/EmptyState";
 import { LoadingState } from "@/components/LoadingState";
 import {
@@ -30,18 +35,21 @@ import {
   CardFooter,
   CardHeader,
   Input,
+  SegmentedTabs,
   useToast,
 } from "@/components/ui";
 import { useTheme } from "@/theme";
-import type { SaleReceiptDetail } from "@/types/domain";
+import type { PaperSize, SaleReceiptDetail } from "@/types/domain";
 import {
   capitalizeLabel,
   formatCurrency,
   formatDateTime,
   formatNumber,
 } from "@/utils/formatters";
+import { hapticError, hapticLight, hapticSuccess } from "@/utils/haptics";
 import {
   exportReceiptPdf,
+  getReceiptPaperLayout,
   printReceipt,
   shareReceiptText,
 } from "@/utils/receiptExport";
@@ -53,16 +61,29 @@ const REFUND_REASONS = [
   "Duplicate charge",
 ] as const;
 
+const PAPER_OPTIONS: { value: PaperSize; label: string }[] = [
+  { value: "thermal_58mm", label: "58mm Thermal" },
+  { value: "thermal_80mm", label: "80mm Thermal" },
+  { value: "a4", label: "A4 Sheet" },
+];
+
 export default function ReceiptDetailScreen() {
-  const { id } = useLocalSearchParams<{ id: string }>();
+  const { id, autoPrint } = useLocalSearchParams<{
+    id: string;
+    autoPrint?: string;
+  }>();
   const { theme } = useTheme();
   const api = useApiClient();
+  const { store } = useAuth();
   const toast = useToast();
   const router = useRouter();
   const { colors, spacing, radii, typography, fontFamilies } = theme;
 
   const [receipt, setReceipt] = useState<SaleReceiptDetail | null>(null);
   const [loading, setLoading] = useState(true);
+  const [paperSize, setPaperSize] = useState<PaperSize>(
+    store?.paperSize ?? "thermal_80mm",
+  );
   const [busyAction, setBusyAction] = useState<"share" | "print" | "pdf" | null>(
     null,
   );
@@ -70,6 +91,7 @@ export default function ReceiptDetailScreen() {
     type: "success" | "error";
     text: string;
   } | null>(null);
+  const autoPrintTriggeredRef = React.useRef(false);
 
   // Refund modal state
   const [refundModalOpen, setRefundModalOpen] = useState(false);
@@ -77,6 +99,22 @@ export default function ReceiptDetailScreen() {
   const [restockItems, setRestockItems] = useState(true);
   const [refunding, setRefunding] = useState(false);
   const [refundError, setRefundError] = useState<string | null>(null);
+
+  useEffect(() => {
+    void getStoredReceiptPaperSize().then((saved) => {
+      if (saved) {
+        setPaperSize(saved);
+      } else if (store?.paperSize) {
+        setPaperSize(store.paperSize);
+      }
+    });
+  }, [store?.paperSize]);
+
+  const handleChangePaperSize = (nextSize: PaperSize) => {
+    void hapticLight();
+    setPaperSize(nextSize);
+    void setStoredReceiptPaperSize(nextSize);
+  };
 
   const loadReceipt = useCallback(async () => {
     if (!id) {
@@ -96,30 +134,47 @@ export default function ReceiptDetailScreen() {
     void loadReceipt();
   }, [loadReceipt]);
 
-  const runExportAction = async (kind: "share" | "print" | "pdf") => {
-    if (!receipt || busyAction) return;
-    setBusyAction(kind);
-    setFeedback(null);
-    try {
-      if (kind === "share") {
-        await shareReceiptText(receipt);
-      } else if (kind === "print") {
-        await printReceipt(receipt);
-      } else {
-        await exportReceiptPdf(receipt);
+  const runExportAction = useCallback(
+    async (kind: "share" | "print" | "pdf") => {
+      if (!receipt || busyAction) return;
+      void hapticLight();
+      setBusyAction(kind);
+      setFeedback(null);
+      try {
+        if (kind === "share") {
+          await shareReceiptText(receipt, paperSize);
+        } else if (kind === "print") {
+          await printReceipt(receipt, paperSize);
+        } else {
+          await exportReceiptPdf(receipt, paperSize);
+        }
+      } catch (err) {
+        void hapticError();
+        setFeedback({
+          type: "error",
+          text:
+            err instanceof Error
+              ? err.message
+              : "Unable to complete receipt export action.",
+        });
+      } finally {
+        setBusyAction(null);
       }
-    } catch (err) {
-      setFeedback({
-        type: "error",
-        text:
-          err instanceof Error
-            ? err.message
-            : "Unable to complete receipt export action.",
-      });
-    } finally {
-      setBusyAction(null);
+    },
+    [receipt, busyAction, paperSize],
+  );
+
+  useEffect(() => {
+    if (
+      autoPrint === "1" &&
+      receipt &&
+      !loading &&
+      !autoPrintTriggeredRef.current
+    ) {
+      autoPrintTriggeredRef.current = true;
+      void runExportAction("print");
     }
-  };
+  }, [autoPrint, receipt, loading, runExportAction]);
 
   const handleConfirmRefund = async () => {
     if (!receipt || refunding) return;
@@ -130,6 +185,7 @@ export default function ReceiptDetailScreen() {
         reason: refundReason.trim() || undefined,
         restockItems,
       });
+      void hapticSuccess();
       setReceipt(updated);
       setRefundModalOpen(false);
       setRefundReason("");
@@ -142,6 +198,7 @@ export default function ReceiptDetailScreen() {
       });
       toast.success("Sale refunded", refundMsg);
     } catch (err) {
+      void hapticError();
       const msg = err instanceof Error ? err.message : "Failed to process refund.";
       setRefundError(msg);
       toast.error("Refund failed", msg);
@@ -379,38 +436,58 @@ export default function ReceiptDetailScreen() {
           </View>
         </Card>
 
-        {/* Quick Receipt Export Actions */}
-        <View style={styles.actionRow}>
-          <Button
-            title="Share"
-            variant="outline"
-            size="default"
-            loading={busyAction === "share"}
-            disabled={busyAction !== null}
-            leftIcon={<Share2 size={15} color={colors.foreground} />}
-            style={{ flex: 1 }}
-            onPress={() => void runExportAction("share")}
+        {/* Quick Receipt Export Actions & Paper Format */}
+        <View style={{ gap: spacing.sm }}>
+          <View style={styles.paperFormatRow}>
+            <Text
+              style={[
+                typography.micro,
+                {
+                  color: colors.mutedForeground,
+                  fontFamily: fontFamilies.semibold,
+                },
+              ]}
+            >
+              PRINT FORMAT: {getReceiptPaperLayout(paperSize).label.toUpperCase()}
+            </Text>
+          </View>
+          <SegmentedTabs<PaperSize>
+            options={PAPER_OPTIONS}
+            value={paperSize}
+            onChange={handleChangePaperSize}
           />
-          <Button
-            title="Print"
-            variant="outline"
-            size="default"
-            loading={busyAction === "print"}
-            disabled={busyAction !== null}
-            leftIcon={<Printer size={15} color={colors.foreground} />}
-            style={{ flex: 1 }}
-            onPress={() => void runExportAction("print")}
-          />
-          <Button
-            title="PDF"
-            variant="outline"
-            size="default"
-            loading={busyAction === "pdf"}
-            disabled={busyAction !== null}
-            leftIcon={<FileDown size={15} color={colors.foreground} />}
-            style={{ flex: 1 }}
-            onPress={() => void runExportAction("pdf")}
-          />
+          <View style={styles.actionRow}>
+            <Button
+              title="Share"
+              variant="outline"
+              size="default"
+              loading={busyAction === "share"}
+              disabled={busyAction !== null}
+              leftIcon={<Share2 size={15} color={colors.foreground} />}
+              style={{ flex: 1 }}
+              onPress={() => void runExportAction("share")}
+            />
+            <Button
+              title="Print"
+              variant="outline"
+              size="default"
+              loading={busyAction === "print"}
+              disabled={busyAction !== null}
+              leftIcon={<Printer size={15} color={colors.foreground} />}
+              style={{ flex: 1 }}
+              onPress={() => void runExportAction("print")}
+            />
+            <Button
+              title="PDF"
+              variant="outline"
+              size="default"
+              loading={busyAction === "pdf"}
+              disabled={busyAction !== null}
+              leftIcon={<FileDown size={15} color={colors.foreground} />}
+              style={{ flex: 1 }}
+              onPress={() => void runExportAction("pdf")}
+            />
+          </View>
         </View>
 
         {/* Thermal-style Store Receipt & Itemized Breakdown */}
@@ -950,6 +1027,11 @@ const styles = StyleSheet.create({
   },
   kpiCell: {
     flex: 1,
+  },
+  paperFormatRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
   },
   actionRow: {
     flexDirection: "row",

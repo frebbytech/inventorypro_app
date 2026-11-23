@@ -451,7 +451,12 @@ export async function verifyTwoFactorLogin(input: {
 
     const user = await db("users as u")
       .leftJoin("tenants as t", "u.tenant_id", "t.id")
-      .select("u.*", "t.slug as tenant_slug", "t.status as tenant_status")
+      .select(
+        "u.*",
+        "t.slug as tenant_slug",
+        "t.status as tenant_status",
+        "t.access_mode as tenant_access_mode",
+      )
       .where("u.id", parsed.userId)
       .first();
     if (!user) {
@@ -460,6 +465,11 @@ export async function verifyTwoFactorLogin(input: {
     if (user.tenant_status === "suspended") {
       return Result.fail(
         "This store workspace is currently suspended. Contact your Super Admin.",
+      );
+    }
+    if (user.tenant_access_mode === "mobile_only") {
+      return Result.fail(
+        "This workspace is restricted to Mobile App access only. Sign in on the InventoryPro mobile app or contact your Super Admin.",
       );
     }
 
@@ -488,11 +498,22 @@ export async function verifyTwoFactorLogin(input: {
     await setAuthCookie(token);
 
     await db("user_sessions")
+      .where("user_id", user.id)
+      .andWhere((qb) => {
+        qb.where("expires_at", "<", nowIso).orWhere("is_active", 0);
+      })
+      .del()
+      .catch(() => {});
+
+    await db("user_sessions")
       .insert({
         id: generateId(),
         tenant_id: tenantId,
         user_id: user.id,
         token,
+        device_name: "Web Browser",
+        device_type: "web",
+        operating_system: "Web",
         is_active: 1,
         last_activity_at: nowIso,
         expires_at: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(),

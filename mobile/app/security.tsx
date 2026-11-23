@@ -1605,7 +1605,9 @@ export default function SecurityScreen() {
         visible={bulkConfirmAction !== null}
         transparent
         animationType="fade"
-        onRequestClose={() => !bulkUpdating && setBulkConfirmAction(null)}
+        onRequestClose={() => {
+          if (!bulkUpdating) setBulkConfirmAction(null);
+        }}
       >
         <View style={styles.modalBackdrop}>
           <View

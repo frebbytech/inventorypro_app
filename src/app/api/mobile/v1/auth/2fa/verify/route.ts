@@ -10,6 +10,7 @@ import {
   DEFAULT_TENANT_ID,
   DEFAULT_TENANT_NAME,
   DEFAULT_TENANT_SLUG,
+  normalizeTenantAccessMode,
 } from "@/lib/tenant";
 import {
   getTenantStoreProfile,
@@ -95,6 +96,7 @@ export async function POST(req: Request) {
         "t.name as tenant_name",
         "t.slug as tenant_slug",
         "t.status as tenant_status",
+        "t.access_mode as tenant_access_mode",
       )
       .where("u.id", parsed.userId)
       .first();
@@ -108,6 +110,16 @@ export async function POST(req: Request) {
         {
           error:
             "This store workspace is currently suspended. Contact your Super Admin.",
+        },
+        { status: 403 },
+      );
+    }
+
+    if (normalizeTenantAccessMode(user.tenant_access_mode) === "web_only") {
+      return NextResponse.json(
+        {
+          error:
+            "This workspace is restricted to Web Only access. Sign in via the web dashboard or contact your Super Admin.",
         },
         { status: 403 },
       );
@@ -139,6 +151,14 @@ export async function POST(req: Request) {
       username: user.username,
       role,
     });
+
+    await db("user_sessions")
+      .where("user_id", user.id)
+      .andWhere((qb) => {
+        qb.where("expires_at", "<", nowIso).orWhere("is_active", 0);
+      })
+      .del()
+      .catch(() => {});
 
     await db("user_sessions")
       .insert({

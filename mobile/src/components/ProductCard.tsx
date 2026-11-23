@@ -6,7 +6,10 @@ import { useTheme } from "@/theme";
 import type { ProductItem } from "@/types/domain";
 import { LOW_STOCK_THRESHOLD } from "@/types/domain";
 import { formatCurrency } from "@/utils/formatters";
-import { resolveProductImageUri } from "@/utils/productImage";
+import {
+  isLocalDeviceImageUri,
+  resolveProductImageUri,
+} from "@/utils/productImage";
 import { StockMeter } from "./StockMeter";
 import { Badge, Card } from "./ui";
 
@@ -20,11 +23,13 @@ export function ProductCard({
   onPress: () => void;
 }) {
   const { theme } = useTheme();
-  const { serverUrl } = useAuth();
+  const { serverUrl, workspaceMode } = useAuth();
   const { colors, radii, spacing, typography, fontFamilies } = theme;
   const [imageError, setImageError] = useState(false);
 
   const resolvedPhotoUri = resolveProductImageUri(product.photoUrl, serverUrl);
+  const hasQueuedLocalPhoto =
+    workspaceMode === "synced" && isLocalDeviceImageUri(product.photoUrl);
 
   useEffect(() => {
     setImageError(false);
@@ -127,6 +132,9 @@ export function ProductCard({
                   variant={product.active ? "success" : "danger"}
                 />
                 <Badge label={stockLabel} variant={stockBadgeVariant} />
+                {hasQueuedLocalPhoto ? (
+                  <Badge label="Photo queued" variant="warning" />
+                ) : null}
               </View>
               <ChevronRight size={18} color={colors.mutedForeground} />
             </View>

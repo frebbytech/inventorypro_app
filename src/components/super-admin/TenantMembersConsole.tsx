@@ -12,14 +12,17 @@ import {
   Edit3,
   Eye,
   EyeOff,
+  Globe,
   KeyRound,
   Lock,
+  MonitorSmartphone,
   Plus,
   RefreshCw,
   Search,
   ShieldAlert,
   ShieldCheck,
   ShieldOff,
+  Smartphone,
   Trash2,
   Unlock,
   UserCheck,
@@ -34,7 +37,11 @@ import {
   updateTenantBySuperAdmin,
   updateTenantMemberBySuperAdmin,
 } from "@/actions/super-admin";
-import type { TenantDetailData, TenantMemberItem } from "@/types/super-admin";
+import type {
+  TenantAccessMode,
+  TenantDetailData,
+  TenantMemberItem,
+} from "@/types/super-admin";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -68,6 +75,31 @@ function isAccountLocked(lockedUntil: string | null): boolean {
   if (!lockedUntil) return false;
   const dt = new Date(lockedUntil);
   return !Number.isNaN(dt.getTime()) && dt.getTime() > Date.now();
+}
+
+function renderAccessModeBadge(accessMode: TenantAccessMode) {
+  if (accessMode === "mobile_only") {
+    return (
+      <span className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-md border border-sky-500/30 bg-sky-500/10 px-2 py-0.5 text-xs font-medium text-sky-700 dark:text-sky-300">
+        <Smartphone className="h-3.5 w-3.5 shrink-0" />
+        <span>Mobile Only</span>
+      </span>
+    );
+  }
+  if (accessMode === "web_only") {
+    return (
+      <span className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-md border border-violet-500/30 bg-violet-500/10 px-2 py-0.5 text-xs font-medium text-violet-700 dark:text-violet-300">
+        <Globe className="h-3.5 w-3.5 shrink-0" />
+        <span>Web Only</span>
+      </span>
+    );
+  }
+  return (
+    <span className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-md border border-border bg-muted/40 px-2 py-0.5 text-xs font-medium text-foreground">
+      <MonitorSmartphone className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+      <span>Web + Mobile</span>
+    </span>
+  );
 }
 
 export default function TenantMembersConsole({
@@ -139,6 +171,9 @@ export default function TenantMembersConsole({
   const [tSlug, setTSlug] = useState(initialData.tenant.slug);
   const [tCurrency, setTCurrency] = useState(initialData.tenant.currency);
   const [tAddress, setTAddress] = useState(initialData.tenant.businessAddress);
+  const [tAccessMode, setTAccessMode] = useState<TenantAccessMode>(
+    initialData.tenant.accessMode,
+  );
   const [tSaving, setTSaving] = useState(false);
   const [tError, setTError] = useState<string | null>(null);
 
@@ -461,6 +496,7 @@ export default function TenantMembersConsole({
         slug: tSlug.trim(),
         currency: tCurrency.trim().toUpperCase() || "GHS",
         businessAddress: tAddress.trim(),
+        accessMode: tAccessMode,
       });
       if (!res.success) {
         setTError(res.message || "Failed to update workspace.");
@@ -507,6 +543,7 @@ export default function TenantMembersConsole({
                 <span>Suspended</span>
               </span>
             )}
+            {renderAccessModeBadge(tenant.accessMode)}
           </div>
 
           <p className="font-mono text-xs text-muted-foreground tabular-nums">
@@ -527,6 +564,7 @@ export default function TenantMembersConsole({
               setTSlug(tenant.slug);
               setTCurrency(tenant.currency);
               setTAddress(tenant.businessAddress);
+              setTAccessMode(tenant.accessMode);
               setTError(null);
               setEditTenantOpen(true);
             }}
@@ -1379,6 +1417,36 @@ export default function TenantMembersConsole({
                 onChange={(e) => setTAddress(e.target.value)}
                 disabled={tSaving}
               />
+            </div>
+
+            <div className="space-y-1.5">
+              <Label htmlFor="detail-t-access">Platform Access</Label>
+              <select
+                id="detail-t-access"
+                value={tAccessMode}
+                onChange={(e) =>
+                  setTAccessMode(
+                    e.target.value === "mobile_only"
+                      ? "mobile_only"
+                      : e.target.value === "web_only"
+                        ? "web_only"
+                        : "both",
+                  )
+                }
+                disabled={tSaving}
+                className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+              >
+                <option value="both">Web + Mobile (full cloud & mobile app)</option>
+                <option value="mobile_only">Mobile Only (blocks web login & revokes web sessions)</option>
+                <option value="web_only">Web Only (blocks mobile login & revokes mobile sessions)</option>
+              </select>
+              {tAccessMode !== tenant.accessMode && tAccessMode !== "both" && (
+                <p className="text-xs text-amber-700 dark:text-amber-400">
+                  {tAccessMode === "mobile_only"
+                    ? "Saving revokes all active browser sessions immediately while keeping mobile devices signed in."
+                    : "Saving revokes all active mobile app sessions immediately while keeping web browsers signed in."}
+                </p>
+              )}
             </div>
 
             <DialogFooter>

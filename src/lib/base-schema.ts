@@ -1,7 +1,9 @@
 import crypto from "crypto";
 import type { Knex } from "knex";
 
-let baseSchemaPromise: Promise<void> | null = null;
+const globalForBaseSchema = globalThis as typeof globalThis & {
+  __inventoryProBaseSchemaPromise?: Promise<void> | null;
+};
 
 async function createTableIfMissing(
   knexOrDb: Knex,
@@ -15,6 +17,39 @@ async function createTableIfMissing(
 }
 
 async function initBaseTables(knexOrDb: Knex): Promise<void> {
+  // Fast check: if all base tables already exist, skip 22 sequential roundtrips
+  const existingRows = await knexOrDb("sqlite_master")
+    .where("type", "table")
+    .whereIn("name", [
+      "users",
+      "eod_dispatch_locks",
+      "broadcast_messages",
+      "daily_sales_reports",
+      "activity_logs",
+      "audit_logs",
+      "customers",
+      "product_categories",
+      "suppliers",
+      "products",
+      "inventory",
+      "notifications",
+      "orders",
+      "order_items",
+      "sales",
+      "sale_items",
+      "settings",
+      "api_settings",
+      "supplier_transactions",
+      "supplier_transaction_items",
+      "user_sessions",
+    ])
+    .select("name")
+    .catch(() => []);
+
+  if (existingRows.length >= 21) {
+    return;
+  }
+
   // 1. Core independent tables first
   await createTableIfMissing(knexOrDb, "users", (table) => {
     table.string("id", 36).primary();
@@ -489,14 +524,16 @@ async function initBaseTables(knexOrDb: Knex): Promise<void> {
 }
 
 export async function ensureBaseTables(knexOrDb: Knex): Promise<void> {
-  if (baseSchemaPromise) {
-    return baseSchemaPromise;
+  if (globalForBaseSchema.__inventoryProBaseSchemaPromise) {
+    return globalForBaseSchema.__inventoryProBaseSchemaPromise;
   }
 
-  baseSchemaPromise = initBaseTables(knexOrDb).catch((err) => {
-    baseSchemaPromise = null;
+  globalForBaseSchema.__inventoryProBaseSchemaPromise = initBaseTables(
+    knexOrDb,
+  ).catch((err) => {
+    globalForBaseSchema.__inventoryProBaseSchemaPromise = null;
     throw err;
   });
 
-  return baseSchemaPromise;
+  return globalForBaseSchema.__inventoryProBaseSchemaPromise;
 }

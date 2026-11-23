@@ -6,7 +6,10 @@ import {
   issueAndSendTwoFactorCode,
   verifyTwoFactorChallengeToken,
 } from "@/lib/security";
-import { DEFAULT_TENANT_ID } from "@/lib/tenant";
+import {
+  DEFAULT_TENANT_ID,
+  normalizeTenantAccessMode,
+} from "@/lib/tenant";
 
 export const dynamic = "force-dynamic";
 
@@ -24,11 +27,27 @@ export async function POST(req: Request) {
       );
     }
 
-    const user = await db("users").where("id", parsed.userId).first();
+    const user = await db("users as u")
+      .leftJoin("tenants as t", "u.tenant_id", "t.id")
+      .select("u.*", "t.status as tenant_status", "t.access_mode as tenant_access_mode")
+      .where("u.id", parsed.userId)
+      .first();
     if (!user || !user.two_factor_enabled) {
       return NextResponse.json(
         { error: "Two-factor authentication is not enabled for this account." },
         { status: 400 },
+      );
+    }
+    if (user.tenant_status === "suspended") {
+      return NextResponse.json(
+        { error: "This store workspace is currently suspended. Contact your Super Admin." },
+        { status: 403 },
+      );
+    }
+    if (normalizeTenantAccessMode(user.tenant_access_mode) === "web_only") {
+      return NextResponse.json(
+        { error: "This workspace is restricted to Web Only access. Sign in via the web dashboard or contact your Super Admin." },
+        { status: 403 },
       );
     }
 

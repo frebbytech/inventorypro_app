@@ -16,17 +16,19 @@ const JWT_SECRET = new TextEncoder().encode(
 
 const OTP_EXPIRY_MINUTES = 10;
 
-let securitySchemaPromise: Promise<void> | null = null;
+const globalForSecuritySchema = globalThis as typeof globalThis & {
+  __inventoryProSecuritySchemaPromise?: Promise<void> | null;
+};
 
 /**
  * Idempotently ensure 2FA columns exist on `users` and `two_factor_codes` table exists.
  */
 export async function ensureSecuritySchema(): Promise<void> {
-  if (securitySchemaPromise) {
-    return securitySchemaPromise;
+  if (globalForSecuritySchema.__inventoryProSecuritySchemaPromise) {
+    return globalForSecuritySchema.__inventoryProSecuritySchemaPromise;
   }
 
-  securitySchemaPromise = (async () => {
+  globalForSecuritySchema.__inventoryProSecuritySchemaPromise = (async () => {
     let hasUsers = await db.schema.hasTable("users");
     if (!hasUsers) {
       await ensureBaseTables(db);
@@ -78,11 +80,11 @@ export async function ensureSecuritySchema(): Promise<void> {
       }
     }
   })().catch((err) => {
-    securitySchemaPromise = null;
+    globalForSecuritySchema.__inventoryProSecuritySchemaPromise = null;
     throw err;
   });
 
-  return securitySchemaPromise;
+  return globalForSecuritySchema.__inventoryProSecuritySchemaPromise;
 }
 
 export function normalizeTwoFactorMethod(value: unknown): TwoFactorMethod {

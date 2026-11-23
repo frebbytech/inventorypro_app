@@ -9,12 +9,17 @@ import React, {
 } from "react";
 import { eq } from "drizzle-orm";
 import { Platform } from "react-native";
-import { ensureDbReady } from "@/db/client";
+import {
+  ensureDbReady,
+  isSqliteFullError,
+  resetDatabaseForCloudSync,
+} from "@/db/client";
 import {
   getStoreProfile,
   getUnreadNotificationCount as getLocalUnreadNotificationCount,
 } from "@/db/queries";
 import { users } from "@/db/schema";
+import { listAllOutboxItems } from "@/db/syncStore";
 import { HttpApiClient, resolveApiBaseUrl } from "./httpAdapter";
 import {
   ExpoSqliteDrizzleClient,
@@ -26,16 +31,23 @@ import {
   clearStoredAuthToken,
   getHasCompletedOnboarding,
   getStoredAuthToken,
+  getStoredExpoPushToken,
   getStoredServerUrl,
   getStoredTenantInfo,
   getStoredWorkspaceMode,
   setHasCompletedOnboarding,
   setStoredAuthToken,
+  setStoredExpoPushToken,
   setStoredServerUrl,
   setStoredSyncCursor,
   setStoredTenantInfo,
   setStoredWorkspaceMode,
 } from "./tokenStorage";
+import {
+  registerForExpoPushTokenAsync,
+  type PushRegistrationStatus,
+  type PushTokenRegistrationResult,
+} from "@/utils/pushNotifications";
 import type {
   AuthLoginPayload,
   AuthLoginResponse,
@@ -45,6 +57,7 @@ import type {
   SessionUser,
   StaffTwoFactorAccount,
   StoreProfile,
+  SyncOutboxItem,
   SyncStatus,
   TenantInfo,
   UpdateBusinessHoursInput,
@@ -60,7 +73,7 @@ interface AuthContextValue {
   serverUrl: string;
   isPlatformUrlConfigured: boolean;
   isResolvingServerUrl: boolean;
-  refreshPlatformServerUrl: () => Promise<string>;
+  refreshPlatformServerUrl: (force?: boolean) => Promise<string>;
   tenant: TenantInfo | null;
   syncStatus: SyncStatus;
   syncVersion: number;
@@ -76,6 +89,13 @@ interface AuthContextValue {
   hasCompletedOnboarding: boolean;
   unreadNotificationsCount: number;
   refreshUnreadNotifications: () => Promise<void>;
+  pushStatus: PushRegistrationStatus;
+  expoPushToken: string | null;
+  pushStatusMessage: string | null;
+  registerDevicePushToken: (opts?: {
+    promptPermission?: boolean;
+  }) => Promise<PushTokenRegistrationResult>;
+  unregisterDevicePushToken: () => Promise<void>;
   completeOnboarding: () => Promise<void>;
   apiClient: AuthenticatedApiClient;
   setWorkspaceModePreference: (mode: WorkspaceMode) => Promise<void>;
@@ -107,6 +127,12 @@ interface AuthContextValue {
   switchBackToMobileOnly: () => Promise<void>;
   triggerSyncNow: () => Promise<void>;
   discardSyncConflicts: () => Promise<void>;
+  listSyncOutboxItems: () => Promise<SyncOutboxItem[]>;
+  retrySyncOutboxItem: (id: string) => Promise<void>;
+  retryAllSyncConflicts: () => Promise<void>;
+  discardSyncOutboxItem: (
+    id: string,
+  ) => Promise<{ refreshedFromCloud: boolean }>;
   signOut: () => Promise<void>;
   refreshStoreSettings: () => Promise<StoreProfile>;
   updateStockThreshold: (threshold: number) => Promise<StoreProfile>;
@@ -165,6 +191,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [hasCompletedOnboarding, setHasCompletedOnboardingState] =
     useState(false);
   const [unreadNotificationsCount, setUnreadNotificationsCount] = useState(0);
+  const [pushStatus, setPushStatus] = useState<PushRegistrationStatus>("idle");
+  const [expoPushToken, setExpoPushToken] = useState<string | null>(null);
+  const [pushStatusMessage, setPushStatusMessage] = useState<string | null>(null);
   const [isRestoring, setIsRestoring] = useState(true);
 
   const [syncStatus, setSyncStatus] = useState<SyncStatus>("local_only");
@@ -180,6 +209,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const syncEngineRef = useRef<SyncEngine | null>(null);
   const authEpochRef = useRef(0);
   const isBootstrappingRef = useRef(false);
+  const refreshPromiseRef = useRef<Promise<string> | null>(null);
+  const lastServerResolveAtRef = useRef<number>(0);
 
   const commitToken = useCallback((next: string | null) => {
     tokenRef.current = next;
@@ -271,6 +302,63 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       // Ignore transient errors
     }
   }, [apiClient]);
+
+  const registerDevicePushToken = useCallback(
+    async (opts?: {
+      promptPermission?: boolean;
+    }): Promise<PushTokenRegistrationResult> => {
+      const result = await registerForExpoPushTokenAsync({
+        promptPermission: opts?.promptPermission ?? true,
+      });
+      setPushStatus(result.status);
+      setPushStatusMessage(result.reason ?? null);
+
+      if (result.token) {
+        setExpoPushToken(result.token);
+        await setStoredExpoPushToken(result.token);
+        if (workspaceMode === "synced" && tokenRef.current) {
+          await httpClient
+            .registerPushToken({
+              token: result.token,
+              platform: Platform.OS,
+              deviceName: `Inventory Pro (${Platform.OS})`,
+            })
+            .catch(() => {});
+        }
+      }
+      return result;
+    },
+    [workspaceMode, httpClient],
+  );
+
+  const unregisterDevicePushToken = useCallback(async (): Promise<void> => {
+    const activeToken = expoPushToken || (await getStoredExpoPushToken());
+    if (activeToken && tokenRef.current) {
+      await httpClient.unregisterPushToken(activeToken).catch(() => {});
+    }
+    setExpoPushToken(null);
+    setPushStatus("idle");
+    setPushStatusMessage(null);
+    await setStoredExpoPushToken(null);
+  }, [expoPushToken, httpClient]);
+
+  useEffect(() => {
+    if (
+      workspaceMode !== "synced" ||
+      !token ||
+      !user ||
+      store?.notificationPush === false
+    ) {
+      return;
+    }
+    void registerDevicePushToken({ promptPermission: false });
+  }, [
+    workspaceMode,
+    token,
+    user?.id,
+    store?.notificationPush,
+    registerDevicePushToken,
+  ]);
 
   // Manage live SyncEngine lifecycle whenever authenticated in Synced mode
   useEffect(() => {
@@ -376,45 +464,88 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     commitUser,
   ]);
 
-  const refreshPlatformServerUrl = useCallback(async (): Promise<string> => {
-    setIsResolvingServerUrl(true);
-    try {
-      const bootstrapUrl = resolveApiBaseUrl();
-      const current = isLegacyMetroUrl(serverUrlRef.current)
-        ? ""
-        : serverUrlRef.current;
-
-      const candidates = Array.from(
-        new Set(
-          [bootstrapUrl, current].map((u) => u.trim().replace(/\/+$/, "")),
-        ),
-      );
-
-      for (const candidate of candidates) {
-        try {
-          const cfg = await httpClient.getPlatformConfig(candidate);
-          if (cfg?.ok) {
-            const discovered =
-              typeof cfg.serverUrl === "string" && cfg.serverUrl.trim()
-                ? cfg.serverUrl.trim().replace(/\/+$/, "")
-                : candidate;
-            commitServerUrl(discovered);
-            setIsPlatformUrlConfigured(Boolean(cfg.configuredBySuperAdmin));
-            if (discovered) {
-              await setStoredServerUrl(discovered);
-            }
-            return discovered;
-          }
-        } catch {
-          // Try next candidate
-        }
+  const refreshPlatformServerUrl = useCallback(
+    async (force = false): Promise<string> => {
+      if (!force && refreshPromiseRef.current) {
+        return refreshPromiseRef.current;
+      }
+      if (
+        !force &&
+        lastServerResolveAtRef.current > 0 &&
+        Date.now() - lastServerResolveAtRef.current < 30_000
+      ) {
+        return serverUrlRef.current;
       }
 
-      return current || bootstrapUrl;
-    } finally {
-      setIsResolvingServerUrl(false);
-    }
-  }, [httpClient, commitServerUrl]);
+      const promise = (async () => {
+        setIsResolvingServerUrl(true);
+        try {
+          const bootstrapUrl = resolveApiBaseUrl();
+          const current = isLegacyMetroUrl(serverUrlRef.current)
+            ? ""
+            : serverUrlRef.current;
+
+          const candidates = Array.from(
+            new Set(
+              [bootstrapUrl, current].map((u) => u.trim().replace(/\/+$/, "")),
+            ),
+          );
+
+          for (const candidate of candidates) {
+            try {
+              const cfg = await httpClient.getPlatformConfig(candidate);
+              if (cfg?.ok) {
+                const discovered =
+                  typeof cfg.serverUrl === "string" && cfg.serverUrl.trim()
+                    ? cfg.serverUrl.trim().replace(/\/+$/, "")
+                    : candidate;
+
+                let chosen = discovered;
+                let configured = Boolean(cfg.configuredBySuperAdmin);
+
+                if (discovered !== candidate) {
+                  let discoveredReachable = false;
+                  try {
+                    const remoteCfg = await httpClient.getPlatformConfig(discovered);
+                    discoveredReachable = Boolean(remoteCfg?.ok);
+                  } catch {
+                    discoveredReachable = false;
+                  }
+
+                  if (!discoveredReachable) {
+                    console.warn(
+                      `[AuthProvider] Configured server URL (${discovered}) failed verification; using reachable server (${candidate || "same-origin"}).`,
+                    );
+                    chosen = candidate;
+                    configured = false;
+                  }
+                }
+
+                commitServerUrl(chosen);
+                setIsPlatformUrlConfigured(configured);
+                if (chosen) {
+                  await setStoredServerUrl(chosen);
+                }
+                lastServerResolveAtRef.current = Date.now();
+                return chosen;
+              }
+            } catch {
+              // Try next candidate
+            }
+          }
+
+          return current || bootstrapUrl;
+        } finally {
+          setIsResolvingServerUrl(false);
+          refreshPromiseRef.current = null;
+        }
+      })();
+
+      refreshPromiseRef.current = promise;
+      return promise;
+    },
+    [httpClient, commitServerUrl],
+  );
 
   // Restore session & workspace mode on startup
   useEffect(() => {
@@ -543,9 +674,17 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
         // Hydrate / merge local cache BEFORE activating synced SyncEngine in React state
         const tempEngine = new SyncEngine(httpClient, () => cleanToken);
-        if (strategy === "merge") {
-          await tempEngine.mergeLocalAndBootstrap();
-        } else {
+        try {
+          if (strategy === "merge") {
+            await tempEngine.mergeLocalAndBootstrap();
+          } else {
+            await tempEngine.bootstrapAndHydrate();
+          }
+        } catch (hydrationErr) {
+          if (!isSqliteFullError(hydrationErr)) {
+            throw hydrationErr;
+          }
+          await resetDatabaseForCloudSync();
           await tempEngine.bootstrapAndHydrate();
         }
 
@@ -695,11 +834,19 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
     try {
       if (tokenRef.current) {
+        const storedPush = await getStoredExpoPushToken();
+        if (storedPush) {
+          await httpClient.unregisterPushToken(storedPush).catch(() => {});
+        }
         await httpClient.logout();
       }
     } catch {
       // ignore
     }
+    await setStoredExpoPushToken(null);
+    setExpoPushToken(null);
+    setPushStatus("idle");
+    setPushStatusMessage(null);
     await clearStoredAuthToken();
     await setStoredTenantInfo(null);
     await setStoredSyncCursor(0);
@@ -729,17 +876,63 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   }, []);
 
+  const listSyncOutboxItems = useCallback(async (): Promise<
+    SyncOutboxItem[]
+  > => {
+    if (syncEngineRef.current) {
+      return syncEngineRef.current.listOutboxItems();
+    }
+    const db = await ensureDbReady();
+    return listAllOutboxItems(db);
+  }, []);
+
+  const retrySyncOutboxItem = useCallback(async (id: string) => {
+    if (syncEngineRef.current) {
+      await syncEngineRef.current.retryOutboxItem(id);
+      setSyncVersion((v) => v + 1);
+    }
+  }, []);
+
+  const retryAllSyncConflicts = useCallback(async () => {
+    if (syncEngineRef.current) {
+      await syncEngineRef.current.retryAllConflicts();
+      setSyncVersion((v) => v + 1);
+    }
+  }, []);
+
+  const discardSyncOutboxItem = useCallback(
+    async (id: string): Promise<{ refreshedFromCloud: boolean }> => {
+      if (syncEngineRef.current) {
+        const res = await syncEngineRef.current.discardOutboxItem(id);
+        setSyncVersion((v) => v + 1);
+        return res;
+      }
+      return { refreshedFromCloud: false };
+    },
+    [],
+  );
+
   const signOut = useCallback(async () => {
     authEpochRef.current += 1;
     syncEngineRef.current?.stop();
     syncEngineRef.current = null;
     try {
       if (tokenRef.current) {
+        if (workspaceMode === "synced") {
+          const storedPush = await getStoredExpoPushToken();
+          if (storedPush) {
+            await httpClient.unregisterPushToken(storedPush).catch(() => {});
+          }
+        }
         await apiClient.logout();
       }
     } catch {
       // Ignore network errors during logout
     } finally {
+      await setStoredExpoPushToken(null);
+      setExpoPushToken(null);
+      setPushStatus("idle");
+      setPushStatusMessage(null);
       await clearStoredAuthToken();
       await setStoredTenantInfo(null);
       await setStoredSyncCursor(0);
@@ -869,6 +1062,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       hasCompletedOnboarding,
       unreadNotificationsCount,
       refreshUnreadNotifications,
+      pushStatus,
+      expoPushToken,
+      pushStatusMessage,
+      registerDevicePushToken,
+      unregisterDevicePushToken,
       completeOnboarding,
       apiClient,
       setWorkspaceModePreference,
@@ -881,6 +1079,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       switchBackToMobileOnly,
       triggerSyncNow,
       discardSyncConflicts,
+      listSyncOutboxItems,
+      retrySyncOutboxItem,
+      retryAllSyncConflicts,
+      discardSyncOutboxItem,
       signOut,
       refreshStoreSettings,
       updateStockThreshold,
@@ -913,6 +1115,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       hasCompletedOnboarding,
       unreadNotificationsCount,
       refreshUnreadNotifications,
+      pushStatus,
+      expoPushToken,
+      pushStatusMessage,
+      registerDevicePushToken,
+      unregisterDevicePushToken,
       completeOnboarding,
       apiClient,
       setWorkspaceModePreference,
@@ -925,6 +1132,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       switchBackToMobileOnly,
       triggerSyncNow,
       discardSyncConflicts,
+      listSyncOutboxItems,
+      retrySyncOutboxItem,
+      retryAllSyncConflicts,
+      discardSyncOutboxItem,
       signOut,
       refreshStoreSettings,
       updateStockThreshold,

@@ -48,6 +48,13 @@ function ensureTablesSync(sqlite: SQLite.SQLiteDatabase): void {
   } catch {
     // Ignore on platforms where WAL mode is not applicable (e.g., web wa-sqlite)
   }
+  try {
+    sqlite.execSync("PRAGMA temp_store = MEMORY;");
+    sqlite.execSync("PRAGMA busy_timeout = 5000;");
+    sqlite.execSync("PRAGMA cache_size = -4000;");
+  } catch {
+    // Ignore pragma failures on constrained engines
+  }
 
   sqlite.execSync(`
     PRAGMA foreign_keys = ON;
@@ -966,6 +973,93 @@ function seedNotificationsIfEmpty(db: ExpoSqliteDrizzleDb): void {
         .run();
     }
   });
+}
+
+export function isSqliteFullError(err: unknown): boolean {
+  const msg =
+    err instanceof Error
+      ? err.message
+      : typeof err === "string"
+        ? err
+        : String(err ?? "");
+  const lower = msg.toLowerCase();
+  return (
+    lower.includes("sqlite_full") ||
+    lower.includes("database or disk is full") ||
+    lower.includes("disk full") ||
+    lower.includes("quotaexceedederror") ||
+    lower.includes("no space left") ||
+    lower.includes("error code 13")
+  );
+}
+
+export function reclaimSqliteSpace(): void {
+  try {
+    const sqlite = getRawSqlite();
+    sqlite.execSync("PRAGMA wal_checkpoint(TRUNCATE);");
+  } catch {
+    // Ignore on platforms that don't support WAL checkpoint (e.g. web wa-sqlite)
+  }
+}
+
+export async function resetDatabaseForCloudSync(): Promise<ExpoSqliteDrizzleDb> {
+  readyPromise = null;
+  if (rawSqlite) {
+    try {
+      rawSqlite.execSync("PRAGMA wal_checkpoint(TRUNCATE);");
+    } catch {
+      // ignore
+    }
+    try {
+      await rawSqlite.closeAsync();
+    } catch {
+      try {
+        rawSqlite.closeSync();
+      } catch {
+        // ignore
+      }
+    }
+    rawSqlite = null;
+    drizzleDb = null;
+  }
+
+  try {
+    await SQLite.deleteDatabaseAsync(DATABASE_NAME);
+  } catch {
+    // Fallback if file deletion is blocked (e.g. web engine): clear tables in place
+    const sqlite = getRawSqlite();
+    try {
+      sqlite.execSync(`
+        PRAGMA foreign_keys = OFF;
+        DELETE FROM sale_items;
+        DELETE FROM sales;
+        DELETE FROM inventory;
+        DELETE FROM products;
+        DELETE FROM product_categories;
+        DELETE FROM customers;
+        DELETE FROM supplier_transactions;
+        DELETE FROM suppliers;
+        DELETE FROM notifications;
+        DELETE FROM broadcast_messages;
+        DELETE FROM audit_logs;
+        DELETE FROM user_sessions;
+        DELETE FROM settings;
+        DELETE FROM sync_outbox;
+        DELETE FROM sync_meta;
+        DELETE FROM users;
+        PRAGMA foreign_keys = ON;
+        VACUUM;
+      `);
+    } catch {
+      // ignore
+    }
+  }
+
+  const sqlite = getRawSqlite();
+  ensureTablesSync(sqlite);
+  const db = getDrizzleDb();
+  readyPromise = Promise.resolve(db);
+  return db;
 }
 
 export async function ensureDbReady(): Promise<ExpoSqliteDrizzleDb> {

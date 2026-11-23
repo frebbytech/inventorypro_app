@@ -129,7 +129,12 @@ function createMutationId(): string {
 
 function isNetworkOrServerFailure(err: unknown): boolean {
   if (err instanceof ApiError) {
-    return err.status >= 500 || err.status === 0;
+    return (
+      err.status >= 500 ||
+      err.status === 0 ||
+      err.status === 408 ||
+      err.status === 429
+    );
   }
   return true;
 }
@@ -299,22 +304,22 @@ export class SyncedApiClient implements AuthenticatedApiClient {
   }
 
   createProduct(input: CreateProductInput): Promise<ProductItem> {
+    const payload: CreateProductInput = { ...input };
     return this.writeWithOutbox({
       entityType: "product",
       operation: "create",
       endpoint: "/api/mobile/v1/products",
       method: "POST",
-      payload: input,
+      payload,
       onlineCall: async (id) => {
-        const resolvedPhoto = await this.resolveCloudPhotoUrl(input.photoUrl);
-        return this.http.createProduct(
-          { ...input, photoUrl: resolvedPhoto },
-          id,
-        );
+        if (payload.photoUrl) {
+          payload.photoUrl = await this.resolveCloudPhotoUrl(payload.photoUrl);
+        }
+        return this.http.createProduct(payload, id);
       },
       offlineCall: async () =>
         dbCreateProduct(await ensureDbReady(), {
-          ...input,
+          ...payload,
           userId: await this.requireLocalActorUserId(),
         }),
     });
@@ -324,23 +329,22 @@ export class SyncedApiClient implements AuthenticatedApiClient {
     productId: string,
     input: UpdateProductInput,
   ): Promise<ProductItem> {
+    const payload: UpdateProductInput = { ...input };
     return this.writeWithOutbox({
       entityType: "product",
       operation: "update",
       endpoint: `/api/mobile/v1/products/${encodeURIComponent(productId)}`,
       method: "PATCH",
-      payload: input,
+      payload,
       onlineCall: async (id) => {
-        const resolvedPhoto = await this.resolveCloudPhotoUrl(input.photoUrl);
-        return this.http.updateProduct(
-          productId,
-          { ...input, photoUrl: resolvedPhoto },
-          id,
-        );
+        if (payload.photoUrl) {
+          payload.photoUrl = await this.resolveCloudPhotoUrl(payload.photoUrl);
+        }
+        return this.http.updateProduct(productId, payload, id);
       },
       offlineCall: async () =>
         dbUpdateProduct(await ensureDbReady(), {
-          ...input,
+          ...payload,
           productId,
           userId: await this.requireLocalActorUserId(),
         }),

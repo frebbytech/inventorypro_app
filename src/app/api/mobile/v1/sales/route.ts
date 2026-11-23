@@ -16,6 +16,7 @@ import {
   parseSaleDetails,
   withMobileAuth,
 } from "@/lib/mobile-api";
+import { dispatchExpoPushNotifications } from "@/lib/pushNotifications";
 import { generateId } from "@/utils/generator";
 
 export const dynamic = "force-dynamic";
@@ -346,16 +347,24 @@ export async function POST(req: Request) {
         }
 
         // Fire notifications outside tx safely
+        const pushItems: Array<{
+          userId: string;
+          title: string;
+          body: string;
+          data: Record<string, unknown>;
+        }> = [];
         for (const alert of lowStockAlerts) {
           const notifId = generateId();
+          const title = `Low Stock: ${alert.name}`;
+          const message = `${alert.name} has reached ${alert.stock} units (threshold ${alert.threshold}).`;
           const inserted = await db("notifications")
             .insert({
               id: notifId,
               tenant_id: tenantId,
               user_id: session.id,
               type: "product",
-              title: `Low Stock: ${alert.name}`,
-              message: `${alert.name} has reached ${alert.stock} units (threshold ${alert.threshold}).`,
+              title,
+              message,
               reference_type: "product_low_stock",
               reference_id: alert.id,
               is_read: 0,
@@ -373,7 +382,24 @@ export async function POST(req: Request) {
               payload: { userId: session.id, user_id: session.id },
               actorUserId: session.id,
             });
+            pushItems.push({
+              userId: session.id,
+              title,
+              body: message,
+              data: {
+                notificationId: notifId,
+                type: "low_stock",
+                referenceType: "product",
+                referenceId: alert.id,
+              },
+            });
           }
+        }
+        if (pushItems.length > 0) {
+          void dispatchExpoPushNotifications({
+            tenantId,
+            items: pushItems,
+          }).catch(() => {});
         }
 
         const receipt = await getSaleReceiptDetailDto(tenantId, saleId, session);

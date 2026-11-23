@@ -22,7 +22,21 @@ export interface SuperAdminSession {
   last_login_at?: string | null;
 }
 
-let superAdminSchemaPromise: Promise<void> | null = null;
+const globalForSuperAdmin = globalThis as typeof globalThis & {
+  __inventoryProSuperAdminSchemaPromise?: Promise<void> | null;
+};
+
+async function ensurePlatformSettingsTable(): Promise<void> {
+  const hasPlatformSettings = await db.schema.hasTable("platform_settings");
+  if (!hasPlatformSettings) {
+    await db.schema.createTable("platform_settings", (table) => {
+      table.string("key", 100).primary();
+      table.text("value").nullable();
+      table.string("updated_by_super_admin_id", 64).nullable();
+      table.timestamp("updated_at").nullable();
+    });
+  }
+}
 
 async function initSuperAdminSchema(): Promise<void> {
   await ensureAuthSchema();
@@ -44,15 +58,7 @@ async function initSuperAdminSchema(): Promise<void> {
     });
   }
 
-  const hasPlatformSettings = await db.schema.hasTable("platform_settings");
-  if (!hasPlatformSettings) {
-    await db.schema.createTable("platform_settings", (table) => {
-      table.string("key", 100).primary();
-      table.text("value").nullable();
-      table.string("updated_by_super_admin_id", 64).nullable();
-      table.timestamp("updated_at").nullable();
-    });
-  }
+  await ensurePlatformSettingsTable();
 
   const envMobileUrl = process.env.MOBILE_API_BASE_URL?.trim();
   if (envMobileUrl) {
@@ -137,15 +143,16 @@ async function initSuperAdminSchema(): Promise<void> {
 }
 
 export async function ensureSuperAdminSchema(): Promise<void> {
-  if (superAdminSchemaPromise) {
-    return superAdminSchemaPromise;
+  if (globalForSuperAdmin.__inventoryProSuperAdminSchemaPromise) {
+    return globalForSuperAdmin.__inventoryProSuperAdminSchemaPromise;
   }
-  superAdminSchemaPromise = initSuperAdminSchema().catch((err) => {
-    superAdminSchemaPromise = null;
-    console.error("Failed to initialize super_admins schema:", err);
-    throw err;
-  });
-  return superAdminSchemaPromise;
+  globalForSuperAdmin.__inventoryProSuperAdminSchemaPromise =
+    initSuperAdminSchema().catch((err) => {
+      globalForSuperAdmin.__inventoryProSuperAdminSchemaPromise = null;
+      console.error("Failed to initialize super_admins schema:", err);
+      throw err;
+    });
+  return globalForSuperAdmin.__inventoryProSuperAdminSchemaPromise;
 }
 
 const MOBILE_SERVER_URL_KEY = "mobile_server_url";
@@ -177,12 +184,21 @@ export async function getPlatformMobileConfig(): Promise<{
   updatedAt: string | null;
   updatedBy: string | null;
 }> {
-  await ensureSuperAdminSchema();
-  const row = await db("platform_settings as ps")
-    .leftJoin("super_admins as sa", "ps.updated_by_super_admin_id", "sa.id")
-    .select("ps.value", "ps.updated_at", "sa.username as updated_by_username")
-    .where("ps.key", MOBILE_SERVER_URL_KEY)
-    .first();
+  let row: any = null;
+  try {
+    row = await db("platform_settings as ps")
+      .leftJoin("super_admins as sa", "ps.updated_by_super_admin_id", "sa.id")
+      .select("ps.value", "ps.updated_at", "sa.username as updated_by_username")
+      .where("ps.key", MOBILE_SERVER_URL_KEY)
+      .first();
+  } catch {
+    await ensurePlatformSettingsTable().catch(() => {});
+    row = await db("platform_settings")
+      .select("value", "updated_at")
+      .where("key", MOBILE_SERVER_URL_KEY)
+      .first()
+      .catch(() => null);
+  }
 
   const savedValue = typeof row?.value === "string" ? row.value.trim() : "";
   if (savedValue) {

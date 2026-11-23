@@ -174,7 +174,9 @@ function normalizeToneLocal(val?: string | null): StockAudioTone {
 }
 
 function normalizePaperSizeLocal(val?: string | null): PaperSize {
-  return val === "a4" ? "a4" : "thermal_80mm";
+  if (val === "a4") return "a4";
+  if (val === "thermal_58mm") return "thermal_58mm";
+  return "thermal_80mm";
 }
 
 export function getStoreProfile(db: ExpoSqliteDrizzleDb): StoreProfile {
@@ -600,6 +602,18 @@ export async function authenticateWithCredentials(
   const token = generateSessionToken();
 
   db.transaction((tx) => {
+    tx.delete(userSessions)
+      .where(
+        and(
+          eq(userSessions.userId, user.id),
+          or(
+            eq(userSessions.isActive, 0),
+            lt(userSessions.expiresAt, nowIso),
+          ),
+        ),
+      )
+      .run();
+
     tx.update(users)
       .set({
         lastLoginAt: nowIso,

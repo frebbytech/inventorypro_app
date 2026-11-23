@@ -210,3 +210,56 @@ export function inferProductImageUploadMeta(
   const fileName = cleanName ? cleanName : `product-${Date.now()}.${ext}`;
   return { mimeType, fileName };
 }
+
+export function localProductImageExists(uri?: string | null): boolean {
+  const trimmed = uri?.trim() ?? "";
+  if (!trimmed) return false;
+  if (Platform.OS === "web") {
+    return trimmed.startsWith("data:image/") || trimmed.startsWith("blob:");
+  }
+  if (trimmed.toLowerCase().startsWith("file://")) {
+    try {
+      const file = new File(trimmed);
+      return file.exists;
+    } catch {
+      return false;
+    }
+  }
+  return true;
+}
+
+export function extractLocalPhotoUrisFromOutboxPayload(
+  payloadJson: string,
+): string[] {
+  const uris: string[] = [];
+  try {
+    const parsed = JSON.parse(payloadJson) as Record<string, unknown>;
+    if (!parsed || typeof parsed !== "object") return uris;
+
+    if (
+      typeof parsed.photoUrl === "string" &&
+      isLocalDeviceImageUri(parsed.photoUrl)
+    ) {
+      uris.push(parsed.photoUrl);
+    }
+
+    if (Array.isArray(parsed.items)) {
+      for (const entry of parsed.items) {
+        if (
+          entry &&
+          typeof entry === "object" &&
+          typeof (entry as Record<string, unknown>).photoUrl === "string" &&
+          isLocalDeviceImageUri(
+            (entry as Record<string, unknown>).photoUrl as string,
+          )
+        ) {
+          uris.push((entry as Record<string, unknown>).photoUrl as string);
+        }
+      }
+    }
+  } catch {
+    // ignore malformed json
+  }
+  return uris;
+}
+

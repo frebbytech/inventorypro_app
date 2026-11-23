@@ -10,7 +10,11 @@ import {
   verifyPassword,
 } from "@/lib/auth";
 import { emitSyncEvent } from "@/lib/sync-bus";
-import { DEFAULT_TENANT_ID, normalizeSlug } from "@/lib/tenant";
+import {
+  DEFAULT_TENANT_ID,
+  normalizeSlug,
+  normalizeTenantAccessMode,
+} from "@/lib/tenant";
 import {
   createSuperAdminJWT,
   ensureSuperAdminSchema,
@@ -25,6 +29,7 @@ import { Result } from "@/types/globals";
 import type {
   PlatformMobileServerConfig,
   SuperAdminOverviewMetrics,
+  TenantAccessMode,
   TenantDetailData,
   TenantGrowthPoint,
   TenantMemberItem,
@@ -155,6 +160,7 @@ async function fetchTenantAggregateRows(): Promise<TenantSummaryItem[]> {
       "t.name",
       "t.slug",
       "t.status",
+      "t.access_mode",
       "t.owner_user_id",
       "t.created_at",
       "t.updated_at",
@@ -265,6 +271,7 @@ async function fetchTenantAggregateRows(): Promise<TenantSummaryItem[]> {
       name: String(t.name || "Untitled Business"),
       slug: String(t.slug || id),
       status: t.status === "suspended" ? "suspended" : "active",
+      accessMode: normalizeTenantAccessMode(t.access_mode),
       currency: currencyMap.get(id) || "GHS",
       ownerUserId: t.owner_user_id ? String(t.owner_user_id) : null,
       ownerUsername: String(t.owner_username || "—"),
@@ -383,6 +390,10 @@ export async function getSuperAdminOverviewAndTenants(): Promise<
       totalTenants: tenants.length,
       activeTenants: tenants.filter((t) => t.status === "active").length,
       suspendedTenants: tenants.filter((t) => t.status === "suspended").length,
+      mobileOnlyTenants: tenants.filter((t) => t.accessMode === "mobile_only")
+        .length,
+      webOnlyTenants: tenants.filter((t) => t.accessMode === "web_only").length,
+      dualAccessTenants: tenants.filter((t) => t.accessMode === "both").length,
       totalMembers: tenants.reduce((sum, t) => sum + t.memberCount, 0),
       totalProducts: tenants.reduce((sum, t) => sum + t.productCount, 0),
       totalSalesRevenue: tenants.reduce((sum, t) => sum + t.salesRevenue, 0),
@@ -401,6 +412,7 @@ export async function createTenantBySuperAdmin(input: {
   slug?: string;
   currency?: string;
   businessAddress?: string;
+  accessMode?: TenantAccessMode;
   ownerUsername: string;
   ownerEmail: string;
   ownerFirstname?: string;
@@ -410,6 +422,15 @@ export async function createTenantBySuperAdmin(input: {
 }): Promise<Result<{ tenantId: string; slug: string }>> {
   try {
     await requireSuperAdmin();
+
+    if (
+      input.accessMode !== undefined &&
+      input.accessMode !== "both" &&
+      input.accessMode !== "mobile_only" &&
+      input.accessMode !== "web_only"
+    ) {
+      return Result.fail("Invalid platform access mode.");
+    }
 
     const { tenant } = await registerWorkspaceAccount({
       storeName: input.businessName,
@@ -422,6 +443,7 @@ export async function createTenantBySuperAdmin(input: {
       phonenumber: input.ownerPhonenumber,
       businessAddress: input.businessAddress,
       currency: input.currency || "GHS",
+      accessMode: input.accessMode,
     });
 
     revalidatePath("/super-admin");
@@ -442,6 +464,7 @@ export async function updateTenantBySuperAdmin(input: {
   businessPhone?: string;
   businessEmail?: string;
   status?: "active" | "suspended";
+  accessMode?: TenantAccessMode;
 }): Promise<Result<{ success: true }>> {
   try {
     await requireSuperAdmin();
@@ -481,6 +504,17 @@ export async function updateTenantBySuperAdmin(input: {
       tenantUpdates.status = input.status;
     }
 
+    if (input.accessMode !== undefined) {
+      if (
+        input.accessMode !== "both" &&
+        input.accessMode !== "mobile_only" &&
+        input.accessMode !== "web_only"
+      ) {
+        return Result.fail("Invalid platform access mode.");
+      }
+      tenantUpdates.access_mode = input.accessMode;
+    }
+
     const trx = await db.transaction();
     try {
       await trx("tenants").where("id", input.tenantId).update(tenantUpdates);
@@ -510,6 +544,17 @@ export async function updateTenantBySuperAdmin(input: {
       if (input.status === "suspended") {
         await trx("user_sessions")
           .where("tenant_id", input.tenantId)
+          .update({ is_active: 0 });
+      } else if (input.accessMode === "mobile_only") {
+        await trx("user_sessions")
+          .where("tenant_id", input.tenantId)
+          .andWhere((qb) => {
+            qb.whereNull("device_type").orWhereNot("device_type", "mobile");
+          })
+          .update({ is_active: 0 });
+      } else if (input.accessMode === "web_only") {
+        await trx("user_sessions")
+          .where({ tenant_id: input.tenantId, device_type: "mobile" })
           .update({ is_active: 0 });
       }
 

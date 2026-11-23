@@ -10,6 +10,7 @@ import { generateId } from "@/utils/generator";
 import { getCurrentUser } from "./_actions";
 import { DEFAULT_TENANT_ID } from "@/lib/tenant";
 import { emitSyncEvent } from "@/lib/sync-bus";
+import { dispatchExpoPushNotifications } from "@/lib/pushNotifications";
 
 // ──────────────────────────────────────────────────────────────
 // Read functions
@@ -161,6 +162,23 @@ export async function createNotification(
       payload: { user_id: notificationData.user_id },
       actorUserId: currentUser?.id || null,
     });
+
+    void dispatchExpoPushNotifications({
+      tenantId,
+      items: [
+        {
+          userId: notificationData.user_id,
+          title: notificationData.title,
+          body: notificationData.message || notificationData.title,
+          data: {
+            notificationId: newId,
+            type: notificationData.type,
+            referenceType: notificationData.reference_type || null,
+            referenceId: notificationData.reference_id || null,
+          },
+        },
+      ],
+    }).catch(() => {});
 
     return Result.ok({ id: newId });
   } catch (error: any) {

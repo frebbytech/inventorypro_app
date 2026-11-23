@@ -1,5 +1,7 @@
 import React, { useEffect } from "react";
-import { Stack } from "expo-router";
+import { Platform } from "react-native";
+import { Stack, useRouter } from "expo-router";
+import * as Notifications from "expo-notifications";
 import * as SplashScreen from "expo-splash-screen";
 import { StatusBar } from "expo-status-bar";
 import { SafeAreaProvider } from "react-native-safe-area-context";
@@ -15,12 +17,48 @@ import { AuthProvider, useAuth } from "@/api/AuthProvider";
 import { LoadingState } from "@/components/LoadingState";
 import { ToastProvider } from "@/components/ui";
 import { ThemeProvider, useTheme } from "@/theme";
+import {
+  configureForegroundNotifications,
+  resolveNotificationNavigationTarget,
+} from "@/utils/pushNotifications";
+
+configureForegroundNotifications();
 
 SplashScreen.preventAutoHideAsync().catch(() => {});
 
 function ThemedNavigator() {
   const { theme, mode } = useTheme();
   const { isAuthenticated, isRestoring, hasCompletedOnboarding } = useAuth();
+  const router = useRouter();
+
+  useEffect(() => {
+    if (!isAuthenticated || !hasCompletedOnboarding || Platform.OS === "web") {
+      return;
+    }
+
+    const handleResponse = (
+      response: Notifications.NotificationResponse | null,
+    ) => {
+      if (!response) return;
+      const data = response.notification.request.content.data as
+        | Record<string, unknown>
+        | undefined;
+      const target = resolveNotificationNavigationTarget(data);
+      router.push(target as never);
+    };
+
+    void Notifications.getLastNotificationResponseAsync()
+      .then((last) => handleResponse(last))
+      .catch(() => {});
+
+    const sub = Notifications.addNotificationResponseReceivedListener((resp) => {
+      handleResponse(resp);
+    });
+
+    return () => {
+      sub.remove();
+    };
+  }, [isAuthenticated, hasCompletedOnboarding, router]);
 
   if (isRestoring) {
     return <LoadingState message="Restoring POS session..." />;
@@ -189,6 +227,13 @@ function ThemedNavigator() {
             options={{
               title: "Security & 2FA",
               headerBackTitle: "Account",
+            }}
+          />
+          <Stack.Screen
+            name="sync-queue"
+            options={{
+              title: "Sync Queue & Conflicts",
+              headerBackTitle: "Back",
             }}
           />
         </Stack.Protected>

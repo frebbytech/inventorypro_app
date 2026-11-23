@@ -1,0 +1,135 @@
+name: Mobile Release Pipeline
+
+on:
+  push:
+    branches: [main]
+    tags:
+      - "mobile-v*"
+    paths:
+      - "mobile/**"
+      - ".github/workflows/mobile-release.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "mobile/**"
+      - ".github/workflows/mobile-release.yml"
+  workflow_dispatch:
+    inputs:
+      profile:
+        description: "EAS build / OTA channel profile"
+        required: true
+        default: "preview"
+        type: choice
+        options:
+          - development
+          - preview
+          - production
+      platform:
+        description: "Target mobile platform"
+        required: true
+        default: "android"
+        type: choice
+        options:
+          - android
+          - ios
+          - all
+      run_eas_build:
+        description: "Trigger cloud EAS native build (requires EXPO_TOKEN secret)"
+        required: true
+        default: false
+        type: boolean
+      run_eas_update:
+        description: "Publish OTA JS update to selected channel (requires EXPO_TOKEN secret)"
+        required: true
+        default: false
+        type: boolean
+      ota_message:
+        description: "OTA release notes message"
+        required: false
+        default: "CI release update"
+        type: string
+
+jobs:
+  verify-mobile:
+    name: Typecheck & Expo Config Validation
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install mobile dependencies
+        run: npm ci --prefix mobile
+
+      - name: Typecheck TypeScript
+        run: npm --prefix mobile run typecheck
+
+      - name: Validate app.json & eas.json
+        run: |
+          node -e "JSON.parse(require('fs').readFileSync('mobile/app.json', 'utf8'));"
+          node -e "JSON.parse(require('fs').readFileSync('mobile/eas.json', 'utf8'));"
+          npm --prefix mobile run config:check
+
+  eas-build:
+    name: EAS Cloud Build
+    needs: verify-mobile
+    if: github.event_name == 'workflow_dispatch' && inputs.run_eas_build == true
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Set up Expo and EAS
+        uses: expo/expo-github-action@v8
+        with:
+          eas-version: latest
+          token: ${{ secrets.EXPO_TOKEN }}
+
+      - name: Install mobile dependencies
+        run: npm ci --prefix mobile
+
+      - name: Run EAS Build
+        working-directory: mobile
+        run: eas build --platform ${{ inputs.platform }} --profile ${{ inputs.profile }} --non-interactive --no-wait
+
+  eas-update:
+    name: EAS OTA Update
+    needs: verify-mobile
+    if: github.event_name == 'workflow_dispatch' && inputs.run_eas_update == true
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Set up Expo and EAS
+        uses: expo/expo-github-action@v8
+        with:
+          eas-version: latest
+          token: ${{ secrets.EXPO_TOKEN }}
+
+      - name: Install mobile dependencies
+        run: npm ci --prefix mobile
+
+      - name: Publish EAS OTA Update
+        working-directory: mobile
+        run: eas update --channel ${{ inputs.profile }} --message "${{ inputs.ota_message }}" --non-interactive

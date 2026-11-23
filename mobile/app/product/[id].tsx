@@ -41,13 +41,16 @@ import {
   formatCurrency,
   formatDateTime,
 } from "@/utils/formatters";
-import { resolveProductImageUri } from "@/utils/productImage";
+import {
+  isLocalDeviceImageUri,
+  resolveProductImageUri,
+} from "@/utils/productImage";
 
 export default function ProductDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const { theme } = useTheme();
   const api = useApiClient();
-  const { store, serverUrl } = useAuth();
+  const { store, serverUrl, workspaceMode } = useAuth();
   const toast = useToast();
   const router = useRouter();
   const { colors, spacing, radii, typography, fontFamilies } = theme;
@@ -243,6 +246,10 @@ export default function ProductDetailScreen() {
               variant={isOut ? "danger" : isLow ? "warning" : "success"}
             />
             {api.isDemo ? <Badge label="DEMO" variant="outline" /> : null}
+            {workspaceMode === "synced" &&
+            isLocalDeviceImageUri(product.photoUrl) ? (
+              <Badge label="Photo Queued · Uploads on Sync" variant="warning" />
+            ) : null}
           </View>
 
           {(() => {

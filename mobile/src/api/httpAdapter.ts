@@ -171,6 +171,7 @@ export class HttpApiClient implements AuthenticatedApiClient {
       clientMutationId?: string;
       baseUrlOverride?: string;
       tokenOverride?: string | null;
+      timeoutMs?: number;
     },
   ): Promise<T> {
     return this.request<T>(path, init);
@@ -184,6 +185,7 @@ export class HttpApiClient implements AuthenticatedApiClient {
       clientMutationId?: string;
       baseUrlOverride?: string;
       tokenOverride?: string | null;
+      timeoutMs?: number;
     },
   ): Promise<T> {
     const {
@@ -192,6 +194,8 @@ export class HttpApiClient implements AuthenticatedApiClient {
       clientMutationId,
       baseUrlOverride,
       tokenOverride,
+      timeoutMs = 25000,
+      signal: externalSignal,
       ...fetchInit
     } = init ?? {};
     const token =
@@ -217,10 +221,45 @@ export class HttpApiClient implements AuthenticatedApiClient {
         ? baseUrlOverride.trim().replace(/\/+$/, "")
         : this.getResolvedBaseUrl();
 
-    const res = await fetch(`${resolvedBase}${path}`, {
-      ...fetchInit,
-      headers,
-    });
+    const controller = new AbortController();
+    let timedOut = false;
+    const onExternalAbort = () => controller.abort();
+    if (externalSignal) {
+      if (externalSignal.aborted) {
+        controller.abort();
+      } else {
+        externalSignal.addEventListener("abort", onExternalAbort, { once: true });
+      }
+    }
+    const timer =
+      timeoutMs > 0
+        ? setTimeout(() => {
+            timedOut = true;
+            controller.abort();
+          }, timeoutMs)
+        : null;
+
+    let res: Response;
+    try {
+      res = await fetch(`${resolvedBase}${path}`, {
+        ...fetchInit,
+        headers,
+        signal: controller.signal,
+      });
+    } catch (err: any) {
+      if (timedOut || err?.name === "AbortError") {
+        throw new ApiError(
+          "Connection timed out while contacting the server. Check your network or server URL.",
+          408,
+        );
+      }
+      throw err;
+    } finally {
+      if (timer) clearTimeout(timer);
+      if (externalSignal) {
+        externalSignal.removeEventListener("abort", onExternalAbort);
+      }
+    }
 
     if (allowNotFound && res.status === 404) {
       return null as T;
@@ -267,6 +306,23 @@ export class HttpApiClient implements AuthenticatedApiClient {
     return payload as T;
   }
 
+  async checkHealth(baseUrlOverride?: string): Promise<boolean> {
+    try {
+      const res = await this.request<{ ok?: boolean }>(
+        "/api/mobile/v1/health",
+        {
+          method: "GET",
+          skipAuthCheck: true,
+          baseUrlOverride,
+          timeoutMs: 5000,
+        },
+      );
+      return Boolean(res?.ok);
+    } catch {
+      return false;
+    }
+  }
+
   getPlatformConfig(
     baseUrlOverride?: string,
   ): Promise<PlatformServerConfigResponse> {
@@ -276,6 +332,7 @@ export class HttpApiClient implements AuthenticatedApiClient {
         method: "GET",
         skipAuthCheck: true,
         baseUrlOverride,
+        timeoutMs: 8000,
       },
     );
   }
@@ -285,6 +342,7 @@ export class HttpApiClient implements AuthenticatedApiClient {
       method: "POST",
       body: JSON.stringify(payload),
       skipAuthCheck: true,
+      timeoutMs: 25000,
     });
 
     if (!res || typeof res !== "object") {
@@ -332,6 +390,7 @@ export class HttpApiClient implements AuthenticatedApiClient {
         method: "POST",
         body: JSON.stringify(payload),
         skipAuthCheck: true,
+        timeoutMs: 25000,
       },
     );
 
@@ -360,30 +419,35 @@ export class HttpApiClient implements AuthenticatedApiClient {
       method: "POST",
       body: JSON.stringify({ challengeToken }),
       skipAuthCheck: true,
+      timeoutMs: 20000,
     });
   }
 
   getMe(): Promise<AuthSessionResponse> {
-    return this.request<AuthSessionResponse>("/api/mobile/v1/auth/me");
+    return this.request<AuthSessionResponse>("/api/mobile/v1/auth/me", {
+      timeoutMs: 15000,
+    });
   }
 
   async logout(): Promise<void> {
     await this.request<{ ok: boolean }>("/api/mobile/v1/auth/logout", {
       method: "POST",
       skipAuthCheck: true,
+      timeoutMs: 10000,
     });
   }
 
   syncBootstrap(tokenOverride?: string): Promise<SyncBootstrapResponse> {
     return this.request<SyncBootstrapResponse>("/api/mobile/v1/sync/bootstrap", {
       tokenOverride,
+      timeoutMs: 45000,
     });
   }
 
   syncDelta(cursor: number, tokenOverride?: string): Promise<SyncDeltaResponse> {
     return this.request<SyncDeltaResponse>(
       `/api/mobile/v1/sync/delta?cursor=${Math.max(0, Math.trunc(cursor || 0))}`,
-      { tokenOverride },
+      { tokenOverride, timeoutMs: 20000 },
     );
   }
 
@@ -397,6 +461,7 @@ export class HttpApiClient implements AuthenticatedApiClient {
       body: JSON.stringify(payload),
       clientMutationId,
       tokenOverride,
+      timeoutMs: 45000,
     });
   }
 
@@ -844,6 +909,38 @@ export class HttpApiClient implements AuthenticatedApiClient {
     return this.request<{ deletedCount: number }>("/api/mobile/v1/notifications", {
       method: "DELETE",
       clientMutationId,
+    });
+  }
+
+  registerPushToken(payload: {
+    token: string;
+    platform: string;
+    deviceName?: string;
+  }): Promise<{ ok: boolean; registered: boolean; id: string; platform: string }> {
+    return this.request<{
+      ok: boolean;
+      registered: boolean;
+      id: string;
+      platform: string;
+    }>("/api/mobile/v1/notifications/push-token", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+  }
+
+  unregisterPushToken(token?: string): Promise<{
+    ok: boolean;
+    unregistered: boolean;
+    deactivatedCount: number;
+  }> {
+    return this.request<{
+      ok: boolean;
+      unregistered: boolean;
+      deactivatedCount: number;
+    }>("/api/mobile/v1/notifications/push-token", {
+      method: "DELETE",
+      body: JSON.stringify(token ? { token } : {}),
+      skipAuthCheck: true,
     });
   }
 

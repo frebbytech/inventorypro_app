@@ -40,6 +40,12 @@ import { Button, Card, CardContent, Input } from "@/components/ui";
 import { useTheme } from "@/theme";
 import type { ProductItem } from "@/types/domain";
 import { formatCurrency } from "@/utils/formatters";
+import {
+  hapticError,
+  hapticLight,
+  hapticSuccess,
+  hapticWarning,
+} from "@/utils/haptics";
 import { resolveProductImageUri } from "@/utils/productImage";
 
 const SUPPORTED_BARCODE_TYPES: BarcodeType[] = [
@@ -135,6 +141,7 @@ export function SalesBarcodeScannerModal({
       try {
         const product = await api.lookupProductByBarcode(code);
         if (!product) {
+          void hapticError();
           setFeedback({
             status: "not_found",
             code,
@@ -144,6 +151,7 @@ export function SalesBarcodeScannerModal({
         }
 
         if (!product.active) {
+          void hapticWarning();
           setFeedback({
             status: "warning",
             code,
@@ -155,6 +163,7 @@ export function SalesBarcodeScannerModal({
 
         const result = onAddProduct(product);
         if (!result.ok) {
+          void hapticWarning();
           setFeedback({
             status: "warning",
             code,
@@ -166,6 +175,7 @@ export function SalesBarcodeScannerModal({
           return;
         }
 
+        void hapticSuccess();
         setFeedback({
           status: "added",
           code,
@@ -173,6 +183,7 @@ export function SalesBarcodeScannerModal({
           message: `Added ${product.name} to cart`,
         });
       } catch (err) {
+        void hapticError();
         setFeedback({
           status: "not_found",
           code,
@@ -336,7 +347,10 @@ export function SalesBarcodeScannerModal({
 
         <View style={styles.cameraToolbar}>
           <Pressable
-            onPress={() => setTorchOn((v) => !v)}
+            onPress={() => {
+              void hapticLight();
+              setTorchOn((v) => !v);
+            }}
             style={({ pressed }) => [
               styles.overlayBtn,
               {
@@ -524,9 +538,10 @@ export function SalesBarcodeScannerModal({
                       <View style={styles.stepperRow}>
                         {feedbackProductQty > 0 ? (
                           <Pressable
-                            onPress={() =>
-                              onDecrementProduct(feedback.product!.id)
-                            }
+                            onPress={() => {
+                              void hapticLight();
+                              onDecrementProduct(feedback.product!.id);
+                            }}
                             style={[
                               styles.stepBtn,
                               {
@@ -562,6 +577,7 @@ export function SalesBarcodeScannerModal({
                           onPress={() => {
                             const res = onAddProduct(feedback.product!);
                             if (!res.ok) {
+                              void hapticWarning();
                               setFeedback({
                                 status: "warning",
                                 code: feedback.code,
@@ -570,6 +586,8 @@ export function SalesBarcodeScannerModal({
                                   res.reason ||
                                   "Maximum available stock reached.",
                               });
+                            } else {
+                              void hapticLight();
                             }
                           }}
                           disabled={

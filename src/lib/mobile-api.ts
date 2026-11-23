@@ -103,7 +103,7 @@ export interface MobileStoreProfile {
   businessHoursSchedule: MobileDaySchedule[];
   businessHoursNotes: string;
   printAfterSale: boolean;
-  paperSize: "thermal_80mm" | "a4";
+  paperSize: "thermal_58mm" | "thermal_80mm" | "a4";
 }
 
 export function parseDbBool(val: unknown, fallback = false): boolean {
@@ -163,8 +163,12 @@ export function normalizeTone(
   return "chime";
 }
 
-export function normalizePaperSize(val: unknown): "thermal_80mm" | "a4" {
-  return val === "a4" ? "a4" : "thermal_80mm";
+export function normalizePaperSize(
+  val: unknown,
+): "thermal_58mm" | "thermal_80mm" | "a4" {
+  if (val === "a4") return "a4";
+  if (val === "thermal_58mm") return "thermal_58mm";
+  return "thermal_80mm";
 }
 
 export function mapSessionUserToMobile(
