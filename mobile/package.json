@@ -18,7 +18,8 @@
     "eas:build:prod": "eas build --profile production --platform all",
     "eas:update:preview": "eas update --channel preview",
     "eas:update:prod": "eas update --channel production",
-    "eas:submit:prod": "eas submit --profile production --platform all"
+    "eas:submit:prod": "eas submit --profile production --platform all",
+    "postinstall": "patch-package"
   },
   "dependencies": {
     "@expo-google-fonts/figtree": "^0.4.0",
@@ -58,6 +59,7 @@
     "@types/react": "~19.3.0",
     "babel-preset-expo": "~58.0.25",
     "drizzle-kit": "^0.31.11",
+    "patch-package": "^8.0.1",
     "typescript": "~6.0.3"
   }
 }
