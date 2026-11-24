@@ -8,9 +8,13 @@
 
 # testing
 /coverage
+/playwright-report
+/test-results
+/e2e/.e2e_test.db*
 
 # next.js
 /.next/
+/.next-e2e/
 /out/
 
 # production

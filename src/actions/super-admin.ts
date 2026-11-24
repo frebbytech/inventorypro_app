@@ -20,11 +20,18 @@ import {
   ensureSuperAdminSchema,
   getPlatformMobileConfig,
   getSuperAdminSession,
+  normalizePlatformServerUrl,
   removeSuperAdminCookie,
   setPlatformMobileServerUrl,
   setSuperAdminCookie,
   type SuperAdminSession,
 } from "@/lib/super-admin";
+import {
+  getProductionOpsSnapshot,
+  isPrivateOrLoopbackHost,
+  revokeBoundPushDevice,
+  type ProductionOpsSnapshot,
+} from "@/lib/ops";
 import { Result } from "@/types/globals";
 import type {
   PlatformMobileServerConfig,
@@ -1195,5 +1202,102 @@ export async function deleteTenantMemberBySuperAdmin(input: {
     return Result.ok({ success: true });
   } catch (error: any) {
     return Result.fail(error?.message || "Failed to remove tenant member.");
+  }
+}
+
+export async function getProductionOpsOverview(): Promise<
+  Result<ProductionOpsSnapshot>
+> {
+  try {
+    await requireSuperAdmin();
+    const snapshot = await getProductionOpsSnapshot();
+    return Result.ok(snapshot);
+  } catch (error: any) {
+    return Result.fail(
+      error?.message || "Failed to collect production ops snapshot.",
+    );
+  }
+}
+
+export async function revokeMobilePushDeviceBySuperAdmin(
+  deviceId: string,
+): Promise<Result<{ revoked: boolean }>> {
+  try {
+    await requireSuperAdmin();
+    const cleanId = String(deviceId || "").trim();
+    if (!cleanId) {
+      return Result.fail("Device binding ID is required.");
+    }
+    const revoked = await revokeBoundPushDevice(cleanId);
+    revalidatePath("/super-admin/ops");
+    return Result.ok({ revoked });
+  } catch (error: any) {
+    return Result.fail(
+      error?.message || "Failed to revoke bound mobile device.",
+    );
+  }
+}
+
+export async function verifyCloudEndpointReachability(rawUrl: string): Promise<
+  Result<{
+    endpoint: string;
+    statusCode: number;
+    latencyMs: number;
+    dbOk: boolean | null;
+  }>
+> {
+  try {
+    await requireSuperAdmin();
+    const normalized = normalizePlatformServerUrl(rawUrl);
+    if (!normalized) {
+      return Result.fail("Enter an http:// or https:// endpoint URL to test.");
+    }
+
+    const parsed = new URL(normalized);
+    if (isPrivateOrLoopbackHost(parsed.hostname)) {
+      return Result.fail(
+        "Private, local, or link-local hosts cannot be probed remotely from the server.",
+      );
+    }
+
+    const probeUrl = `${normalized}/api/mobile/v1/health`;
+    const startedAt = Date.now();
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 5000);
+
+    try {
+      const response = await fetch(probeUrl, {
+        method: "GET",
+        redirect: "error",
+        signal: controller.signal,
+        headers: {
+          Accept: "application/json",
+        },
+      });
+      const latencyMs = Math.max(0, Date.now() - startedAt);
+      const body = (await response.json().catch(() => null)) as {
+        ok?: boolean;
+        dbOk?: boolean;
+      } | null;
+
+      if (!response.ok || body?.ok !== true) {
+        return Result.fail(
+          `Endpoint responded with HTTP ${response.status} (expected healthy mobile health check).`,
+        );
+      }
+
+      return Result.ok({
+        endpoint: probeUrl,
+        statusCode: response.status,
+        latencyMs,
+        dbOk: typeof body?.dbOk === "boolean" ? body.dbOk : null,
+      });
+    } finally {
+      clearTimeout(timeout);
+    }
+  } catch (error: any) {
+    return Result.fail(
+      error?.message || "Unable to reach target cloud endpoint.",
+    );
   }
 }

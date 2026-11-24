@@ -34,6 +34,9 @@ jobs:
       - name: Run automated test suite
         run: npm test
 
+      - name: Run Production Ops preflight check
+        run: npm run ops:check
+
   mobile-checks:
     name: Mobile Typecheck & Expo Config Check
     runs-on: ubuntu-latest
@@ -54,8 +57,9 @@ jobs:
       - name: Run mobile TypeScript check
         run: npm --prefix mobile run typecheck
 
-      - name: Validate Expo app config & EAS profiles
+      - name: Validate Expo app config, SDK deps & EAS profiles
         run: |
           node -e "JSON.parse(require('fs').readFileSync('mobile/app.json', 'utf8'));"
           node -e "JSON.parse(require('fs').readFileSync('mobile/eas.json', 'utf8'));"
           npm --prefix mobile run config:check
+          npm --prefix mobile run deps:check

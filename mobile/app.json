@@ -1,9 +1,10 @@
 {
   "expo": {
     "name": "Inventory Pro",
-    "slug": "inventory-pro-mobile",
+    "slug": "inventory-pro",
     "version": "1.0.0",
     "orientation": "portrait",
+    "icon": "./assets/icon.png",
     "scheme": "inventorypro",
     "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
@@ -14,9 +15,11 @@
       "fallbackToCacheTimeout": 0
     },
     "web": {
-      "bundler": "metro"
+      "bundler": "metro",
+      "favicon": "./assets/favicon.png"
     },
     "splash": {
+      "image": "./assets/splash-icon.png",
       "backgroundColor": "#F5F5F5",
       "resizeMode": "contain"
     },
@@ -38,6 +41,7 @@
       "package": "com.frebbytech.inventorypro",
       "versionCode": 1,
       "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#0F172A"
       },
       "permissions": [
@@ -56,15 +60,33 @@
       "expo-font",
       "expo-secure-store",
       "expo-sqlite",
+      "expo-dev-client",
+      "expo-updates",
+      [
+        "expo-splash-screen",
+        {
+          "backgroundColor": "#F5F5F5",
+          "image": "./assets/splash-icon.png",
+          "imageWidth": 200,
+          "resizeMode": "contain",
+          "dark": {
+            "backgroundColor": "#070B13",
+            "image": "./assets/icon.png"
+          }
+        }
+      ],
       [
         "expo-camera",
         {
-          "cameraPermission": "Allow Inventory Pro to access your camera to scan product barcodes."
+          "cameraPermission": "Allow Inventory Pro to access your camera to scan product barcodes.",
+          "microphonePermission": false,
+          "recordAudioAndroid": false
         }
       ],
       [
         "expo-notifications",
         {
+          "icon": "./assets/notification-icon.png",
           "color": "#3B82F6"
         }
       ]

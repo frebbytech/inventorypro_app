@@ -17,7 +17,7 @@ jobs:
       - name: Trigger EOD report check
         env:
           CRON_SECRET: ${{ secrets.CRON_SECRET }}
-          ENDPOINT: https://frebbypos.netlify.app/api/cron/eod-report
+          ENDPOINT: https://inventorypro-app-drab.vercel.app/api/cron/eod-report
         run: |
           set -euo pipefail
 

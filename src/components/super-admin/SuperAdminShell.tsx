@@ -5,6 +5,7 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useTheme } from "next-themes";
 import {
+  Activity,
   Building2,
   ChevronRight,
   LayoutDashboard,
@@ -35,6 +36,12 @@ const NAV_ITEMS = [
     href: "/super-admin/tenants",
     label: "Tenants",
     icon: Building2,
+    exact: false,
+  },
+  {
+    href: "/super-admin/ops",
+    label: "Production Ops",
+    icon: Activity,
     exact: false,
   },
 ];
@@ -202,7 +209,11 @@ export default function SuperAdminShell({
                 </>
               ) : (
                 <span className="truncate font-semibold text-foreground">
-                  {pathname === "/super-admin/tenants" ? "Tenants" : "Overview & Tenants"}
+                  {pathname === "/super-admin/tenants"
+                    ? "Tenants"
+                    : pathname === "/super-admin/ops"
+                      ? "Production Ops & Cloud Binding"
+                      : "Overview & Tenants"}
                 </span>
               )}
             </div>

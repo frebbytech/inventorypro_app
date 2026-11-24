@@ -69,6 +69,10 @@ export function getEasProjectId(): string | null {
   if (typeof fromEasConfig === "string" && fromEasConfig.trim()) {
     return fromEasConfig.trim();
   }
+  const fromEnv = process.env.EXPO_PUBLIC_EAS_PROJECT_ID;
+  if (typeof fromEnv === "string" && fromEnv.trim()) {
+    return fromEnv.trim();
+  }
   return null;
 }
 

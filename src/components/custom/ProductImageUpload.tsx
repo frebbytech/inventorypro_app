@@ -75,7 +75,7 @@ export function ProductImageUpload({
 
       onChange(result.downloadURL);
       toast.success("Product Image Uploaded", {
-        description: "The photo has been saved to the file system.",
+        description: "The photo has been saved to cloud media storage.",
       });
     } catch (err: any) {
       console.error("Upload error:", err);
@@ -239,10 +239,10 @@ export function ProductImageUpload({
             <div className="flex flex-col items-center space-y-2">
               <Loader2 className="h-8 w-8 animate-spin text-primary" />
               <p className="text-xs font-semibold text-foreground">
-                Uploading to file system...
+                Uploading image...
               </p>
               <p className="text-[11px] text-muted-foreground">
-                Saving image to /public/uploads/products
+                Optimizing and saving to persistent cloud media storage
               </p>
             </div>
           ) : (
