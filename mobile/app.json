@@ -7,7 +7,6 @@
     "icon": "./assets/icon.png",
     "scheme": "inventorypro",
     "userInterfaceStyle": "automatic",
-    "newArchEnabled": true,
     "runtimeVersion": {
       "policy": "appVersion"
     },
@@ -54,6 +53,7 @@
         "android.permission.BLUETOOTH_CONNECT",
         "android.permission.BLUETOOTH_SCAN"
       ]
+      
     },
     "plugins": [
       "expo-router",
@@ -95,7 +95,16 @@
       "typedRoutes": true
     },
     "extra": {
-      "apiBaseUrl": ""
-    }
+      "apiBaseUrl": "",
+      "router": {
+        "asyncRoutes": {
+          "web": true
+        }
+      },
+      "eas": {
+        "projectId": "02faeae4-f130-4f98-9dd3-9e2f422aeeb8"
+      }
+    },
+    "owner": "frebby-tech"
   }
 }

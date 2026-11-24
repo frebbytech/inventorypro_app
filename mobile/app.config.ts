@@ -6,14 +6,17 @@ export default ({ config }: ConfigContext): ExpoConfig => {
 
   const envProjectId = process.env.EXPO_PUBLIC_EAS_PROJECT_ID?.trim();
   const projectId =
-    (typeof existingEas.projectId === "string" && existingEas.projectId.trim()) ||
+    (typeof existingEas.projectId === "string" &&
+      existingEas.projectId.trim()) ||
     envProjectId ||
     "";
 
   const envApiBaseUrl = process.env.EXPO_PUBLIC_API_BASE_URL?.trim();
   const apiBaseUrl =
     envApiBaseUrl ||
-    (typeof existingExtra.apiBaseUrl === "string" ? existingExtra.apiBaseUrl.trim() : "");
+    (typeof existingExtra.apiBaseUrl === "string"
+      ? existingExtra.apiBaseUrl.trim()
+      : "");
 
   const envOwner = process.env.EXPO_OWNER?.trim();
   const owner =
@@ -44,6 +47,11 @@ export default ({ config }: ConfigContext): ExpoConfig => {
             },
           }
         : {}),
+    },
+    android: {
+      ...config.android,
+      googleServicesFile:
+        process.env.GOOGLE_SERVICES_JSON || "./google-services.json",
     },
   };
 };
