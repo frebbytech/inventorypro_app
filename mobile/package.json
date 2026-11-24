@@ -61,5 +61,15 @@
     "drizzle-kit": "^0.31.11",
     "patch-package": "^8.0.1",
     "typescript": "~6.0.3"
+  },
+  "expo": {
+    "doctor": {
+      "reactNativeDirectoryCheck": {
+        "exclude": [
+          "react-native-bluetooth-classic",
+          "react-native-tcp-socket"
+        ]
+      }
+    }
   }
 }

@@ -17,11 +17,6 @@
       "bundler": "metro",
       "favicon": "./assets/favicon.png"
     },
-    "splash": {
-      "image": "./assets/splash-icon.png",
-      "backgroundColor": "#F5F5F5",
-      "resizeMode": "contain"
-    },
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.frebbytech.inventorypro",
@@ -30,9 +25,7 @@
         "NSCameraUsageDescription": "Allow Inventory Pro to access your camera to scan product barcodes and attach product photos.",
         "NSBluetoothAlwaysUsageDescription": "Allow Inventory Pro to connect to paired Bluetooth thermal receipt printers and POS scanners.",
         "NSLocalNetworkUsageDescription": "Allow Inventory Pro to send ESC/POS receipts to LAN/Wi-Fi thermal printers on your local network.",
-        "UIBackgroundModes": [
-          "remote-notification"
-        ],
+        "UIBackgroundModes": ["remote-notification"],
         "ITSAppUsesNonExemptEncryption": false
       }
     },
@@ -53,7 +46,6 @@
         "android.permission.BLUETOOTH_CONNECT",
         "android.permission.BLUETOOTH_SCAN"
       ]
-      
     },
     "plugins": [
       "expo-router",
