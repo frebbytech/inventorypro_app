@@ -1,5 +1,9 @@
 # See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
 
+
+.expo/
+
+
 # dependencies
 /node_modules
 /.pnp
@@ -60,3 +64,8 @@ images/products/*
 !images/products/.gitkeep
 # Local Netlify folder
 .netlify
+
+
+google-services.json
+
+service-account.json
