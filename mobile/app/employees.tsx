@@ -28,10 +28,16 @@ import {
 import { useApiClient } from "@/api/ApiProvider";
 import { useAuth } from "@/api/AuthProvider";
 import { EmptyState } from "@/components/EmptyState";
+import { InlineErrorBanner } from "@/components/InlineErrorBanner";
 import { LoadingState } from "@/components/LoadingState";
 import { Badge, Button, Card, Input, useToast } from "@/components/ui";
 import { useTheme } from "@/theme";
 import type { EmployeeItem } from "@/types/domain";
+import {
+  getUserErrorMessage,
+  normalizeError,
+  type NormalizedAppError,
+} from "@/utils/errorHandler";
 import { formatCurrency, formatDateTime } from "@/utils/formatters";
 
 export default function EmployeesScreen() {
@@ -48,7 +54,7 @@ export default function EmployeesScreen() {
   const [employees, setEmployees] = useState<EmployeeItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
-  const [actionError, setActionError] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<NormalizedAppError | null>(null);
   const hasLoadedRef = useRef(false);
 
   // Add Employee modal state
@@ -74,7 +80,10 @@ export default function EmployeesScreen() {
         hasLoadedRef.current = true;
       } catch (err) {
         setActionError(
-          err instanceof Error ? err.message : "Failed to load team members.",
+          normalizeError(err, {
+            fallback: "Could not load team members. Please try again.",
+            context: "employees.load",
+          }),
         );
       } finally {
         setLoading(false);
@@ -164,7 +173,11 @@ export default function EmployeesScreen() {
       await loadEmployees(true);
     } catch (err) {
       setFormError(
-        err instanceof Error ? err.message : "Failed to create team member.",
+        getUserErrorMessage(
+          err,
+          "Could not create team member. Please try again.",
+          "employees.create",
+        ),
       );
     } finally {
       setSaving(false);
@@ -244,22 +257,18 @@ export default function EmployeesScreen() {
         </View>
 
         {actionError ? (
-          <View
-            style={[
-              styles.alertBox,
-              {
-                backgroundColor: colors.dangerTint,
-                borderColor: colors.dangerBorder,
-                borderRadius: radii.lg,
-                padding: spacing.sm + 2,
-              },
-            ]}
-          >
-            <AlertCircle size={15} color={colors.dangerText} />
-            <Text style={[typography.caption, { color: colors.dangerText, flex: 1 }]}>
-              {actionError}
-            </Text>
-          </View>
+          <InlineErrorBanner
+            message={actionError.userMessage}
+            category={actionError.category}
+            onRetry={() => void loadEmployees(employees.length > 0)}
+            retrying={loading || refreshing}
+            onSignIn={
+              actionError.requiresSignIn
+                ? () => router.push("/sign-in")
+                : undefined
+            }
+            onDismiss={() => setActionError(null)}
+          />
         ) : null}
       </View>
 

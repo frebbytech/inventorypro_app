@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { getRecipientsForGroup } from "@/actions/messages";
-import { withMobileAuth } from "@/lib/mobile-api";
+import { sanitizeServerMessage, withMobileAuth } from "@/lib/mobile-api";
 import type { RecipientGroup } from "@/types/globals";
 
 export const dynamic = "force-dynamic";
@@ -20,7 +20,12 @@ export async function GET(req: Request) {
       const res = await getRecipientsForGroup(group);
       if (!res.success || !res.data) {
         return NextResponse.json(
-          { error: res.message || "Failed to fetch recipients." },
+          {
+            error: sanitizeServerMessage(
+              res.message,
+              "Unable to load message recipients right now.",
+            ),
+          },
           { status: 400 },
         );
       }

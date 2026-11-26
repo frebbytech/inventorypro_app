@@ -169,7 +169,7 @@ export class SyncedApiClient implements AuthenticatedApiClient {
     try {
       return await onlineFn();
     } catch (err) {
-      if (err instanceof ApiError && err.status < 500) {
+      if (!isNetworkOrServerFailure(err)) {
         throw err;
       }
       return offlineFn();

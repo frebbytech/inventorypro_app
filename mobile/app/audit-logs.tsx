@@ -8,14 +8,19 @@ import {
   Text,
   View,
 } from "react-native";
-import { useFocusEffect } from "expo-router";
+import { useFocusEffect, useRouter } from "expo-router";
 import { History, Search, X } from "lucide-react-native";
 import { useApiClient } from "@/api/ApiProvider";
 import { EmptyState } from "@/components/EmptyState";
+import { InlineErrorBanner } from "@/components/InlineErrorBanner";
 import { LoadingState } from "@/components/LoadingState";
 import { Badge, Button, Card, Input } from "@/components/ui";
 import { useTheme } from "@/theme";
 import type { AuditLogItem } from "@/types/domain";
+import {
+  normalizeError,
+  type NormalizedAppError,
+} from "@/utils/errorHandler";
 import { capitalizeLabel, formatDateTime } from "@/utils/formatters";
 
 const ACTION_FILTERS = [
@@ -52,6 +57,7 @@ function summarizeJsonValues(raw?: string | null): string | null {
 export default function AuditLogsScreen() {
   const { theme } = useTheme();
   const api = useApiClient();
+  const router = useRouter();
   const { colors, spacing, radii, typography, fontFamilies } = theme;
 
   const [query, setQuery] = useState("");
@@ -59,11 +65,13 @@ export default function AuditLogsScreen() {
   const [logs, setLogs] = useState<AuditLogItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [loadError, setLoadError] = useState<NormalizedAppError | null>(null);
 
   const loadLogs = useCallback(
     async (isRefresh = false) => {
       if (isRefresh) setRefreshing(true);
       else setLoading(true);
+      setLoadError(null);
       try {
         const rows = await api.getAuditLogs({
           query,
@@ -71,6 +79,13 @@ export default function AuditLogsScreen() {
           limit: 100,
         });
         setLogs(rows);
+      } catch (err) {
+        setLoadError(
+          normalizeError(err, {
+            fallback: "Could not load audit logs right now. Please try again.",
+            context: "audit-logs.load",
+          }),
+        );
       } finally {
         setLoading(false);
         setRefreshing(false);
@@ -158,6 +173,22 @@ export default function AuditLogsScreen() {
           })}
         </ScrollView>
       </View>
+
+      {loadError ? (
+        <View style={{ paddingHorizontal: spacing.base, paddingBottom: spacing.sm }}>
+          <InlineErrorBanner
+            message={loadError.userMessage}
+            category={loadError.category}
+            onRetry={() => void loadLogs(logs.length > 0)}
+            retrying={loading || refreshing}
+            onSignIn={
+              loadError.requiresSignIn
+                ? () => router.replace("/sign-in")
+                : undefined
+            }
+          />
+        </View>
+      ) : null}
 
       {loading && logs.length === 0 ? (
         <LoadingState message="Loading audit logs..." />

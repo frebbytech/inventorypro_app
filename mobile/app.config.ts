@@ -1,6 +1,21 @@
 import type { ConfigContext, ExpoConfig } from "expo/config";
 
-export default ({ config }: ConfigContext): ExpoConfig => {
+type MinimalFs = { existsSync: (filePath: string) => boolean };
+type MinimalPath = { join: (...segments: string[]) => string };
+
+function hasLocalGoogleServicesFile(projectRoot: string): boolean {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const fs = require("node:fs") as MinimalFs;
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const path = require("node:path") as MinimalPath;
+    return fs.existsSync(path.join(projectRoot || ".", "google-services.json"));
+  } catch {
+    return false;
+  }
+}
+
+export default ({ config, projectRoot }: ConfigContext): ExpoConfig => {
   const existingExtra = (config.extra ?? {}) as Record<string, unknown>;
   const existingEas = (existingExtra.eas ?? {}) as Record<string, unknown>;
 
@@ -27,6 +42,13 @@ export default ({ config }: ConfigContext): ExpoConfig => {
     existingUpdates.url ||
     (projectId ? `https://u.expo.dev/${projectId}` : undefined);
 
+  const envGoogleServices = process.env.GOOGLE_SERVICES_JSON?.trim();
+  const googleServicesFile =
+    envGoogleServices ||
+    (hasLocalGoogleServicesFile(projectRoot)
+      ? "./google-services.json"
+      : config.android?.googleServicesFile);
+
   return {
     ...config,
     name: config.name ?? "Inventory Pro",
@@ -50,8 +72,7 @@ export default ({ config }: ConfigContext): ExpoConfig => {
     },
     android: {
       ...config.android,
-      googleServicesFile:
-        process.env.GOOGLE_SERVICES_JSON || "./google-services.json",
+      ...(googleServicesFile ? { googleServicesFile } : {}),
     },
   };
 };

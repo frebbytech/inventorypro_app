@@ -21,6 +21,7 @@ import {
 import { useApiClient } from "@/api/ApiProvider";
 import { useAuth } from "@/api/AuthProvider";
 import { EmptyState } from "@/components/EmptyState";
+import { InlineErrorBanner } from "@/components/InlineErrorBanner";
 import { LoadingState } from "@/components/LoadingState";
 import { StockMeter } from "@/components/StockMeter";
 import {
@@ -35,6 +36,10 @@ import {
 } from "@/components/ui";
 import { useTheme } from "@/theme";
 import { LOW_STOCK_THRESHOLD, type ProductDetailResponse } from "@/types/domain";
+import {
+  normalizeError,
+  type NormalizedAppError,
+} from "@/utils/errorHandler";
 import {
   calculateMarginPercent,
   capitalizeLabel,
@@ -57,6 +62,7 @@ export default function ProductDetailScreen() {
 
   const [detail, setDetail] = useState<ProductDetailResponse | null>(null);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<NormalizedAppError | null>(null);
   const [adjusting, setAdjusting] = useState(false);
   const [togglingActive, setTogglingActive] = useState(false);
   const [customQty, setCustomQty] = useState("");
@@ -73,10 +79,18 @@ export default function ProductDetailScreen() {
         return;
       }
       if (!silent) setLoading(true);
+      setLoadError(null);
       try {
         const res = await api.getProductById(String(id));
         setDetail(res);
         hasLoadedRef.current = true;
+      } catch (err) {
+        setLoadError(
+          normalizeError(err, {
+            fallback: "Could not load product details. Please try again.",
+            context: "product-detail.load",
+          }),
+        );
       } finally {
         setLoading(false);
       }
@@ -103,6 +117,29 @@ export default function ProductDetailScreen() {
 
   if (loading) {
     return <LoadingState message="Loading product details..." />;
+  }
+
+  if (loadError && !detail) {
+    return (
+      <View
+        style={[
+          styles.notFoundWrap,
+          { backgroundColor: colors.background, padding: spacing.base },
+        ]}
+      >
+        <InlineErrorBanner
+          message={loadError.userMessage}
+          category={loadError.category}
+          onRetry={() => void loadDetail(false)}
+          retrying={loading}
+          onSignIn={
+            loadError.requiresSignIn
+              ? () => router.replace("/sign-in")
+              : undefined
+          }
+        />
+      </View>
+    );
   }
 
   if (!detail) {
@@ -146,9 +183,21 @@ export default function ProductDetailScreen() {
       setAdjustSuccess(successMsg);
       toast.success("Stock adjusted", `${detail.product.name}: ${successMsg}`);
     } catch (err) {
-      const msg = err instanceof Error ? err.message : "Failed to update stock.";
-      setAdjustError(msg);
-      toast.error("Stock adjustment failed", msg);
+      const normalized = normalizeError(err, {
+        fallback: "Could not update stock right now. Please try again.",
+        context: "product-detail.adjustStock",
+      });
+      setAdjustError(normalized.userMessage);
+      toast.error(
+        "Stock adjustment failed",
+        normalized.userMessage,
+        undefined,
+        normalized.requiresSignIn
+          ? { label: "Sign In", onPress: () => router.replace("/sign-in") }
+          : normalized.retryable
+            ? { label: "Retry", onPress: () => void handleAdjustStock(delta) }
+            : undefined,
+      );
     } finally {
       setAdjusting(false);
     }
@@ -173,10 +222,21 @@ export default function ProductDetailScreen() {
         `${updated.name}: ${statusMsg}`,
       );
     } catch (err) {
-      const msg =
-        err instanceof Error ? err.message : "Failed to update product status.";
-      setAdjustError(msg);
-      toast.error("Status update failed", msg);
+      const normalized = normalizeError(err, {
+        fallback: "Could not update product status right now. Please try again.",
+        context: "product-detail.toggleActive",
+      });
+      setAdjustError(normalized.userMessage);
+      toast.error(
+        "Status update failed",
+        normalized.userMessage,
+        undefined,
+        normalized.requiresSignIn
+          ? { label: "Sign In", onPress: () => router.replace("/sign-in") }
+          : normalized.retryable
+            ? { label: "Retry", onPress: () => void handleToggleActive() }
+            : undefined,
+      );
     } finally {
       setTogglingActive(false);
     }
@@ -202,9 +262,21 @@ export default function ProductDetailScreen() {
       setAdjustSuccess(countMsg);
       toast.success("Stock count updated", `${detail.product.name}: ${countMsg}`);
     } catch (err) {
-      const msg = err instanceof Error ? err.message : "Failed to set stock count.";
-      setAdjustError(msg);
-      toast.error("Stock update failed", msg);
+      const normalized = normalizeError(err, {
+        fallback: "Could not set stock count right now. Please try again.",
+        context: "product-detail.setStock",
+      });
+      setAdjustError(normalized.userMessage);
+      toast.error(
+        "Stock update failed",
+        normalized.userMessage,
+        undefined,
+        normalized.requiresSignIn
+          ? { label: "Sign In", onPress: () => router.replace("/sign-in") }
+          : normalized.retryable
+            ? { label: "Retry", onPress: () => void handleApplyCustom() }
+            : undefined,
+      );
     } finally {
       setAdjusting(false);
     }

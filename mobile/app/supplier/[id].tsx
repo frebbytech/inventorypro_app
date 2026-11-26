@@ -28,6 +28,7 @@ import {
 import { useApiClient } from "@/api/ApiProvider";
 import { useAuth } from "@/api/AuthProvider";
 import { EmptyState } from "@/components/EmptyState";
+import { InlineErrorBanner } from "@/components/InlineErrorBanner";
 import { LoadingState } from "@/components/LoadingState";
 import {
   Badge,
@@ -45,6 +46,11 @@ import type {
   SupplierDetailResponse,
   SupplierTransactionSummary,
 } from "@/types/domain";
+import {
+  getUserErrorMessage,
+  normalizeError,
+  type NormalizedAppError,
+} from "@/utils/errorHandler";
 import {
   capitalizeLabel,
   formatCurrency,
@@ -72,7 +78,7 @@ export default function SupplierDetailScreen() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [togglingActive, setTogglingActive] = useState(false);
-  const [actionError, setActionError] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<NormalizedAppError | null>(null);
   const hasLoadedRef = useRef(false);
 
   // Edit Supplier modal state
@@ -119,7 +125,10 @@ export default function SupplierDetailScreen() {
         hasLoadedRef.current = true;
       } catch (err) {
         setActionError(
-          err instanceof Error ? err.message : "Failed to load supplier.",
+          normalizeError(err, {
+            fallback: "Could not load supplier details. Please try again.",
+            context: "supplierDetail.load",
+          }),
         );
       } finally {
         setLoading(false);
@@ -183,7 +192,11 @@ export default function SupplierDetailScreen() {
       toast.success("Supplier updated", `${updated.companyName} details saved.`);
     } catch (err) {
       setEditError(
-        err instanceof Error ? err.message : "Failed to update supplier.",
+        getUserErrorMessage(
+          err,
+          "Could not update supplier. Please try again.",
+          "supplierDetail.saveEdit",
+        ),
       );
     } finally {
       setSavingEdit(false);
@@ -204,9 +217,21 @@ export default function SupplierDetailScreen() {
         `${updated.companyName} status updated.`,
       );
     } catch (err) {
-      const msg = err instanceof Error ? err.message : "Failed to update status.";
-      setActionError(msg);
-      toast.error("Status update failed", msg);
+      const normalized = normalizeError(err, {
+        fallback: "Could not update supplier status. Please try again.",
+        context: "supplierDetail.toggleActive",
+      });
+      setActionError(normalized);
+      toast.error(
+        "Status update failed",
+        normalized.userMessage,
+        undefined,
+        normalized.requiresSignIn
+          ? { label: "Sign In", onPress: () => router.push("/sign-in") }
+          : normalized.retryable
+            ? { label: "Retry", onPress: () => void handleToggleActive() }
+            : undefined,
+      );
     } finally {
       setTogglingActive(false);
     }
@@ -256,7 +281,11 @@ export default function SupplierDetailScreen() {
       await loadDetail(true);
     } catch (err) {
       setTxError(
-        err instanceof Error ? err.message : "Failed to record delivery.",
+        getUserErrorMessage(
+          err,
+          "Could not record delivery. Please try again.",
+          "supplierDetail.recordDelivery",
+        ),
       );
     } finally {
       setSavingTx(false);
@@ -297,7 +326,11 @@ export default function SupplierDetailScreen() {
       await loadDetail(true);
     } catch (err) {
       setPayError(
-        err instanceof Error ? err.message : "Failed to record payment.",
+        getUserErrorMessage(
+          err,
+          "Could not record payment. Please try again.",
+          "supplierDetail.payBalance",
+        ),
       );
     } finally {
       setSavingPay(false);
@@ -306,6 +339,35 @@ export default function SupplierDetailScreen() {
 
   if (loading && !detail) {
     return <LoadingState message="Loading supplier details..." />;
+  }
+
+  if (!detail && actionError) {
+    return (
+      <View
+        style={[
+          styles.notFoundWrap,
+          { backgroundColor: colors.background, padding: spacing.base, gap: spacing.md },
+        ]}
+      >
+        <InlineErrorBanner
+          message={actionError.userMessage}
+          category={actionError.category}
+          onRetry={() => void loadDetail(false)}
+          retrying={loading}
+          onSignIn={
+            actionError.requiresSignIn
+              ? () => router.push("/sign-in")
+              : undefined
+          }
+        />
+        <Button
+          title="Back to Suppliers"
+          variant="outline"
+          size="sm"
+          onPress={() => router.back()}
+        />
+      </View>
+    );
   }
 
   if (!detail) {
@@ -353,22 +415,18 @@ export default function SupplierDetailScreen() {
       }
     >
       {actionError ? (
-        <View
-          style={[
-            styles.alertBox,
-            {
-              backgroundColor: colors.dangerTint,
-              borderColor: colors.dangerBorder,
-              borderRadius: radii.lg,
-              padding: spacing.sm + 2,
-            },
-          ]}
-        >
-          <AlertCircle size={15} color={colors.dangerText} />
-          <Text style={[typography.caption, { color: colors.dangerText, flex: 1 }]}>
-            {actionError}
-          </Text>
-        </View>
+        <InlineErrorBanner
+          message={actionError.userMessage}
+          category={actionError.category}
+          onRetry={() => void loadDetail(true)}
+          retrying={refreshing}
+          onSignIn={
+            actionError.requiresSignIn
+              ? () => router.push("/sign-in")
+              : undefined
+          }
+          onDismiss={() => setActionError(null)}
+        />
       ) : null}
 
       {/* Supplier Identity Card */}

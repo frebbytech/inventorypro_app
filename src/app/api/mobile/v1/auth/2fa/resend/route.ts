@@ -7,6 +7,10 @@ import {
   verifyTwoFactorChallengeToken,
 } from "@/lib/security";
 import {
+  sanitizeMobileServerError,
+  sanitizeServerMessage,
+} from "@/lib/mobile-api";
+import {
   DEFAULT_TENANT_ID,
   normalizeTenantAccessMode,
 } from "@/lib/tenant";
@@ -58,7 +62,13 @@ export async function POST(req: Request) {
     });
     if (!dispatch.success || !dispatch.codeId) {
       return NextResponse.json(
-        { error: dispatch.error || "Unable to resend verification code." },
+        {
+          error: sanitizeServerMessage(
+            dispatch.error,
+            "Unable to resend verification code. Please try again.",
+          ),
+          code: "VALIDATION_ERROR",
+        },
         { status: 400 },
       );
     }
@@ -75,10 +85,14 @@ export async function POST(req: Request) {
       method: dispatch.method,
       maskedTarget: dispatch.maskedTarget || "",
     });
-  } catch (err: any) {
+  } catch (err: unknown) {
+    const sanitized = sanitizeMobileServerError(err, {
+      fallbackMessage: "Unable to resend verification code. Please try again.",
+      context: "mobile/auth/2fa/resend",
+    });
     return NextResponse.json(
-      { error: err?.message || "Failed to resend verification code." },
-      { status: 500 },
+      { error: sanitized.message, code: sanitized.code },
+      { status: sanitized.status },
     );
   }
 }

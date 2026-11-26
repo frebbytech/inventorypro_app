@@ -86,6 +86,8 @@ interface AuthContextValue {
   token: string | null;
   isRestoring: boolean;
   isAuthenticated: boolean;
+  sessionExpiredReason: string | null;
+  dismissSessionExpired: () => void;
   hasCompletedOnboarding: boolean;
   unreadNotificationsCount: number;
   refreshUnreadNotifications: () => Promise<void>;
@@ -195,6 +197,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [expoPushToken, setExpoPushToken] = useState<string | null>(null);
   const [pushStatusMessage, setPushStatusMessage] = useState<string | null>(null);
   const [isRestoring, setIsRestoring] = useState(true);
+  const [sessionExpiredReason, setSessionExpiredReason] = useState<string | null>(
+    null,
+  );
 
   const [syncStatus, setSyncStatus] = useState<SyncStatus>("local_only");
   const [syncVersion, setSyncVersion] = useState(0);
@@ -244,8 +249,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setServerUrlState(clean);
   }, []);
 
+  const dismissSessionExpired = useCallback(() => {
+    setSessionExpiredReason(null);
+  }, []);
+
   const handleUnauthorized = useCallback(() => {
     if (isBootstrappingRef.current) return;
+    const hadSession = Boolean(tokenRef.current);
     authEpochRef.current += 1;
     syncEngineRef.current?.stop();
     syncEngineRef.current = null;
@@ -254,6 +264,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setTenant(null);
     setUnreadNotificationsCount(0);
     setSyncStatus("local_only");
+    if (hadSession) {
+      setSessionExpiredReason(
+        "Your session has expired or was signed out on another device. Please sign in again.",
+      );
+    }
     void clearStoredAuthToken();
     void setStoredTenantInfo(null);
   }, [commitToken, commitUser]);
@@ -659,7 +674,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     async (res: AuthLoginResponse, strategy: "merge" | "pull" = "pull") => {
       if (!res || typeof res.token !== "string" || !res.token.trim()) {
         throw new Error(
-          "Web server returned an invalid session token. Please check the Super Admin server configuration.",
+          "Could not start your store session. Please try signing in again.",
         );
       }
       authEpochRef.current += 1;
@@ -708,6 +723,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       setTenant(resolvedTenant);
       setStore(res.store);
       setWorkspaceMode("synced");
+      setSessionExpiredReason(null);
       commitToken(cleanToken);
       commitUser(res.user);
       setUnreadNotificationsCount(unread);
@@ -722,6 +738,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       password: string,
       options?: { workspaceSlug?: string },
     ): Promise<AuthLoginResult> => {
+      setSessionExpiredReason(null);
       if (workspaceMode === "synced") {
         await refreshPlatformServerUrl().catch(() => {});
         const res = await httpClient.login({
@@ -750,9 +767,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         typeof response.token !== "string" ||
         !response.token.trim()
       ) {
-        throw new Error("Local device login failed to issue a session token.");
+        throw new Error("Could not sign in on this device. Please try again.");
       }
       await setStoredAuthToken(response.token);
+      setSessionExpiredReason(null);
       commitToken(response.token);
       commitUser(response.user);
       setStore(response.store);
@@ -933,6 +951,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       setExpoPushToken(null);
       setPushStatus("idle");
       setPushStatusMessage(null);
+      setSessionExpiredReason(null);
       await clearStoredAuthToken();
       await setStoredTenantInfo(null);
       await setStoredSyncCursor(0);
@@ -1059,6 +1078,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       token,
       isRestoring,
       isAuthenticated: Boolean(user && token),
+      sessionExpiredReason,
+      dismissSessionExpired,
       hasCompletedOnboarding,
       unreadNotificationsCount,
       refreshUnreadNotifications,
@@ -1112,6 +1133,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       store,
       token,
       isRestoring,
+      sessionExpiredReason,
+      dismissSessionExpired,
       hasCompletedOnboarding,
       unreadNotificationsCount,
       refreshUnreadNotifications,

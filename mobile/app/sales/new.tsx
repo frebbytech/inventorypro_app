@@ -38,6 +38,7 @@ import {
 } from "@/api/tokenStorage";
 import { EmptyState } from "@/components/EmptyState";
 import { HidScannerBanner } from "@/components/HidScannerBanner";
+import { InlineErrorBanner } from "@/components/InlineErrorBanner";
 import { LoadingState } from "@/components/LoadingState";
 import { SalesBarcodeScannerModal } from "@/components/SalesBarcodeScannerModal";
 import {
@@ -51,6 +52,10 @@ import {
 import { useHidBarcodeScanner } from "@/hooks/useHidBarcodeScanner";
 import { useTheme } from "@/theme";
 import type { CustomerItem, PaymentMode, ProductItem } from "@/types/domain";
+import {
+  normalizeError,
+  type NormalizedAppError,
+} from "@/utils/errorHandler";
 import { formatCurrency } from "@/utils/formatters";
 import { hapticError, hapticLight, hapticSuccess, hapticWarning } from "@/utils/haptics";
 import { resolveProductImageUri } from "@/utils/productImage";
@@ -158,7 +163,10 @@ export default function NewSaleScreen() {
   const [cashTenderedText, setCashTenderedText] = useState("");
   const [applyTax, setApplyTax] = useState(false);
   const [submitting, setSubmitting] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [loadError, setLoadError] = useState<NormalizedAppError | null>(null);
+  const [checkoutError, setCheckoutError] = useState<NormalizedAppError | null>(
+    null,
+  );
 
   useEffect(() => {
     void getStoredHidScannerEnabled().then(setHidScannerEnabled);
@@ -187,6 +195,7 @@ export default function NewSaleScreen() {
     async (isRefresh = false) => {
       if (isRefresh) setRefreshing(true);
       else setLoading(true);
+      setLoadError(null);
       try {
         const list = await api.getProducts();
         const sellable = list.filter((p) => p.active);
@@ -204,6 +213,13 @@ export default function NewSaleScreen() {
             );
           }
         }
+      } catch (err) {
+        setLoadError(
+          normalizeError(err, {
+            fallback: "Could not load products for POS checkout. Please try again.",
+            context: "sales-new.loadProducts",
+          }),
+        );
       } finally {
         setLoading(false);
         setRefreshing(false);
@@ -248,7 +264,7 @@ export default function NewSaleScreen() {
   }, [scan]);
 
   const addToCart = useCallback((product: ProductItem) => {
-    setError(null);
+    setCheckoutError(null);
     setCart((prev) => {
       const existing = prev.find((c) => c.product.id === product.id);
       if (existing) {
@@ -359,7 +375,7 @@ export default function NewSaleScreen() {
   };
 
   const updateCartQty = useCallback((id: string, delta: number) => {
-    setError(null);
+    setCheckoutError(null);
     setCart((prev) =>
       prev
         .map((line) => {
@@ -393,7 +409,7 @@ export default function NewSaleScreen() {
   const handleCompleteSale = async () => {
     if (cart.length === 0 || submitting) return;
     setSubmitting(true);
-    setError(null);
+    setCheckoutError(null);
     try {
       const receipt = await api.createSale({
         customerName: customerName.trim() || "Walk-in Customer",
@@ -421,9 +437,27 @@ export default function NewSaleScreen() {
       });
     } catch (err) {
       void hapticError();
-      const msg = err instanceof Error ? err.message : "Failed to record sale.";
-      setError(msg);
-      toast.error("Sale failed", msg);
+      const normalized = normalizeError(err, {
+        fallback: "Could not complete this sale right now. Please try again.",
+        context: "sales-new.completeSale",
+      });
+      setCheckoutError(normalized);
+      toast.error(
+        "Sale failed",
+        normalized.userMessage,
+        undefined,
+        normalized.requiresSignIn
+          ? {
+              label: "Sign In",
+              onPress: () => {
+                setCartOpen(false);
+                router.replace("/sign-in");
+              },
+            }
+          : normalized.retryable
+            ? { label: "Retry", onPress: () => void handleCompleteSale() }
+            : undefined,
+      );
     } finally {
       setSubmitting(false);
     }
@@ -547,6 +581,22 @@ export default function NewSaleScreen() {
           contextHint="Scan product barcode to add directly to cart"
         />
       </View>
+
+      {loadError ? (
+        <View style={{ paddingHorizontal: spacing.base, paddingBottom: spacing.sm }}>
+          <InlineErrorBanner
+            message={loadError.userMessage}
+            category={loadError.category}
+            onRetry={() => void loadProducts(products.length > 0)}
+            retrying={loading || refreshing}
+            onSignIn={
+              loadError.requiresSignIn
+                ? () => router.replace("/sign-in")
+                : undefined
+            }
+          />
+        </View>
+      ) : null}
 
       {loading && products.length === 0 ? (
         <LoadingState message="Loading products..." />
@@ -842,28 +892,26 @@ export default function NewSaleScreen() {
                 paddingBottom: Math.max(insets.bottom, spacing["2xl"]) + 16,
               }}
             >
-              {error ? (
-                <View
-                  style={[
-                    styles.errorBox,
-                    {
-                      backgroundColor: colors.dangerTint,
-                      borderColor: colors.dangerBorder,
-                      borderRadius: radii.xl,
-                      padding: spacing.md,
-                    },
-                  ]}
-                >
-                  <AlertCircle size={18} color={colors.dangerText} />
-                  <Text
-                    style={[
-                      typography.caption,
-                      { color: colors.dangerText, flex: 1 },
-                    ]}
-                  >
-                    {error}
-                  </Text>
-                </View>
+              {checkoutError ? (
+                <InlineErrorBanner
+                  message={checkoutError.userMessage}
+                  category={checkoutError.category}
+                  onRetry={
+                    checkoutError.retryable
+                      ? () => void handleCompleteSale()
+                      : undefined
+                  }
+                  retrying={submitting}
+                  onSignIn={
+                    checkoutError.requiresSignIn
+                      ? () => {
+                          setCartOpen(false);
+                          router.replace("/sign-in");
+                        }
+                      : undefined
+                  }
+                  onDismiss={() => setCheckoutError(null)}
+                />
               ) : null}
 
               {cart.length === 0 ? (

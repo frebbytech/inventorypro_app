@@ -41,6 +41,7 @@ import {
 } from "@/components/ui";
 import { useTheme } from "@/theme";
 import type { SyncOutboxItem } from "@/types/domain";
+import { getUserErrorMessage, normalizeError } from "@/utils/errorHandler";
 import { formatDateTime } from "@/utils/formatters";
 import { formatOutboxItemSummary } from "@/utils/outboxFormatter";
 import { resolveProductImageUri } from "@/utils/productImage";
@@ -101,9 +102,15 @@ export default function SyncQueueScreen() {
         const rows = await listSyncOutboxItems();
         setItems(rows);
       } catch (err) {
+        const normalized = normalizeError(err, {
+          fallback: "Could not load your local sync queue right now.",
+          context: "sync-queue.loadItems",
+        });
         toast.error(
           "Could not load sync queue",
-          err instanceof Error ? err.message : "Local outbox query failed.",
+          normalized.userMessage,
+          undefined,
+          { label: "Retry", onPress: () => void loadItems(false) },
         );
       } finally {
         setLoading(false);
@@ -177,9 +184,19 @@ export default function SyncQueueScreen() {
         );
       }
     } catch (err) {
+      const normalized = normalizeError(err, {
+        fallback: "Could not reach the store server to sync. Please try again.",
+        context: "sync-queue.syncNow",
+      });
       toast.error(
         "Sync failed",
-        err instanceof Error ? err.message : "Could not reach cloud server.",
+        normalized.userMessage,
+        undefined,
+        normalized.requiresSignIn
+          ? { label: "Sign In", onPress: () => router.replace("/sign-in") }
+          : normalized.retryable
+            ? { label: "Retry", onPress: () => void handleSyncNow() }
+            : undefined,
       );
     } finally {
       setSyncingNow(false);
@@ -198,18 +215,36 @@ export default function SyncQueueScreen() {
       } else if (remaining.status === "conflict" || remaining.status === "failed") {
         toast.error(
           "Rejected by server",
-          remaining.lastError || "Conflict persisted after retry.",
+          getUserErrorMessage(
+            remaining.lastError,
+            "Conflict persisted after retry.",
+            "sync-queue.itemRejected",
+          ),
         );
       } else {
         toast.info(
           "Re-queued for sync",
-          remaining.lastError || "Will retry once connection is restored.",
+          getUserErrorMessage(
+            remaining.lastError,
+            "Will retry once connection is restored.",
+            "sync-queue.itemRequeued",
+          ),
         );
       }
     } catch (err) {
+      const normalized = normalizeError(err, {
+        fallback: "Could not retry this queued change. Please try again.",
+        context: "sync-queue.retryItem",
+      });
       toast.error(
         "Retry failed",
-        err instanceof Error ? err.message : "Could not retry mutation.",
+        normalized.userMessage,
+        undefined,
+        normalized.requiresSignIn
+          ? { label: "Sign In", onPress: () => router.replace("/sign-in") }
+          : normalized.retryable
+            ? { label: "Retry", onPress: () => void handleRetryItem(item) }
+            : undefined,
       );
     } finally {
       setBusyItemId(null);
@@ -234,9 +269,19 @@ export default function SyncQueueScreen() {
         );
       }
     } catch (err) {
+      const normalized = normalizeError(err, {
+        fallback: "Could not retry conflicted items right now.",
+        context: "sync-queue.retryAll",
+      });
       toast.error(
         "Bulk retry failed",
-        err instanceof Error ? err.message : "Could not retry conflicts.",
+        normalized.userMessage,
+        undefined,
+        normalized.requiresSignIn
+          ? { label: "Sign In", onPress: () => router.replace("/sign-in") }
+          : normalized.retryable
+            ? { label: "Retry", onPress: () => void handleRetryAllConflicts() }
+            : undefined,
       );
     } finally {
       setRetryingAll(false);
@@ -268,9 +313,17 @@ export default function SyncQueueScreen() {
       }
       setDiscardPrompt(null);
     } catch (err) {
+      const normalized = normalizeError(err, {
+        fallback: "Could not clear queued item right now. Please try again.",
+        context: "sync-queue.discard",
+      });
       toast.error(
         "Discard failed",
-        err instanceof Error ? err.message : "Could not clear queued item.",
+        normalized.userMessage,
+        undefined,
+        normalized.requiresSignIn
+          ? { label: "Sign In", onPress: () => router.replace("/sign-in") }
+          : undefined,
       );
     } finally {
       setDiscarding(false);
@@ -470,7 +523,11 @@ export default function SyncQueueScreen() {
                     { color: colors.warningText, flex: 1 },
                   ]}
                 >
-                  {syncError}
+                  {getUserErrorMessage(
+                    syncError,
+                    "Connection to store server was interrupted. Queued changes will retry automatically.",
+                    "sync-queue.syncError",
+                  )}
                 </Text>
               </View>
             ) : null}
@@ -791,7 +848,11 @@ export default function SyncQueueScreen() {
                             },
                           ]}
                         >
-                          {item.lastError}
+                          {getUserErrorMessage(
+                            item.lastError,
+                            "This change could not sync right now. Review details or tap Retry.",
+                            "sync-queue.itemLastError",
+                          )}
                         </Text>
                       </View>
                     ) : null}

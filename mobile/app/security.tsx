@@ -11,7 +11,7 @@ import {
   Text,
   View,
 } from "react-native";
-import { useFocusEffect } from "expo-router";
+import { useFocusEffect, useRouter } from "expo-router";
 import {
   AlertTriangle,
   CheckCircle2,
@@ -31,6 +31,7 @@ import {
 } from "lucide-react-native";
 import { useApiClient } from "@/api/ApiProvider";
 import { useAuth } from "@/api/AuthProvider";
+import { InlineErrorBanner } from "@/components/InlineErrorBanner";
 import { LoadingState } from "@/components/LoadingState";
 import {
   Badge,
@@ -50,6 +51,7 @@ import type {
   TwoFactorOverviewResponse,
   UserSessionItem,
 } from "@/types/domain";
+import { normalizeError, type NormalizedAppError } from "@/utils/errorHandler";
 import { formatDateTime } from "@/utils/formatters";
 
 type RoleFilter = "all" | "member" | "admin";
@@ -65,6 +67,7 @@ export default function SecurityScreen() {
     updateUserTwoFactor,
     changePassword,
   } = useAuth();
+  const router = useRouter();
   const toast = useToast();
   const { colors, spacing, radii, typography, fontFamilies } = theme;
 
@@ -83,7 +86,8 @@ export default function SecurityScreen() {
   const [twoFactorOverview, setTwoFactorOverview] =
     useState<TwoFactorOverviewResponse | null>(null);
   const [loadingTwoFactor, setLoadingTwoFactor] = useState(true);
-  const [twoFactorError, setTwoFactorError] = useState<string | null>(null);
+  const [twoFactorError, setTwoFactorError] =
+    useState<NormalizedAppError | null>(null);
   const [savingPersonal2fa, setSavingPersonal2fa] = useState(false);
   const [savingAccountId, setSavingAccountId] = useState<string | null>(null);
   const [bulkUpdating, setBulkUpdating] = useState(false);
@@ -114,7 +118,9 @@ export default function SecurityScreen() {
   const [refreshing, setRefreshing] = useState(false);
   const [revokingId, setRevokingId] = useState<string | null>(null);
   const [revokingAll, setRevokingAll] = useState(false);
-  const [sessionError, setSessionError] = useState<string | null>(null);
+  const [sessionError, setSessionError] = useState<NormalizedAppError | null>(
+    null,
+  );
   const hasLoadedRef = useRef(false);
 
   useEffect(() => {
@@ -146,9 +152,10 @@ export default function SecurityScreen() {
         setSessions(sessionsResult.value);
       } else {
         setSessionError(
-          sessionsResult.reason instanceof Error
-            ? sessionsResult.reason.message
-            : "Failed to load device sessions.",
+          normalizeError(sessionsResult.reason, {
+            fallback: "Failed to load device sessions.",
+            context: "SecurityScreen.loadSessions",
+          }),
         );
       }
 
@@ -156,9 +163,10 @@ export default function SecurityScreen() {
         setTwoFactorOverview(twoFactorResult.value);
       } else {
         setTwoFactorError(
-          twoFactorResult.reason instanceof Error
-            ? twoFactorResult.reason.message
-            : "Failed to load 2FA settings.",
+          normalizeError(twoFactorResult.reason, {
+            fallback: "Failed to load 2FA settings.",
+            context: "SecurityScreen.loadTwoFactor",
+          }),
         );
       }
 
@@ -304,10 +312,21 @@ export default function SecurityScreen() {
       });
       toast.success("Profile updated", "Your personal details were saved.");
     } catch (err) {
-      const msg =
-        err instanceof Error ? err.message : "Could not update your profile.";
-      setProfileFeedback({ type: "error", text: msg });
-      toast.error("Profile update failed", msg);
+      const norm = normalizeError(err, {
+        fallback: "Could not update your profile.",
+        context: "SecurityScreen.saveProfile",
+      });
+      setProfileFeedback({ type: "error", text: norm.userMessage });
+      toast.error(
+        "Profile update failed",
+        norm.userMessage,
+        undefined,
+        norm.requiresSignIn
+          ? { label: "Sign In", onPress: () => router.push("/sign-in") }
+          : norm.retryable
+            ? { label: "Retry", onPress: () => void handleSaveProfile() }
+            : undefined,
+      );
     } finally {
       setSavingProfile(false);
     }
@@ -344,10 +363,24 @@ export default function SecurityScreen() {
           : "Two-factor authentication turned off for your account.",
       );
     } catch (err) {
-      const msg =
-        err instanceof Error ? err.message : "Failed to update 2FA setting.";
-      setTwoFactorError(msg);
-      toast.error("2FA update failed", msg);
+      const norm = normalizeError(err, {
+        fallback: "Failed to update 2FA setting.",
+        context: "SecurityScreen.togglePersonal2fa",
+      });
+      setTwoFactorError(norm);
+      toast.error(
+        "2FA update failed",
+        norm.userMessage,
+        undefined,
+        norm.requiresSignIn
+          ? { label: "Sign In", onPress: () => router.push("/sign-in") }
+          : norm.retryable
+            ? {
+                label: "Retry",
+                onPress: () => void handleTogglePersonal2fa(nextEnabled),
+              }
+            : undefined,
+      );
     } finally {
       setSavingPersonal2fa(false);
     }
@@ -368,10 +401,24 @@ export default function SecurityScreen() {
         `Preferred verification channel set to ${method.toUpperCase()}.`,
       );
     } catch (err) {
-      const msg =
-        err instanceof Error ? err.message : "Failed to switch 2FA channel.";
-      setTwoFactorError(msg);
-      toast.error("2FA update failed", msg);
+      const norm = normalizeError(err, {
+        fallback: "Failed to switch 2FA channel.",
+        context: "SecurityScreen.changePersonal2faMethod",
+      });
+      setTwoFactorError(norm);
+      toast.error(
+        "2FA update failed",
+        norm.userMessage,
+        undefined,
+        norm.requiresSignIn
+          ? { label: "Sign In", onPress: () => router.push("/sign-in") }
+          : norm.retryable
+            ? {
+                label: "Retry",
+                onPress: () => void handleChangePersonal2faMethod(method),
+              }
+            : undefined,
+      );
     } finally {
       setSavingPersonal2fa(false);
     }
@@ -400,11 +447,23 @@ export default function SecurityScreen() {
         `2FA ${updated.twoFactorEnabled ? "enabled" : "disabled"} (${updated.twoFactorMethod.toUpperCase()}).`,
       );
     } catch (err) {
-      const msg =
-        err instanceof Error
-          ? err.message
-          : `Could not update 2FA for @${account.username}.`;
-      toast.error("Policy update failed", msg);
+      const norm = normalizeError(err, {
+        fallback: `Could not update 2FA for @${account.username}.`,
+        context: "SecurityScreen.updateStaff2fa",
+      });
+      toast.error(
+        "Policy update failed",
+        norm.userMessage,
+        undefined,
+        norm.requiresSignIn
+          ? { label: "Sign In", onPress: () => router.push("/sign-in") }
+          : norm.retryable
+            ? {
+                label: "Retry",
+                onPress: () => void handleUpdateStaff2fa(account, patch),
+              }
+            : undefined,
+      );
     } finally {
       setSavingAccountId(null);
     }
@@ -436,9 +495,26 @@ export default function SecurityScreen() {
         );
       }
     } catch (err) {
-      const msg =
-        err instanceof Error ? err.message : "Bulk 2FA update failed.";
-      toast.error("Bulk update failed", msg);
+      const norm = normalizeError(err, {
+        fallback: "Bulk 2FA update failed.",
+        context: "SecurityScreen.bulkUpdate2fa",
+      });
+      toast.error(
+        "Bulk update failed",
+        norm.userMessage,
+        undefined,
+        norm.requiresSignIn
+          ? {
+              label: "Sign In",
+              onPress: () => {
+                setBulkConfirmAction(null);
+                router.push("/sign-in");
+              },
+            }
+          : norm.retryable
+            ? { label: "Retry", onPress: () => void handleConfirmBulk2fa() }
+            : undefined,
+      );
     } finally {
       setBulkUpdating(false);
     }
@@ -483,13 +559,22 @@ export default function SecurityScreen() {
       });
       toast.success("Password updated", "Your password has been changed.");
     } catch (err) {
-      const msg =
-        err instanceof Error ? err.message : "Could not change password.";
+      const norm = normalizeError(err, {
+        fallback: "Could not change password.",
+        context: "SecurityScreen.changePassword",
+      });
       setPasswordFeedback({
         type: "error",
-        text: msg,
+        text: norm.userMessage,
       });
-      toast.error("Password update failed", msg);
+      toast.error(
+        "Password update failed",
+        norm.userMessage,
+        undefined,
+        norm.requiresSignIn
+          ? { label: "Sign In", onPress: () => router.push("/sign-in") }
+          : undefined,
+      );
     } finally {
       setSavingPassword(false);
     }
@@ -507,10 +592,21 @@ export default function SecurityScreen() {
       );
       toast.success("Session revoked", "Device session signed out.");
     } catch (err) {
-      const msg =
-        err instanceof Error ? err.message : "Failed to revoke session.";
-      setSessionError(msg);
-      toast.error("Revoke failed", msg);
+      const norm = normalizeError(err, {
+        fallback: "Failed to revoke session.",
+        context: "SecurityScreen.revokeSession",
+      });
+      setSessionError(norm);
+      toast.error(
+        "Revoke failed",
+        norm.userMessage,
+        undefined,
+        norm.requiresSignIn
+          ? { label: "Sign In", onPress: () => router.push("/sign-in") }
+          : norm.retryable
+            ? { label: "Retry", onPress: () => void handleRevokeSession(sessionId) }
+            : undefined,
+      );
     } finally {
       setRevokingId(null);
     }
@@ -530,12 +626,21 @@ export default function SecurityScreen() {
         "All other device sessions signed out.",
       );
     } catch (err) {
-      const msg =
-        err instanceof Error
-          ? err.message
-          : "Failed to revoke other sessions.";
-      setSessionError(msg);
-      toast.error("Revoke failed", msg);
+      const norm = normalizeError(err, {
+        fallback: "Failed to revoke other sessions.",
+        context: "SecurityScreen.revokeOtherSessions",
+      });
+      setSessionError(norm);
+      toast.error(
+        "Revoke failed",
+        norm.userMessage,
+        undefined,
+        norm.requiresSignIn
+          ? { label: "Sign In", onPress: () => router.push("/sign-in") }
+          : norm.retryable
+            ? { label: "Retry", onPress: () => void handleRevokeOtherSessions() }
+            : undefined,
+      );
     } finally {
       setRevokingAll(false);
     }
@@ -929,27 +1034,21 @@ export default function SecurityScreen() {
                 ) : null}
 
                 {twoFactorError ? (
-                  <View
-                    style={[
-                      styles.feedbackBox,
-                      {
-                        backgroundColor: colors.dangerTint,
-                        borderColor: colors.dangerBorder,
-                        borderRadius: radii.lg,
-                        padding: spacing.sm + 2,
-                      },
-                    ]}
-                  >
-                    <AlertTriangle size={15} color={colors.dangerText} />
-                    <Text
-                      style={[
-                        typography.caption,
-                        { color: colors.dangerText, flex: 1 },
-                      ]}
-                    >
-                      {twoFactorError}
-                    </Text>
-                  </View>
+                  <InlineErrorBanner
+                    message={twoFactorError.userMessage}
+                    category={twoFactorError.category}
+                    onRetry={
+                      twoFactorError.retryable
+                        ? () => void loadSecurityData(true)
+                        : undefined
+                    }
+                    onSignIn={
+                      twoFactorError.requiresSignIn
+                        ? () => router.push("/sign-in")
+                        : undefined
+                    }
+                    onDismiss={() => setTwoFactorError(null)}
+                  />
                 ) : null}
               </>
             )}
@@ -1472,23 +1571,21 @@ export default function SecurityScreen() {
             ) : null}
 
             {sessionError ? (
-              <View
-                style={[
-                  styles.feedbackBox,
-                  {
-                    backgroundColor: colors.dangerTint,
-                    borderColor: colors.dangerBorder,
-                    borderRadius: radii.lg,
-                    padding: spacing.sm + 2,
-                  },
-                ]}
-              >
-                <Text
-                  style={[typography.caption, { color: colors.dangerText }]}
-                >
-                  {sessionError}
-                </Text>
-              </View>
+              <InlineErrorBanner
+                message={sessionError.userMessage}
+                category={sessionError.category}
+                onRetry={
+                  sessionError.retryable
+                    ? () => void loadSecurityData(true)
+                    : undefined
+                }
+                onSignIn={
+                  sessionError.requiresSignIn
+                    ? () => router.push("/sign-in")
+                    : undefined
+                }
+                onDismiss={() => setSessionError(null)}
+              />
             ) : null}
 
             {loadingSessions && sessions.length === 0 ? (

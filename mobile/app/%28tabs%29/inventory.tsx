@@ -33,6 +33,7 @@ import {
 import { DemoBanner } from "@/components/DemoBanner";
 import { EmptyState } from "@/components/EmptyState";
 import { HidScannerBanner } from "@/components/HidScannerBanner";
+import { InlineErrorBanner } from "@/components/InlineErrorBanner";
 import { LoadingState } from "@/components/LoadingState";
 import { LowStockToast } from "@/components/LowStockToast";
 import { ProductCard } from "@/components/ProductCard";
@@ -44,6 +45,10 @@ import {
   type ProductItem,
   type StockStatusFilter,
 } from "@/types/domain";
+import {
+  normalizeError,
+  type NormalizedAppError,
+} from "@/utils/errorHandler";
 import { hapticError, hapticLight, hapticSuccess } from "@/utils/haptics";
 
 const THRESHOLD_PRESETS = [3, 5, 10, 15, 25] as const;
@@ -88,6 +93,7 @@ export default function InventoryScreen() {
   const [catalogForCounts, setCatalogForCounts] = useState<ProductItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [loadError, setLoadError] = useState<NormalizedAppError | null>(null);
   const [hidScannerEnabled, setHidScannerEnabled] = useState(false);
   const [searchFocused, setSearchFocused] = useState(false);
 
@@ -141,6 +147,7 @@ export default function InventoryScreen() {
     async (isRefresh = false) => {
       if (isRefresh) setRefreshing(true);
       else setLoading(true);
+      setLoadError(null);
 
       try {
         const [filtered, allForQuery] = await Promise.all([
@@ -160,6 +167,13 @@ export default function InventoryScreen() {
         ]);
         setProducts(filtered);
         setCatalogForCounts(allForQuery ?? filtered);
+      } catch (err) {
+        setLoadError(
+          normalizeError(err, {
+            fallback: "Could not load your product catalog. Please try again.",
+            context: "inventory.loadProducts",
+          }),
+        );
       } finally {
         setLoading(false);
         setRefreshing(false);
@@ -256,9 +270,21 @@ export default function InventoryScreen() {
         `Low-stock alerts now trigger below ${clean} units.`,
       );
     } catch (err) {
-      const msg = err instanceof Error ? err.message : "Failed to save threshold.";
-      setThresholdError(msg);
-      toast.error("Threshold update failed", msg);
+      const normalized = normalizeError(err, {
+        fallback: "Could not save threshold setting. Please try again.",
+        context: "inventory.updateThreshold",
+      });
+      setThresholdError(normalized.userMessage);
+      toast.error(
+        "Threshold update failed",
+        normalized.userMessage,
+        undefined,
+        normalized.requiresSignIn
+          ? { label: "Sign In", onPress: () => router.push("/sign-in") }
+          : normalized.retryable
+            ? { label: "Retry", onPress: () => void applyNewThreshold(clean) }
+            : undefined,
+      );
     } finally {
       setSavingThreshold(false);
     }
@@ -763,6 +789,21 @@ export default function InventoryScreen() {
             );
           })}
         </ScrollView>
+
+        {loadError ? (
+          <InlineErrorBanner
+            message={loadError.userMessage}
+            category={loadError.category}
+            onRetry={() => void loadProducts(products.length > 0)}
+            retrying={loading || refreshing}
+            onSignIn={
+              loadError.requiresSignIn
+                ? () => router.push("/sign-in")
+                : undefined
+            }
+            onDismiss={() => setLoadError(null)}
+          />
+        ) : null}
       </View>
 
       {loading && products.length === 0 ? (

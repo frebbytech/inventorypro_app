@@ -146,8 +146,9 @@ export function createTenantSyncSseResponse(opts: {
           }
         }
       } catch (err) {
+        console.error("[sse-stream] Sync replay failed:", err);
         sendFrame("error", {
-          message: err instanceof Error ? err.message : "Sync replay failed",
+          message: "Live sync was interrupted. Reconnecting...",
         });
         replayDone = true;
       }

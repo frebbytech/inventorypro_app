@@ -27,6 +27,7 @@ import { useApiClient } from "@/api/ApiProvider";
 import { useAuth } from "@/api/AuthProvider";
 import { DemoBanner } from "@/components/DemoBanner";
 import { EmptyState } from "@/components/EmptyState";
+import { InlineErrorBanner } from "@/components/InlineErrorBanner";
 import { LoadingState } from "@/components/LoadingState";
 import { LowStockToast } from "@/components/LowStockToast";
 import { ProductCard } from "@/components/ProductCard";
@@ -37,6 +38,10 @@ import {
   type ProductItem,
   type StockStatusFilter,
 } from "@/types/domain";
+import {
+  normalizeError,
+  type NormalizedAppError,
+} from "@/utils/errorHandler";
 
 const THRESHOLD_PRESETS = [3, 5, 10, 15, 25] as const;
 
@@ -80,6 +85,7 @@ export default function InventoryScreen() {
   const [catalogForCounts, setCatalogForCounts] = useState<ProductItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [loadError, setLoadError] = useState<NormalizedAppError | null>(null);
 
   // Sync local threshold if store profile refreshes
   useEffect(() => {
@@ -127,6 +133,7 @@ export default function InventoryScreen() {
     async (isRefresh = false) => {
       if (isRefresh) setRefreshing(true);
       else setLoading(true);
+      setLoadError(null);
 
       try {
         const [filtered, allForQuery] = await Promise.all([
@@ -146,6 +153,13 @@ export default function InventoryScreen() {
         ]);
         setProducts(filtered);
         setCatalogForCounts(allForQuery ?? filtered);
+      } catch (err) {
+        setLoadError(
+          normalizeError(err, {
+            fallback: "Could not load your product catalog. Please try again.",
+            context: "inventory.loadProducts",
+          }),
+        );
       } finally {
         setLoading(false);
         setRefreshing(false);
@@ -242,9 +256,19 @@ export default function InventoryScreen() {
         `Low-stock alerts now trigger below ${clean} units.`,
       );
     } catch (err) {
-      const msg = err instanceof Error ? err.message : "Failed to save threshold.";
-      setThresholdError(msg);
-      toast.error("Threshold update failed", msg);
+      const normalized = normalizeError(err, {
+        fallback: "Could not save threshold setting. Please try again.",
+        context: "inventory.updateThreshold",
+      });
+      setThresholdError(normalized.userMessage);
+      toast.error(
+        "Threshold update failed",
+        normalized.userMessage,
+        undefined,
+        normalized.retryable
+          ? { label: "Retry", onPress: () => void applyNewThreshold(clean) }
+          : undefined,
+      );
     } finally {
       setSavingThreshold(false);
     }
@@ -672,6 +696,22 @@ export default function InventoryScreen() {
           })}
         </ScrollView>
       </View>
+
+      {loadError ? (
+        <View style={{ paddingHorizontal: spacing.base, paddingBottom: spacing.sm }}>
+          <InlineErrorBanner
+            message={loadError.userMessage}
+            category={loadError.category}
+            onRetry={() => void loadProducts(products.length > 0)}
+            retrying={loading || refreshing}
+            onSignIn={
+              loadError.requiresSignIn
+                ? () => router.replace("/sign-in")
+                : undefined
+            }
+          />
+        </View>
+      ) : null}
 
       {loading && products.length === 0 ? (
         <LoadingState message="Loading product catalog..." />

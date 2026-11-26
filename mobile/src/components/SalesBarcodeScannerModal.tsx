@@ -39,6 +39,7 @@ import { DEMO_SAMPLE_BARCODES } from "@/api/demoData";
 import { Button, Card, CardContent, Input } from "@/components/ui";
 import { useTheme } from "@/theme";
 import type { ProductItem } from "@/types/domain";
+import { getUserErrorMessage } from "@/utils/errorHandler";
 import { formatCurrency } from "@/utils/formatters";
 import {
   hapticError,
@@ -187,10 +188,11 @@ export function SalesBarcodeScannerModal({
         setFeedback({
           status: "not_found",
           code,
-          message:
-            err instanceof Error
-              ? err.message
-              : "Failed to look up scanned barcode.",
+          message: getUserErrorMessage(
+            err,
+            "Could not look up that barcode right now. Please try again.",
+            "sales-scanner.lookup",
+          ),
         });
       } finally {
         isLookingUpRef.current = false;

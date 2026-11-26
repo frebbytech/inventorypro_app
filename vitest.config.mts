@@ -9,6 +9,14 @@ export default defineConfig({
         import.meta.dirname,
         "tests/mocks/server-only.ts",
       ),
+      "expo-constants": path.resolve(
+        import.meta.dirname,
+        "tests/mocks/expo-constants.ts",
+      ),
+      "react-native": path.resolve(
+        import.meta.dirname,
+        "tests/mocks/react-native.ts",
+      ),
     },
   },
   test: {

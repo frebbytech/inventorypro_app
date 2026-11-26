@@ -30,6 +30,7 @@ import {
   isLocalDeviceImageUri,
   localProductImageExists,
 } from "@/utils/productImage";
+import { logDevError, normalizeError } from "@/utils/errorHandler";
 import { ApiError, type HttpApiClient } from "./httpAdapter";
 import {
   getStoredSyncCursor,
@@ -496,25 +497,33 @@ export class SyncEngine {
           removeOutboxItem(db, item.id);
         } catch (err) {
           if (err instanceof ApiError && err.status >= 400 && err.status < 500 && err.status !== 408 && err.status !== 429) {
+            const normalized = normalizeError(err, {
+              fallback: "This queued change could not be synced.",
+              context: `SyncEngine.flushConflict:${item.entityType}`,
+            });
             markOutboxItemState(db, item.id, "conflict", {
-              error: err.message,
+              error: normalized.userMessage,
               incrementRetry: true,
             });
             this.setState({
               status: "conflict",
-              lastError: err.message,
+              lastError: normalized.userMessage,
             });
             continue;
           }
 
           hadNetworkError = true;
+          const normalized = normalizeError(err, {
+            fallback: "Waiting for connection to sync.",
+            context: `SyncEngine.flushOffline:${item.entityType}`,
+          });
           markOutboxItemState(db, item.id, "pending", {
-            error: err instanceof Error ? err.message : "Network error",
+            error: normalized.userMessage,
             incrementRetry: true,
           });
           this.setState({
             status: "offline",
-            lastError: err instanceof Error ? err.message : "Offline",
+            lastError: normalized.userMessage,
           });
           break;
         }
@@ -588,9 +597,13 @@ export class SyncEngine {
         return;
       }
       if (!(err instanceof ApiError && err.status === 401)) {
+        const normalized = normalizeError(err, {
+          fallback: "Sync is paused while offline.",
+          context: "SyncEngine.catchUpDelta",
+        });
         this.setState({
           status: "offline",
-          lastError: err instanceof Error ? err.message : "Sync unavailable",
+          lastError: normalized.userMessage,
         });
       }
     } finally {
@@ -641,7 +654,11 @@ export class SyncEngine {
       });
 
       if (!response.ok) {
-        throw new ApiError(`Sync stream error (${response.status})`, response.status);
+        logDevError("SyncEngine.sseHttp", response.status);
+        throw new ApiError(
+          "Live sync is temporarily unavailable. Reconnecting...",
+          response.status,
+        );
       }
 
       const reader = response.body?.getReader?.();
@@ -686,9 +703,10 @@ export class SyncEngine {
     } catch (err) {
       if (controller.signal.aborted || this.destroyed) return;
       if (err instanceof ApiError && err.status === 401) return;
+      logDevError("SyncEngine.sseStream", err);
       this.setState({
         status: "reconnecting",
-        lastError: err instanceof Error ? err.message : "Stream disconnected",
+        lastError: "Reconnecting to live sync...",
       });
       this.scheduleReconnect();
     }

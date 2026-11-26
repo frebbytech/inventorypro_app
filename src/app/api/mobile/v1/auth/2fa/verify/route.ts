@@ -15,6 +15,7 @@ import {
 import {
   getTenantStoreProfile,
   mapSessionUserToMobile,
+  sanitizeMobileServerError,
 } from "@/lib/mobile-api";
 import { generateId } from "@/utils/generator";
 
@@ -200,10 +201,15 @@ export async function POST(req: Request) {
       store,
       tenant: { id: tenantId, name: tenantName, slug: tenantSlug },
     });
-  } catch (err: any) {
+  } catch (err: unknown) {
+    const sanitized = sanitizeMobileServerError(err, {
+      fallbackMessage:
+        "Two-factor verification could not be completed. Please try again.",
+      context: "mobile/auth/2fa/verify",
+    });
     return NextResponse.json(
-      { error: err?.message || "Two-factor verification failed." },
-      { status: 500 },
+      { error: sanitized.message, code: sanitized.code },
+      { status: sanitized.status },
     );
   }
 }

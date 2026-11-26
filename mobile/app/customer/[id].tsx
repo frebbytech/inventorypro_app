@@ -26,6 +26,7 @@ import {
 import { useApiClient } from "@/api/ApiProvider";
 import { useAuth } from "@/api/AuthProvider";
 import { EmptyState } from "@/components/EmptyState";
+import { InlineErrorBanner } from "@/components/InlineErrorBanner";
 import { LoadingState } from "@/components/LoadingState";
 import {
   Badge,
@@ -39,6 +40,11 @@ import {
 } from "@/components/ui";
 import { useTheme } from "@/theme";
 import type { CustomerDetailResponse, SaleStatus } from "@/types/domain";
+import {
+  getUserErrorMessage,
+  normalizeError,
+  type NormalizedAppError,
+} from "@/utils/errorHandler";
 import {
   capitalizeLabel,
   formatCurrency,
@@ -58,6 +64,7 @@ export default function CustomerDetailScreen() {
   const [detail, setDetail] = useState<CustomerDetailResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [loadError, setLoadError] = useState<NormalizedAppError | null>(null);
   const hasLoadedRef = useRef(false);
 
   // Edit Customer modal state
@@ -77,10 +84,18 @@ export default function CustomerDetailScreen() {
       }
       if (silent) setRefreshing(true);
       else setLoading(true);
+      setLoadError(null);
       try {
         const res = await api.getCustomerById(String(id));
         setDetail(res);
         hasLoadedRef.current = true;
+      } catch (err) {
+        setLoadError(
+          normalizeError(err, {
+            fallback: "Could not load customer profile. Please try again.",
+            context: "customerDetail.load",
+          }),
+        );
       } finally {
         setLoading(false);
         setRefreshing(false);
@@ -134,7 +149,11 @@ export default function CustomerDetailScreen() {
       toast.success("Customer updated", `${updated.name} profile saved.`);
     } catch (err) {
       setFormError(
-        err instanceof Error ? err.message : "Failed to update customer.",
+        getUserErrorMessage(
+          err,
+          "Could not update customer profile. Please try again.",
+          "customerDetail.save",
+        ),
       );
     } finally {
       setSaving(false);
@@ -143,6 +162,33 @@ export default function CustomerDetailScreen() {
 
   if (loading && !detail) {
     return <LoadingState message="Loading customer profile..." />;
+  }
+
+  if (!detail && loadError) {
+    return (
+      <View
+        style={[
+          styles.notFoundWrap,
+          { backgroundColor: colors.background, padding: spacing.base, gap: spacing.md },
+        ]}
+      >
+        <InlineErrorBanner
+          message={loadError.userMessage}
+          category={loadError.category}
+          onRetry={() => void loadDetail(false)}
+          retrying={loading}
+          onSignIn={
+            loadError.requiresSignIn ? () => router.push("/sign-in") : undefined
+          }
+        />
+        <Button
+          title="Back to Customers"
+          variant="outline"
+          size="sm"
+          onPress={() => router.back()}
+        />
+      </View>
+    );
   }
 
   if (!detail) {
@@ -206,6 +252,19 @@ export default function CustomerDetailScreen() {
         />
       }
     >
+      {loadError ? (
+        <InlineErrorBanner
+          message={loadError.userMessage}
+          category={loadError.category}
+          onRetry={() => void loadDetail(true)}
+          retrying={refreshing}
+          onSignIn={
+            loadError.requiresSignIn ? () => router.push("/sign-in") : undefined
+          }
+          onDismiss={() => setLoadError(null)}
+        />
+      ) : null}
+
       {/* Customer Profile Card */}
       <Card>
         <CardContent style={{ paddingTop: spacing.base, gap: spacing.md }}>

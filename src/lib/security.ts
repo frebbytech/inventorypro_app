@@ -325,14 +325,14 @@ export async function issueAndSendTwoFactorCode(user: {
         text: `Your verification code is ${code}. It expires in ${OTP_EXPIRY_MINUTES} minutes.`,
         html,
       });
-    } catch (error: any) {
+    } catch (error: unknown) {
+      console.error("[2FA] Verification email delivery failed:", error);
       await db("two_factor_codes").where({ id: codeId }).del().catch(() => {});
       return {
         success: false,
         method,
         error:
-          error?.message ||
-          "Failed to send 2FA verification email. Contact your administrator.",
+          "Could not send the two-factor verification email right now. Please try again or contact your administrator.",
       };
     }
   } else {
@@ -351,21 +351,21 @@ export async function issueAndSendTwoFactorCode(user: {
       });
 
       if (!response.ok) {
-        const text = await response.text();
+        const text = await response.text().catch(() => "");
         throw new Error(`SMS provider error (${response.status}): ${text}`);
       }
       const data = await response.json().catch(() => null);
       if (data?.status && data.status !== "success") {
         throw new Error(data?.message || "SMS provider rejected the request");
       }
-    } catch (error: any) {
+    } catch (error: unknown) {
+      console.error("[2FA] Verification SMS delivery failed:", error);
       await db("two_factor_codes").where({ id: codeId }).del().catch(() => {});
       return {
         success: false,
         method,
         error:
-          error?.message ||
-          "Failed to send 2FA verification SMS. Contact your administrator.",
+          "Could not send the two-factor verification SMS right now. Please try again or contact your administrator.",
       };
     }
   }

@@ -8,6 +8,7 @@ import { runWithIdempotency } from "@/lib/sync-bus";
 import {
   extractClientMutationId,
   HttpStatusError,
+  sanitizeServerMessage,
   withMobileAuth,
 } from "@/lib/mobile-api";
 
@@ -18,7 +19,12 @@ export async function GET(req: Request) {
     const res = await getBroadcastHistory();
     if (!res.success || !res.data) {
       return NextResponse.json(
-        { error: res.message || "Failed to fetch broadcast messages." },
+        {
+          error: sanitizeServerMessage(
+            res.message,
+            "Unable to load broadcast messages right now.",
+          ),
+        },
         { status: 400 },
       );
     }
@@ -63,7 +69,10 @@ export async function POST(req: Request) {
 
           if (!res.success || !res.data) {
             throw new HttpStatusError(
-              res.message || "Failed to send broadcast message.",
+              sanitizeServerMessage(
+                res.message,
+                "Unable to send broadcast message right now.",
+              ),
               400,
             );
           }

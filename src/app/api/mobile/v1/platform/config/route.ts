@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { getPlatformMobileConfig } from "@/lib/super-admin";
+import { sanitizeMobileServerError } from "@/lib/mobile-api";
 
 export const dynamic = "force-dynamic";
 
@@ -55,13 +56,19 @@ export async function GET(req: Request) {
       },
       { headers: CORS_HEADERS },
     );
-  } catch (err: any) {
+  } catch (err: unknown) {
+    const sanitized = sanitizeMobileServerError(err, {
+      fallbackMessage:
+        "Could not resolve store server settings. Please try again.",
+      context: "mobile/platform/config",
+    });
     return NextResponse.json(
       {
         ok: false,
-        error: err?.message || "Failed to resolve platform configuration.",
+        error: sanitized.message,
+        code: sanitized.code,
       },
-      { status: 500, headers: CORS_HEADERS },
+      { status: sanitized.status, headers: CORS_HEADERS },
     );
   }
 }

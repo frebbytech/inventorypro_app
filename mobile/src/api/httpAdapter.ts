@@ -1,6 +1,11 @@
 import Constants from "expo-constants";
 import { Platform } from "react-native";
-import { inferProductImageUploadMeta } from "@/utils/productImage";
+import {
+  logDevError,
+  normalizeError,
+  type MobileErrorCategory,
+} from "../utils/errorHandler";
+import { inferProductImageUploadMeta } from "../utils/productImage";
 import type { AuthenticatedApiClient } from "./sqliteAdapter";
 import type {
   AdjustStockInput,
@@ -69,7 +74,7 @@ import type {
   UpdateSupplierInput,
   UpdateTwoFactorInput,
   UserSessionItem,
-} from "@/types/domain";
+} from "../types/domain";
 
 export interface PlatformServerConfigResponse {
   ok: boolean;
@@ -132,12 +137,32 @@ export function resolveApiBaseUrl(): string {
 }
 
 export class ApiError extends Error {
+  readonly category: MobileErrorCategory;
+  readonly code?: string;
+  readonly retryable: boolean;
+  readonly requiresSignIn: boolean;
+
   constructor(
     message: string,
     public readonly status: number,
+    options?: {
+      category?: MobileErrorCategory;
+      code?: string;
+      retryable?: boolean;
+      requiresSignIn?: boolean;
+    },
   ) {
     super(message);
     this.name = "ApiError";
+    const normalized = normalizeError(message, {
+      status,
+      code: options?.code,
+      silent: true,
+    });
+    this.category = options?.category ?? normalized.category;
+    this.code = options?.code ?? normalized.code;
+    this.retryable = options?.retryable ?? normalized.retryable;
+    this.requiresSignIn = options?.requiresSignIn ?? normalized.requiresSignIn;
   }
 }
 
@@ -247,13 +272,26 @@ export class HttpApiClient implements AuthenticatedApiClient {
         signal: controller.signal,
       });
     } catch (err: any) {
-      if (timedOut || err?.name === "AbortError") {
+      if (timedOut || (err?.name === "AbortError" && !externalSignal?.aborted)) {
+        logDevError(`HttpApiClient.timeout:${path}`, err);
         throw new ApiError(
-          "Connection timed out while contacting the server. Check your network or server URL.",
+          "The server took too long to respond. Check your connection and try again.",
           408,
+          { category: "timeout", code: "TIMEOUT", retryable: true },
         );
       }
-      throw err;
+      if (externalSignal?.aborted || err?.name === "AbortError") {
+        throw new ApiError("Request cancelled.", 499, {
+          category: "unknown",
+          retryable: false,
+        });
+      }
+      logDevError(`HttpApiClient.network:${path}`, err);
+      throw new ApiError(
+        "Couldn't reach the store server. Check your internet connection and try again.",
+        0,
+        { category: "network", code: "NETWORK_ERROR", retryable: true },
+      );
     } finally {
       if (timer) clearTimeout(timer);
       if (externalSignal) {
@@ -286,20 +324,54 @@ export class HttpApiClient implements AuthenticatedApiClient {
     }
 
     if (!res.ok) {
-      const errorMsg =
+      const serverErrorText =
         payload &&
         typeof payload === "object" &&
         "error" in payload &&
         typeof (payload as { error?: unknown }).error === "string"
           ? (payload as { error: string }).error
-          : `Request failed (HTTP ${res.status})`;
-      throw new ApiError(errorMsg, res.status);
+          : undefined;
+      const serverCode =
+        payload &&
+        typeof payload === "object" &&
+        "code" in payload &&
+        typeof (payload as { code?: unknown }).code === "string"
+          ? (payload as { code: string }).code
+          : undefined;
+
+      if (res.status >= 500 || (!parsedJson && rawText.trim().length > 0)) {
+        logDevError(`HttpApiClient.http:${res.status}:${path}`, {
+          status: res.status,
+          code: serverCode,
+          body: serverErrorText ?? rawText.slice(0, 240),
+        });
+      }
+
+      const normalized = normalizeError(
+        serverErrorText ?? `HTTP ${res.status}`,
+        {
+          status: res.status,
+          code: serverCode,
+          silent: true,
+        },
+      );
+      throw new ApiError(normalized.userMessage, res.status, {
+        category: normalized.category,
+        code: normalized.code,
+        retryable: normalized.retryable,
+        requiresSignIn:
+          res.status === 401 && !skipAuthCheck
+            ? true
+            : normalized.requiresSignIn,
+      });
     }
 
     if (rawText.trim() && !parsedJson) {
+      logDevError(`HttpApiClient.invalidJson:${path}`, rawText.slice(0, 240));
       throw new ApiError(
-        "Unable to reach the InventoryPro web server (invalid JSON response). Verify the Super Admin Mobile Sync Server URL.",
+        "Received an unexpected response from the server. Check your connection and try again.",
         res.status || 502,
+        { category: "server", code: "SERVICE_UNAVAILABLE", retryable: true },
       );
     }
 
@@ -347,16 +419,18 @@ export class HttpApiClient implements AuthenticatedApiClient {
 
     if (!res || typeof res !== "object") {
       throw new ApiError(
-        "Web server returned an empty login response. Verify the Super Admin Mobile Sync Server URL.",
+        "Unable to sign in right now. Please try again in a moment.",
         502,
+        { category: "server", retryable: true },
       );
     }
 
     if ("twoFactorRequired" in res && res.twoFactorRequired) {
       if (typeof res.challengeToken !== "string" || !res.challengeToken.trim()) {
         throw new ApiError(
-          "Web server returned an invalid two-factor challenge.",
+          "Could not start two-factor verification. Please try signing in again.",
           502,
+          { category: "server", retryable: true },
         );
       }
       return res;
@@ -369,8 +443,9 @@ export class HttpApiClient implements AuthenticatedApiClient {
       !res.user
     ) {
       throw new ApiError(
-        "Web server did not return a valid session token. Verify the Super Admin Mobile Sync Server URL.",
+        "Could not start your store session. Please try signing in again.",
         502,
+        { category: "server", retryable: true },
       );
     }
 
@@ -402,8 +477,9 @@ export class HttpApiClient implements AuthenticatedApiClient {
       !res.user
     ) {
       throw new ApiError(
-        "Web server did not return a valid session token after verification.",
+        "Verification succeeded, but your session could not be started. Please try again.",
         502,
+        { category: "server", retryable: true },
       );
     }
 
@@ -557,7 +633,11 @@ export class HttpApiClient implements AuthenticatedApiClient {
   ): Promise<string> {
     const trimmed = localUri.trim();
     if (!trimmed) {
-      throw new Error("No image URI was provided for upload.");
+      throw new ApiError(
+        "No photo was selected. Please choose an image and try again.",
+        400,
+        { category: "validation", retryable: false },
+      );
     }
 
     const meta = inferProductImageUploadMeta(trimmed, opts);
@@ -565,8 +645,17 @@ export class HttpApiClient implements AuthenticatedApiClient {
     formData.append("folder", "products");
 
     if (Platform.OS === "web") {
-      const blob =
-        opts?.webFile ?? (await (await fetch(trimmed)).blob());
+      let blob: Blob;
+      try {
+        blob = opts?.webFile ?? (await (await fetch(trimmed)).blob());
+      } catch (err) {
+        logDevError("HttpApiClient.uploadWebBlob", err);
+        throw new ApiError(
+          "Could not read the selected image file. Please choose another photo.",
+          400,
+          { category: "validation", retryable: false },
+        );
+      }
       const resolvedType =
         blob.type === "image/png" || blob.type === "image/webp" || blob.type === "image/jpeg"
           ? blob.type
@@ -593,7 +682,11 @@ export class HttpApiClient implements AuthenticatedApiClient {
     });
 
     if (!res?.downloadURL) {
-      throw new Error("Server did not return an uploaded image URL.");
+      throw new ApiError(
+        "Photo upload did not complete. Please try again.",
+        502,
+        { category: "server", retryable: true },
+      );
     }
     return res.downloadURL;
   }

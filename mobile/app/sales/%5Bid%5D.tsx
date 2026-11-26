@@ -28,6 +28,7 @@ import {
   type StoredThermalPrinterConfig,
 } from "@/api/tokenStorage";
 import { EmptyState } from "@/components/EmptyState";
+import { InlineErrorBanner } from "@/components/InlineErrorBanner";
 import { LoadingState } from "@/components/LoadingState";
 import {
   Badge,
@@ -42,6 +43,10 @@ import {
 } from "@/components/ui";
 import { useTheme } from "@/theme";
 import type { PaperSize, SaleReceiptDetail } from "@/types/domain";
+import {
+  normalizeError,
+  type NormalizedAppError,
+} from "@/utils/errorHandler";
 import {
   capitalizeLabel,
   formatCurrency,
@@ -84,6 +89,7 @@ export default function ReceiptDetailScreen() {
 
   const [receipt, setReceipt] = useState<SaleReceiptDetail | null>(null);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<NormalizedAppError | null>(null);
   const [paperSize, setPaperSize] = useState<PaperSize>(
     store?.paperSize ?? "thermal_80mm",
   );
@@ -106,7 +112,7 @@ export default function ReceiptDetailScreen() {
   const [refundReason, setRefundReason] = useState("");
   const [restockItems, setRestockItems] = useState(true);
   const [refunding, setRefunding] = useState(false);
-  const [refundError, setRefundError] = useState<string | null>(null);
+  const [refundError, setRefundError] = useState<NormalizedAppError | null>(null);
 
   useEffect(() => {
     void getStoredReceiptPaperSize().then((saved) => {
@@ -133,9 +139,17 @@ export default function ReceiptDetailScreen() {
       return;
     }
     setLoading(true);
+    setLoadError(null);
     try {
       const res = await api.getSaleReceiptById(String(id));
       setReceipt(res);
+    } catch (err) {
+      setLoadError(
+        normalizeError(err, {
+          fallback: "Could not load this receipt. Please try again.",
+          context: "receipt-detail.load",
+        }),
+      );
     } finally {
       setLoading(false);
     }
@@ -174,10 +188,10 @@ export default function ReceiptDetailScreen() {
         }
       } catch (err) {
         void hapticError();
-        const msg =
-          err instanceof Error
-            ? err.message
-            : "Unable to complete receipt export action.";
+        const normalized = normalizeError(err, {
+          fallback: "Unable to complete receipt export action.",
+          context: `receipt-detail.export.${kind}`,
+        });
         if (
           kind === "print" &&
           printerConfig &&
@@ -187,7 +201,7 @@ export default function ReceiptDetailScreen() {
         }
         setFeedback({
           type: "error",
-          text: msg,
+          text: normalized.userMessage,
         });
       } finally {
         setBusyAction(null);
@@ -231,9 +245,27 @@ export default function ReceiptDetailScreen() {
       toast.success("Sale refunded", refundMsg);
     } catch (err) {
       void hapticError();
-      const msg = err instanceof Error ? err.message : "Failed to process refund.";
-      setRefundError(msg);
-      toast.error("Refund failed", msg);
+      const normalized = normalizeError(err, {
+        fallback: "Could not process refund right now. Please try again.",
+        context: "receipt-detail.refund",
+      });
+      setRefundError(normalized);
+      toast.error(
+        "Refund failed",
+        normalized.userMessage,
+        undefined,
+        normalized.requiresSignIn
+          ? {
+              label: "Sign In",
+              onPress: () => {
+                setRefundModalOpen(false);
+                router.replace("/sign-in");
+              },
+            }
+          : normalized.retryable
+            ? { label: "Retry", onPress: () => void handleConfirmRefund() }
+            : undefined,
+      );
     } finally {
       setRefunding(false);
     }
@@ -241,6 +273,29 @@ export default function ReceiptDetailScreen() {
 
   if (loading) {
     return <LoadingState message="Loading receipt details..." />;
+  }
+
+  if (loadError && !receipt) {
+    return (
+      <View
+        style={[
+          styles.notFoundWrap,
+          { backgroundColor: colors.background, padding: spacing.base },
+        ]}
+      >
+        <InlineErrorBanner
+          message={loadError.userMessage}
+          category={loadError.category}
+          onRetry={() => void loadReceipt()}
+          retrying={loading}
+          onSignIn={
+            loadError.requiresSignIn
+              ? () => router.replace("/sign-in")
+              : undefined
+          }
+        />
+      </View>
+    );
   }
 
   if (!receipt) {
@@ -1014,27 +1069,26 @@ export default function ReceiptDetailScreen() {
             </Pressable>
 
             {refundError ? (
-              <View
-                style={[
-                  styles.feedbackBanner,
-                  {
-                    backgroundColor: colors.dangerTint,
-                    borderColor: colors.dangerBorder,
-                    borderRadius: radii.lg,
-                    padding: spacing.sm + 2,
-                    marginTop: spacing.md,
-                  },
-                ]}
-              >
-                <AlertCircle size={15} color={colors.dangerText} />
-                <Text
-                  style={[
-                    typography.caption,
-                    { color: colors.dangerText, flex: 1 },
-                  ]}
-                >
-                  {refundError}
-                </Text>
+              <View style={{ marginTop: spacing.md }}>
+                <InlineErrorBanner
+                  message={refundError.userMessage}
+                  category={refundError.category}
+                  onRetry={
+                    refundError.retryable
+                      ? () => void handleConfirmRefund()
+                      : undefined
+                  }
+                  retrying={refunding}
+                  onSignIn={
+                    refundError.requiresSignIn
+                      ? () => {
+                          setRefundModalOpen(false);
+                          router.replace("/sign-in");
+                        }
+                      : undefined
+                  }
+                  onDismiss={() => setRefundError(null)}
+                />
               </View>
             ) : null}
 

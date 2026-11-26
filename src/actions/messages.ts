@@ -181,13 +181,13 @@ export async function sendBroadcastMessage(
     if (channel === "sms") {
       if (!settings.notification_sms) {
         return Result.fail(
-          "SMS broadcasting is currently disabled in system settings (`notification_sms: false`). Please enable SMS in Settings before broadcasting.",
+          "SMS broadcasting is currently disabled. Enable SMS notifications in Settings first.",
         );
       }
     } else if (channel === "email") {
       if (!settings.notification_email) {
         return Result.fail(
-          "Email broadcasting is currently disabled in system settings (`notification_email: false`). Please enable Email in Settings before broadcasting.",
+          "Email broadcasting is currently disabled. Enable Email notifications in Settings first.",
         );
       }
       if (!subject || !subject.trim()) {
@@ -203,7 +203,7 @@ export async function sendBroadcastMessage(
       }
       if (!settings.notification_push) {
         return Result.fail(
-          "In-App / Push broadcasting is currently disabled in system settings (`notification_push: false`). Please enable Push notifications in Settings.",
+          "In-App and Push broadcasting is currently disabled. Enable Push notifications in Settings first.",
         );
       }
     } else {

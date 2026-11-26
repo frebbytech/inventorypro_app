@@ -27,10 +27,16 @@ import {
 } from "lucide-react-native";
 import { useApiClient } from "@/api/ApiProvider";
 import { EmptyState } from "@/components/EmptyState";
+import { InlineErrorBanner } from "@/components/InlineErrorBanner";
 import { LoadingState } from "@/components/LoadingState";
 import { Badge, Button, Card, Input, useToast } from "@/components/ui";
 import { useTheme } from "@/theme";
 import type { ProductItem, RestockLogItem } from "@/types/domain";
+import {
+  getUserErrorMessage,
+  normalizeError,
+  type NormalizedAppError,
+} from "@/utils/errorHandler";
 import { formatDateTime } from "@/utils/formatters";
 
 const QUICK_QTY_PRESETS = [5, 10, 25, 50] as const;
@@ -57,6 +63,7 @@ export default function RestocksHistoryScreen() {
   const [logs, setLogs] = useState<RestockLogItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [loadError, setLoadError] = useState<NormalizedAppError | null>(null);
 
   // Record restock modal state
   const [modalOpen, setModalOpen] = useState(false);
@@ -82,6 +89,7 @@ export default function RestocksHistoryScreen() {
     async (isRefresh = false) => {
       if (isRefresh) setRefreshing(true);
       else setLoading(true);
+      setLoadError(null);
       try {
         const list = await api.getRestockLogs({
           query,
@@ -89,6 +97,13 @@ export default function RestocksHistoryScreen() {
           limit: 120,
         });
         setLogs(list);
+      } catch (err) {
+        setLoadError(
+          normalizeError(err, {
+            fallback: "Could not load restock history. Please try again.",
+            context: "restocks.loadLogs",
+          }),
+        );
       } finally {
         setLoading(false);
         setRefreshing(false);
@@ -128,8 +143,15 @@ export default function RestocksHistoryScreen() {
           prev && items.some((p) => p.id === prev) ? prev : items[0].id,
         );
       }
-    } catch {
+    } catch (err) {
       setCatalogProducts([]);
+      setFormError(
+        getUserErrorMessage(
+          err,
+          "Could not load product list. Please try again.",
+          "restocks.loadProducts",
+        ),
+      );
     }
   };
 
@@ -193,7 +215,11 @@ export default function RestocksHistoryScreen() {
       await loadLogs(true);
     } catch (err) {
       setFormError(
-        err instanceof Error ? err.message : "Failed to record restock.",
+        getUserErrorMessage(
+          err,
+          "Could not record restock. Please try again.",
+          "restocks.save",
+        ),
       );
     } finally {
       setSaving(false);
@@ -308,6 +334,21 @@ export default function RestocksHistoryScreen() {
             {summary.deducted > 0 ? ` · -${summary.deducted} adj` : ""}
           </Text>
         </View>
+
+        {loadError ? (
+          <InlineErrorBanner
+            message={loadError.userMessage}
+            category={loadError.category}
+            onRetry={() => void loadLogs(logs.length > 0)}
+            retrying={loading || refreshing}
+            onSignIn={
+              loadError.requiresSignIn
+                ? () => router.push("/sign-in")
+                : undefined
+            }
+            onDismiss={() => setLoadError(null)}
+          />
+        ) : null}
       </View>
 
       {loading && logs.length === 0 ? (

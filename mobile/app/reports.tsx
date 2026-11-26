@@ -20,6 +20,7 @@ import {
   UserCheck,
 } from "lucide-react-native";
 import { useApiClient } from "@/api/ApiProvider";
+import { InlineErrorBanner } from "@/components/InlineErrorBanner";
 import { LoadingState } from "@/components/LoadingState";
 import {
   Badge,
@@ -28,9 +29,14 @@ import {
   CardContent,
   CardHeader,
   CardTitle,
+  useToast,
 } from "@/components/ui";
 import { useTheme } from "@/theme";
 import type { DailyReportData } from "@/types/domain";
+import {
+  normalizeError,
+  type NormalizedAppError,
+} from "@/utils/errorHandler";
 import { capitalizeLabel, formatCurrency } from "@/utils/formatters";
 
 function isoDateOffset(daysAgo: number): string {
@@ -57,6 +63,7 @@ function formatReadableDate(dateStr: string): string {
 export default function DailyReportsScreen() {
   const { theme } = useTheme();
   const api = useApiClient();
+  const toast = useToast();
   const router = useRouter();
   const { colors, spacing, radii, typography, fontFamilies } = theme;
 
@@ -65,6 +72,7 @@ export default function DailyReportsScreen() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [printing, setPrinting] = useState(false);
+  const [loadError, setLoadError] = useState<NormalizedAppError | null>(null);
 
   const todayStr = isoDateOffset(0);
 
@@ -82,9 +90,17 @@ export default function DailyReportsScreen() {
     async (isRefresh = false) => {
       if (isRefresh) setRefreshing(true);
       else setLoading(true);
+      setLoadError(null);
       try {
         const res = await api.getDailyReport(selectedDate);
         setReport(res);
+      } catch (err) {
+        setLoadError(
+          normalizeError(err, {
+            fallback: "Could not load the daily report right now. Please try again.",
+            context: "reports.loadReport",
+          }),
+        );
       } finally {
         setLoading(false);
         setRefreshing(false);
@@ -129,10 +145,18 @@ export default function DailyReportsScreen() {
       );
     }
 
-    await Share.share({
-      title: `Daily Report ${report.date}`,
-      message: lines.join("\n"),
-    });
+    try {
+      await Share.share({
+        title: `Daily Report ${report.date}`,
+        message: lines.join("\n"),
+      });
+    } catch (err) {
+      const normalized = normalizeError(err, {
+        fallback: "Could not open share sheet for this report.",
+        context: "reports.share",
+      });
+      toast.error("Share failed", normalized.userMessage);
+    }
   };
 
   const handlePrintPdf = async () => {
@@ -189,6 +213,12 @@ export default function DailyReportsScreen() {
         </html>
       `;
       await Print.printAsync({ html });
+    } catch (err) {
+      const normalized = normalizeError(err, {
+        fallback: "Could not print or export the report PDF.",
+        context: "reports.printPdf",
+      });
+      toast.error("Print failed", normalized.userMessage);
     } finally {
       setPrinting(false);
     }
@@ -301,6 +331,20 @@ export default function DailyReportsScreen() {
           </View>
         </CardContent>
       </Card>
+
+      {loadError ? (
+        <InlineErrorBanner
+          message={loadError.userMessage}
+          category={loadError.category}
+          onRetry={() => void loadReport(Boolean(report))}
+          retrying={loading || refreshing}
+          onSignIn={
+            loadError.requiresSignIn
+              ? () => router.replace("/sign-in")
+              : undefined
+          }
+        />
+      ) : null}
 
       {loading && !report ? (
         <LoadingState message="Generating daily report..." />

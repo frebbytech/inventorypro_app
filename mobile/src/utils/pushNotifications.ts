@@ -1,6 +1,7 @@
 import Constants from "expo-constants";
 import * as Notifications from "expo-notifications";
 import { Platform } from "react-native";
+import { getUserErrorMessage } from "./errorHandler";
 
 export type PushRegistrationStatus =
   | "idle"
@@ -136,10 +137,11 @@ export async function registerForExpoPushTokenAsync(options?: {
     return {
       status: "error",
       token: null,
-      reason:
-        err instanceof Error
-          ? err.message
-          : "Unable to initialize Expo push notifications on this device.",
+      reason: getUserErrorMessage(
+        err,
+        "Unable to initialize Expo push notifications on this device.",
+        "pushNotifications.registerForExpoPushTokenAsync",
+      ),
     };
   }
 }

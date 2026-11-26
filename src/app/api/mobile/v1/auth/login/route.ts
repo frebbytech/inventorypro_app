@@ -20,6 +20,8 @@ import {
 import {
   getTenantStoreProfile,
   mapSessionUserToMobile,
+  sanitizeMobileServerError,
+  sanitizeServerMessage,
 } from "@/lib/mobile-api";
 import { generateId } from "@/utils/generator";
 
@@ -236,9 +238,11 @@ export async function POST(req: Request) {
       if (!dispatch.success || !dispatch.codeId) {
         return NextResponse.json(
           {
-            error:
-              dispatch.error ||
-              "Two-factor authentication code delivery failed.",
+            error: sanitizeServerMessage(
+              dispatch.error,
+              "Unable to send the two-factor verification code. Please try again or contact your administrator.",
+            ),
+            code: "VALIDATION_ERROR",
           },
           { status: 400 },
         );
@@ -321,10 +325,14 @@ export async function POST(req: Request) {
       store,
       tenant: { id: tenantId, name: tenantName, slug: tenantSlug },
     });
-  } catch (err: any) {
+  } catch (err: unknown) {
+    const sanitized = sanitizeMobileServerError(err, {
+      fallbackMessage: "Sign-in is temporarily unavailable. Please try again.",
+      context: "mobile/auth/login",
+    });
     return NextResponse.json(
-      { error: err?.message || "Authentication failed." },
-      { status: 500 },
+      { error: sanitized.message, code: sanitized.code },
+      { status: sanitized.status },
     );
   }
 }

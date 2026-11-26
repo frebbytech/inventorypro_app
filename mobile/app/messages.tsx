@@ -11,7 +11,7 @@ import {
   Text,
   View,
 } from "react-native";
-import { useFocusEffect } from "expo-router";
+import { useFocusEffect, useRouter } from "expo-router";
 import {
   BellRing,
   CheckSquare,
@@ -29,6 +29,7 @@ import {
 import { useApiClient } from "@/api/ApiProvider";
 import { useAuth } from "@/api/AuthProvider";
 import { EmptyState } from "@/components/EmptyState";
+import { InlineErrorBanner } from "@/components/InlineErrorBanner";
 import { LoadingState } from "@/components/LoadingState";
 import { Badge, Button, Card, Input, useToast } from "@/components/ui";
 import { useTheme } from "@/theme";
@@ -38,6 +39,11 @@ import type {
   BroadcastRecipient,
   BroadcastRecipientGroup,
 } from "@/types/domain";
+import {
+  getUserErrorMessage,
+  normalizeError,
+  type NormalizedAppError,
+} from "@/utils/errorHandler";
 import { formatDateTime } from "@/utils/formatters";
 
 const GROUP_OPTIONS: Array<{
@@ -63,12 +69,13 @@ export default function MessagesScreen() {
   const api = useApiClient();
   const { refreshUnreadNotifications } = useAuth();
   const toast = useToast();
+  const router = useRouter();
   const { colors, spacing, radii, typography, fontFamilies } = theme;
 
   const [messages, setMessages] = useState<BroadcastMessageItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
-  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [errorMsg, setErrorMsg] = useState<NormalizedAppError | null>(null);
   const hasLoadedRef = useRef(false);
 
   // Compose modal state
@@ -95,9 +102,10 @@ export default function MessagesScreen() {
         hasLoadedRef.current = true;
       } catch (err) {
         setErrorMsg(
-          err instanceof Error
-            ? err.message
-            : "Failed to load broadcast history.",
+          normalizeError(err, {
+            fallback: "Failed to load broadcast history.",
+            context: "MessagesScreen.loadHistory",
+          }),
         );
       } finally {
         setLoading(false);
@@ -126,8 +134,15 @@ export default function MessagesScreen() {
         const list = await api.getBroadcastRecipients(group);
         setRecipients(list);
         setSelectedIds(null);
-      } catch {
+      } catch (err) {
         setRecipients([]);
+        setFormError(
+          getUserErrorMessage(
+            err,
+            "Could not load recipients for this audience.",
+            "MessagesScreen.loadRecipients",
+          ),
+        );
       } finally {
         setLoadingRecipients(false);
       }
@@ -228,8 +243,26 @@ export default function MessagesScreen() {
         }.`,
       );
     } catch (err) {
-      setFormError(
-        err instanceof Error ? err.message : "Failed to send broadcast.",
+      const norm = normalizeError(err, {
+        fallback: "Failed to send broadcast.",
+        context: "MessagesScreen.handleSend",
+      });
+      setFormError(norm.userMessage);
+      toast.error(
+        "Broadcast failed",
+        norm.userMessage,
+        undefined,
+        norm.requiresSignIn
+          ? {
+              label: "Sign In",
+              onPress: () => {
+                setComposeOpen(false);
+                router.push("/sign-in");
+              },
+            }
+          : norm.retryable
+            ? { label: "Retry", onPress: () => void handleSend() }
+            : undefined,
       );
     } finally {
       setSending(false);
@@ -304,21 +337,15 @@ export default function MessagesScreen() {
         </View>
 
         {errorMsg ? (
-          <View
-            style={[
-              styles.errorBanner,
-              {
-                backgroundColor: colors.dangerTint,
-                borderColor: colors.dangerBorder,
-                borderRadius: radii.lg,
-                padding: spacing.sm + 2,
-              },
-            ]}
-          >
-            <Text style={[typography.caption, { color: colors.dangerText }]}>
-              {errorMsg}
-            </Text>
-          </View>
+          <InlineErrorBanner
+            message={errorMsg.userMessage}
+            category={errorMsg.category}
+            onRetry={errorMsg.retryable ? () => void loadHistory(false) : undefined}
+            onSignIn={
+              errorMsg.requiresSignIn ? () => router.push("/sign-in") : undefined
+            }
+            onDismiss={() => setErrorMsg(null)}
+          />
         ) : null}
       </View>
 

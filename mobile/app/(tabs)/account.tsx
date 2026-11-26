@@ -45,8 +45,10 @@ import {
   CardContent,
   CardHeader,
   CardTitle,
+  useToast,
 } from "@/components/ui";
 import { useTheme } from "@/theme";
+import { getUserErrorMessage } from "@/utils/errorHandler";
 import { formatDateTime } from "@/utils/formatters";
 
 export default function AccountScreen() {
@@ -66,6 +68,7 @@ export default function AccountScreen() {
     switchBackToMobileOnly,
   } = useAuth();
   const router = useRouter();
+  const toast = useToast();
   const { colors, spacing, typography, radii, fontFamilies } = theme;
 
   const [logoutOpen, setLogoutOpen] = useState(false);
@@ -93,6 +96,15 @@ export default function AccountScreen() {
     setSyncingNow(true);
     try {
       await triggerSyncNow();
+    } catch (err) {
+      toast.error(
+        "Sync failed",
+        getUserErrorMessage(
+          err,
+          "Could not complete sync right now.",
+          "AccountScreen.handleManualSync",
+        ),
+      );
     } finally {
       setSyncingNow(false);
     }
@@ -425,8 +437,12 @@ export default function AccountScreen() {
                         { color: colors.dangerText, flex: 1 },
                       ]}
                     >
-                      {syncError ||
-                        `${conflictOutboxCount} sync conflict(s) rejected by server stock rules.`}
+                      {syncError
+                        ? getUserErrorMessage(
+                            syncError,
+                            "Sync encountered an issue. Tap to view queue.",
+                          )
+                        : `${conflictOutboxCount} sync conflict(s) rejected by server stock rules.`}
                     </Text>
                     <ChevronRight size={15} color={colors.dangerText} />
                   </Pressable>

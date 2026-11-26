@@ -23,6 +23,7 @@ import { useApiClient } from "@/api/ApiProvider";
 import { useAuth } from "@/api/AuthProvider";
 import { DemoBanner } from "@/components/DemoBanner";
 import { EmptyState } from "@/components/EmptyState";
+import { InlineErrorBanner } from "@/components/InlineErrorBanner";
 import { LoadingState } from "@/components/LoadingState";
 import { SaleTransactionRow } from "@/components/SaleTransactionRow";
 import { Button, Input, SegmentedTabs } from "@/components/ui";
@@ -33,6 +34,10 @@ import type {
   SaleStatus,
   SaleTransactionSummary,
 } from "@/types/domain";
+import {
+  normalizeError,
+  type NormalizedAppError,
+} from "@/utils/errorHandler";
 import { formatCurrency, formatNumber } from "@/utils/formatters";
 
 type TenderFilter = "all" | PaymentMode;
@@ -73,11 +78,13 @@ export default function SalesScreen() {
   const [sales, setSales] = useState<SaleTransactionSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [loadError, setLoadError] = useState<NormalizedAppError | null>(null);
 
   const loadSales = useCallback(
     async (isRefresh = false) => {
       if (isRefresh) setRefreshing(true);
       else setLoading(true);
+      setLoadError(null);
 
       try {
         const list = await api.getRecentSales({
@@ -87,6 +94,13 @@ export default function SalesScreen() {
           dateRange,
         });
         setSales(list);
+      } catch (err) {
+        setLoadError(
+          normalizeError(err, {
+            fallback: "Could not load sales transactions. Please try again.",
+            context: "sales.loadSales",
+          }),
+        );
       } finally {
         setLoading(false);
         setRefreshing(false);
@@ -374,6 +388,22 @@ export default function SalesScreen() {
           </View>
         </Pressable>
       </View>
+
+      {loadError ? (
+        <View style={{ paddingHorizontal: spacing.base, paddingBottom: spacing.sm }}>
+          <InlineErrorBanner
+            message={loadError.userMessage}
+            category={loadError.category}
+            onRetry={() => void loadSales(sales.length > 0)}
+            retrying={loading || refreshing}
+            onSignIn={
+              loadError.requiresSignIn
+                ? () => router.replace("/sign-in")
+                : undefined
+            }
+          />
+        </View>
+      ) : null}
 
       {loading && sales.length === 0 ? (
         <LoadingState message="Loading recent sales..." />

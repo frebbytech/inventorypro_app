@@ -93,6 +93,15 @@ jobs:
         with:
           node-version: "22"
 
+      - name: Verify EXPO_TOKEN secret is configured
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+        run: |
+          if [ -z "${EXPO_TOKEN}" ]; then
+            echo "::error::Missing EXPO_TOKEN GitHub Actions secret. Add it under Settings -> Secrets and variables -> Actions."
+            exit 1
+          fi
+
       - name: Set up Expo and EAS
         uses: expo/expo-github-action@v8
         with:
@@ -121,6 +130,15 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: "22"
+
+      - name: Verify EXPO_TOKEN secret is configured
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+        run: |
+          if [ -z "${EXPO_TOKEN}" ]; then
+            echo "::error::Missing EXPO_TOKEN GitHub Actions secret. Add it under Settings -> Secrets and variables -> Actions."
+            exit 1
+          fi
 
       - name: Set up Expo and EAS
         uses: expo/expo-github-action@v8

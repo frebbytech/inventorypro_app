@@ -17,6 +17,7 @@ import {
 import { useApiClient } from "@/api/ApiProvider";
 import { useAuth } from "@/api/AuthProvider";
 import { EmptyState } from "@/components/EmptyState";
+import { InlineErrorBanner } from "@/components/InlineErrorBanner";
 import { LoadingState } from "@/components/LoadingState";
 import {
   Badge,
@@ -29,6 +30,10 @@ import {
 } from "@/components/ui";
 import { useTheme } from "@/theme";
 import type { SalesDateRange, SalesReportData } from "@/types/domain";
+import {
+  normalizeError,
+  type NormalizedAppError,
+} from "@/utils/errorHandler";
 import {
   capitalizeLabel,
   formatCurrency,
@@ -54,14 +59,23 @@ export default function SalesSummaryScreen() {
   const [report, setReport] = useState<SalesReportData | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [loadError, setLoadError] = useState<NormalizedAppError | null>(null);
 
   const loadReport = useCallback(
     async (isRefresh = false) => {
       if (isRefresh) setRefreshing(true);
       else setLoading(true);
+      setLoadError(null);
       try {
         const res = await api.getSalesReport(range);
         setReport(res);
+      } catch (err) {
+        setLoadError(
+          normalizeError(err, {
+            fallback: "Could not load the sales report right now. Please try again.",
+            context: "sales-summary.loadReport",
+          }),
+        );
       } finally {
         setLoading(false);
         setRefreshing(false);
@@ -103,7 +117,21 @@ export default function SalesSummaryScreen() {
         onChange={setRange}
       />
 
-      {!report ? (
+      {loadError ? (
+        <InlineErrorBanner
+          message={loadError.userMessage}
+          category={loadError.category}
+          onRetry={() => void loadReport(Boolean(report))}
+          retrying={loading || refreshing}
+          onSignIn={
+            loadError.requiresSignIn
+              ? () => router.replace("/sign-in")
+              : undefined
+          }
+        />
+      ) : null}
+
+      {!report && !loadError ? (
         <EmptyState
           title="Unable to load report"
           description="Pull down to refresh or retry loading sales metrics."
@@ -115,7 +143,7 @@ export default function SalesSummaryScreen() {
             />
           }
         />
-      ) : (
+      ) : report ? (
         <>
           {/* Primary Financial KPIs */}
           <Card>
@@ -460,7 +488,7 @@ export default function SalesSummaryScreen() {
             }
           />
         </>
-      )}
+      ) : null}
     </ScrollView>
   );
 }

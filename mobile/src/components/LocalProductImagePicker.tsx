@@ -28,6 +28,7 @@ import { useAuth } from "@/api/AuthProvider";
 import { ApiError } from "@/api/httpAdapter";
 import { Button } from "@/components/ui";
 import { useTheme } from "@/theme";
+import { getUserErrorMessage } from "@/utils/errorHandler";
 import {
   deleteLocalProductImageIfManaged,
   isLocalDeviceImageUri,
@@ -89,7 +90,13 @@ export function LocalProductImagePicker({
     } catch (err) {
       if (err instanceof ApiError && err.status >= 400 && err.status < 500 && err.status !== 408 && err.status !== 429) {
         deleteLocalProductImageIfManaged(savedLocalUri);
-        setErrorMessage(err.message || "Unable to upload product photo.");
+        setErrorMessage(
+          getUserErrorMessage(
+            err,
+            "Unable to upload product photo.",
+            "product-image.upload",
+          ),
+        );
       } else {
         // Offline or transient server failure: keep local URI so outbox uploads it when online
         sessionPickedUrisRef.current.add(savedLocalUri);
@@ -121,9 +128,11 @@ export function LocalProductImagePicker({
       onChange(cloudUrl);
     } catch (err) {
       setErrorMessage(
-        err instanceof Error
-          ? err.message
-          : "Still offline. Photo remains safely queued on device.",
+        getUserErrorMessage(
+          err,
+          "Still offline. Photo remains safely queued on device.",
+          "product-image.uploadDeferred",
+        ),
       );
     } finally {
       setUploading(false);
@@ -141,7 +150,11 @@ export function LocalProductImagePicker({
       }
     } catch (err) {
       setErrorMessage(
-        err instanceof Error ? err.message : "Unable to load selected image.",
+        getUserErrorMessage(
+          err,
+          "Unable to load selected image.",
+          "product-image.pick",
+        ),
       );
     } finally {
       setPicking(false);
@@ -184,7 +197,11 @@ export function LocalProductImagePicker({
       }
     } catch (err) {
       setErrorMessage(
-        err instanceof Error ? err.message : "Unable to capture product photo.",
+        getUserErrorMessage(
+          err,
+          "Unable to capture product photo.",
+          "product-image.capture",
+        ),
       );
       setCameraOpen(false);
     } finally {

@@ -14,16 +14,19 @@ import {
   DEFAULT_TENANT_SLUG,
 } from "@/lib/tenant";
 import { generateId } from "@/utils/generator";
+import {
+  HttpStatusError,
+  sanitizeMobileServerError,
+  sanitizeServerMessage,
+  type MobileErrorCode,
+} from "./mobile-error";
 
-export class HttpStatusError extends Error {
-  constructor(
-    message: string,
-    public readonly status: number = 400,
-  ) {
-    super(message);
-    this.name = "HttpStatusError";
-  }
-}
+export {
+  HttpStatusError,
+  sanitizeMobileServerError,
+  sanitizeServerMessage,
+  type MobileErrorCode,
+};
 
 export type MobileTwoFactorMethod = "email" | "sms";
 
@@ -380,30 +383,9 @@ export function extractClientMutationId(
 export function getErrorStatus(err: unknown): {
   status: number;
   message: string;
+  code: MobileErrorCode;
 } {
-  if (err instanceof HttpStatusError) {
-    return { status: err.status, message: err.message };
-  }
-  const msg = err instanceof Error ? err.message : "Request failed";
-  const lower = msg.toLowerCase();
-  if (
-    lower.includes("insufficient stock") ||
-    lower.includes("conflict") ||
-    lower.includes("already exists") ||
-    lower.includes("already refunded")
-  ) {
-    return { status: 409, message: msg };
-  }
-  if (lower.includes("not found")) {
-    return { status: 404, message: msg };
-  }
-  if (lower.includes("not authorized") || lower.includes("admin")) {
-    return { status: 403, message: msg };
-  }
-  if (lower.includes("unauthorized")) {
-    return { status: 401, message: msg };
-  }
-  return { status: 400, message: msg };
+  return sanitizeMobileServerError(err, { context: "mobile-api" });
 }
 
 export async function withMobileAuth(
@@ -419,11 +401,20 @@ export async function withMobileAuth(
   try {
     const auth = await getBearerAuthSession(req);
     if (!auth) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+      return NextResponse.json(
+        {
+          error: "Your session has expired. Please sign in again.",
+          code: "UNAUTHORIZED",
+        },
+        { status: 401 },
+      );
     }
     if (opts?.requireAdmin && auth.session.role !== "admin") {
       return NextResponse.json(
-        { error: "Administrator privileges are required." },
+        {
+          error: "Administrator privileges are required.",
+          code: "FORBIDDEN",
+        },
         { status: 403 },
       );
     }
@@ -440,8 +431,8 @@ export async function withMobileAuth(
       }),
     );
   } catch (err) {
-    const { status, message } = getErrorStatus(err);
-    return NextResponse.json({ error: message }, { status });
+    const { status, message, code } = getErrorStatus(err);
+    return NextResponse.json({ error: message, code }, { status });
   }
 }
 

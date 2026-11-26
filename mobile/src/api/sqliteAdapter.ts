@@ -1,6 +1,6 @@
 import { Platform } from "react-native";
 import type { InventoryProApiClient } from "./client";
-import { ensureDbReady } from "@/db/client";
+import { ensureDbReady } from "../db/client";
 import {
   adjustProductStock as dbAdjustProductStock,
   authenticateWithCredentials,
@@ -62,7 +62,7 @@ import {
   updateStoreStockThreshold,
   updateSupplier as dbUpdateSupplier,
   updateUserTwoFactorLocal,
-} from "@/db/queries";
+} from "../db/queries";
 import type {
   AdjustStockInput,
   AuditLogItem,
@@ -126,7 +126,7 @@ import type {
   UpdateSupplierInput,
   UpdateTwoFactorInput,
   UserSessionItem,
-} from "@/types/domain";
+} from "../types/domain";
 
 export interface AuthenticatedApiClient extends InventoryProApiClient {
   login(payload: AuthLoginPayload): Promise<AuthLoginResult>;

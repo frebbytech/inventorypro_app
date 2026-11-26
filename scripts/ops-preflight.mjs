@@ -45,11 +45,20 @@ const easJsonPath = path.join(root, "mobile/eas.json");
 const appConfigTsPath = path.join(root, "mobile/app.config.ts");
 
 let easProjectId = (process.env.EXPO_PUBLIC_EAS_PROJECT_ID || "").trim();
+let easOwner = (process.env.EXPO_OWNER || "").trim();
+let easBuildEnvsComplete = false;
 try {
   const appJson = JSON.parse(fs.readFileSync(appJsonPath, "utf8"));
-  JSON.parse(fs.readFileSync(easJsonPath, "utf8"));
+  const easJson = JSON.parse(fs.readFileSync(easJsonPath, "utf8"));
   const fileProjectId = String(appJson?.expo?.extra?.eas?.projectId || "").trim();
+  const fileOwner = String(appJson?.expo?.owner || "").trim();
   if (!easProjectId && fileProjectId) easProjectId = fileProjectId;
+  if (!easOwner && fileOwner) easOwner = fileOwner;
+  easBuildEnvsComplete = Boolean(
+    easJson?.build?.development?.environment &&
+      easJson?.build?.preview?.environment &&
+      easJson?.build?.production?.environment,
+  );
   console.log("[PASS] mobile/app.json & mobile/eas.json valid JSON");
 } catch (err) {
   console.error("[FAIL] Invalid mobile/app.json or mobile/eas.json:", err);
@@ -72,12 +81,30 @@ for (const assetRel of requiredStoreAssets) {
 console.log(`[PASS] Verified ${requiredStoreAssets.length} mobile store PNG assets`);
 
 if (easProjectId) {
-  console.log(`[PASS] Expo EAS projectId bound (${easProjectId})`);
+  console.log(
+    `[PASS] Expo EAS projectId bound (${easProjectId}${easOwner ? `, owner: ${easOwner}` : ""})`,
+  );
 } else {
   console.log(
     "[WARN] Expo EAS projectId unbound (run `cd mobile && npx eas init` or set EXPO_PUBLIC_EAS_PROJECT_ID)",
   );
   if (strict) criticalFailures += 1;
+}
+
+if (easBuildEnvsComplete) {
+  console.log("[PASS] EAS build profiles bind development/preview/production environments");
+} else {
+  console.log("[WARN] One or more mobile/eas.json profiles lack explicit environment bindings");
+}
+
+const googleServicesEnv = (process.env.GOOGLE_SERVICES_JSON || "").trim();
+const googleServicesLocal = fs.existsSync(path.join(root, "mobile/google-services.json"));
+if (googleServicesEnv || googleServicesLocal) {
+  console.log("[PASS] Android FCM google-services.json present for push builds");
+} else {
+  console.log(
+    "[INFO] Local mobile/google-services.json absent (expected when stored as EAS GOOGLE_SERVICES_JSON file secret)",
+  );
 }
 
 // 2. Environment & security guardrails (never prints secret values)

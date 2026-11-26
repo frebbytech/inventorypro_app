@@ -23,10 +23,16 @@ import {
 } from "lucide-react-native";
 import { useApiClient } from "@/api/ApiProvider";
 import { EmptyState } from "@/components/EmptyState";
+import { InlineErrorBanner } from "@/components/InlineErrorBanner";
 import { LoadingState } from "@/components/LoadingState";
 import { Badge, Button, Card, Input, useToast } from "@/components/ui";
 import { useTheme } from "@/theme";
 import type { CategoryItem } from "@/types/domain";
+import {
+  getUserErrorMessage,
+  normalizeError,
+  type NormalizedAppError,
+} from "@/utils/errorHandler";
 import { formatDateTime } from "@/utils/formatters";
 
 export default function CategoriesManagerScreen() {
@@ -40,7 +46,7 @@ export default function CategoriesManagerScreen() {
   const [categories, setCategories] = useState<CategoryItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
-  const [actionError, setActionError] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<NormalizedAppError | null>(null);
 
   // Add / Edit modal state
   const [modalOpen, setModalOpen] = useState(false);
@@ -63,7 +69,10 @@ export default function CategoriesManagerScreen() {
         setCategories(list);
       } catch (err) {
         setActionError(
-          err instanceof Error ? err.message : "Failed to load categories.",
+          normalizeError(err, {
+            fallback: "Could not load categories. Please try again.",
+            context: "categories.load",
+          }),
         );
       } finally {
         setLoading(false);
@@ -143,7 +152,11 @@ export default function CategoriesManagerScreen() {
       await loadCategories(true);
     } catch (err) {
       setFormError(
-        err instanceof Error ? err.message : "Failed to save category.",
+        getUserErrorMessage(
+          err,
+          "Could not save category. Please try again.",
+          "categories.save",
+        ),
       );
     } finally {
       setSaving(false);
@@ -164,10 +177,21 @@ export default function CategoriesManagerScreen() {
         `${updated.name} status updated.`,
       );
     } catch (err) {
-      const msg =
-        err instanceof Error ? err.message : "Failed to update category status.";
-      setActionError(msg);
-      toast.error("Category update failed", msg);
+      const normalized = normalizeError(err, {
+        fallback: "Could not update category status. Please try again.",
+        context: "categories.toggleActive",
+      });
+      setActionError(normalized);
+      toast.error(
+        "Category update failed",
+        normalized.userMessage,
+        undefined,
+        normalized.requiresSignIn
+          ? { label: "Sign In", onPress: () => router.push("/sign-in") }
+          : normalized.retryable
+            ? { label: "Retry", onPress: () => void handleToggleActive(item) }
+            : undefined,
+      );
     }
   };
 
@@ -243,22 +267,18 @@ export default function CategoriesManagerScreen() {
         </View>
 
         {actionError ? (
-          <View
-            style={[
-              styles.alertBox,
-              {
-                backgroundColor: colors.dangerTint,
-                borderColor: colors.dangerBorder,
-                borderRadius: radii.lg,
-                padding: spacing.sm + 2,
-              },
-            ]}
-          >
-            <AlertCircle size={15} color={colors.dangerText} />
-            <Text style={[typography.caption, { color: colors.dangerText, flex: 1 }]}>
-              {actionError}
-            </Text>
-          </View>
+          <InlineErrorBanner
+            message={actionError.userMessage}
+            category={actionError.category}
+            onRetry={() => void loadCategories(categories.length > 0)}
+            retrying={loading || refreshing}
+            onSignIn={
+              actionError.requiresSignIn
+                ? () => router.push("/sign-in")
+                : undefined
+            }
+            onDismiss={() => setActionError(null)}
+          />
         ) : null}
       </View>
 

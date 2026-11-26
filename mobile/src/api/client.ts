@@ -57,7 +57,7 @@ import type {
   UpdateSupplierInput,
   UpdateTwoFactorInput,
   UserSessionItem,
-} from "@/types/domain";
+} from "../types/domain";
 
 /**
  * REST endpoint contract for optional external InventoryPro HTTP API sync

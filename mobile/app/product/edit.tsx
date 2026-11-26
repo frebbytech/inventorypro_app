@@ -19,6 +19,7 @@ import {
 import { useApiClient } from "@/api/ApiProvider";
 import { useAuth } from "@/api/AuthProvider";
 import { EmptyState } from "@/components/EmptyState";
+import { InlineErrorBanner } from "@/components/InlineErrorBanner";
 import { LoadingState } from "@/components/LoadingState";
 import { LocalProductImagePicker } from "@/components/LocalProductImagePicker";
 import {
@@ -33,6 +34,10 @@ import {
 } from "@/components/ui";
 import { useTheme } from "@/theme";
 import { LOW_STOCK_THRESHOLD } from "@/types/domain";
+import {
+  normalizeError,
+  type NormalizedAppError,
+} from "@/utils/errorHandler";
 import { formatCurrency } from "@/utils/formatters";
 import { isLocalDeviceImageUri } from "@/utils/productImage";
 
@@ -62,6 +67,7 @@ export default function EditProductScreen() {
   const [currentStock, setCurrentStock] = useState(0);
 
   const [saving, setSaving] = useState(false);
+  const [loadError, setLoadError] = useState<NormalizedAppError | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -76,6 +82,7 @@ export default function EditProductScreen() {
       }
 
       setLoading(true);
+      setLoadError(null);
       try {
         const [detail, cats] = await Promise.all([
           api.getProductById(String(id)),
@@ -109,6 +116,15 @@ export default function EditProductScreen() {
         setIsActive(p.active);
         setDescription(p.description || "");
         setCurrentStock(p.stockQuantity);
+      } catch (err) {
+        if (active) {
+          setLoadError(
+            normalizeError(err, {
+              fallback: "Could not load this product for editing.",
+              context: "product-edit.load",
+            }),
+          );
+        }
       } finally {
         if (active) setLoading(false);
       }
@@ -199,9 +215,21 @@ export default function EditProductScreen() {
       }
       router.back();
     } catch (err) {
-      const msg = err instanceof Error ? err.message : "Failed to update product.";
-      setError(msg);
-      toast.error("Could not update product", msg);
+      const normalized = normalizeError(err, {
+        fallback: "Could not save product changes right now. Please try again.",
+        context: "product-edit.save",
+      });
+      setError(normalized.userMessage);
+      toast.error(
+        "Could not update product",
+        normalized.userMessage,
+        undefined,
+        normalized.requiresSignIn
+          ? { label: "Sign In", onPress: () => router.replace("/sign-in") }
+          : normalized.retryable
+            ? { label: "Retry", onPress: () => void handleSave() }
+            : undefined,
+      );
     } finally {
       setSaving(false);
     }
@@ -209,6 +237,29 @@ export default function EditProductScreen() {
 
   if (loading) {
     return <LoadingState message="Loading product for editing..." />;
+  }
+
+  if (loadError) {
+    return (
+      <View
+        style={[
+          styles.notFoundWrap,
+          { backgroundColor: colors.background, padding: spacing.base },
+        ]}
+      >
+        <InlineErrorBanner
+          message={loadError.userMessage}
+          category={loadError.category}
+          onRetry={() => router.back()}
+          retryLabel="Go Back"
+          onSignIn={
+            loadError.requiresSignIn
+              ? () => router.replace("/sign-in")
+              : undefined
+          }
+        />
+      </View>
+    );
   }
 
   if (notFound) {

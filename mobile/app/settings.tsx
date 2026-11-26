@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
   KeyboardAvoidingView,
   Platform,
@@ -44,6 +44,7 @@ import {
   getStoredPrinterConfig,
   setStoredPrinterConfig,
 } from "@/api/tokenStorage";
+import { InlineErrorBanner } from "@/components/InlineErrorBanner";
 import {
   Badge,
   Button,
@@ -71,6 +72,11 @@ import {
   type PrinterTransport,
   type StockAudioTone,
 } from "@/types/domain";
+import {
+  getUserErrorMessage,
+  normalizeError,
+  type NormalizedAppError,
+} from "@/utils/errorHandler";
 import { hapticError, hapticLight, hapticSuccess } from "@/utils/haptics";
 import { sendTestLocalNotificationAsync } from "@/utils/pushNotifications";
 import {
@@ -78,6 +84,15 @@ import {
   printThermalTestTicket,
   validateTcpPrinterEndpoint,
 } from "@/utils/thermalPrinter";
+
+function makeValidationError(userMessage: string): NormalizedAppError {
+  return {
+    userMessage,
+    category: "validation",
+    retryable: false,
+    requiresSignIn: false,
+  };
+}
 
 type SettingsTabValue = "business" | "alerts" | "hours" | "theme";
 
@@ -336,10 +351,26 @@ export default function SettingsScreen() {
     [colors.primaryForeground, colors.mutedForeground],
   );
 
+  const [loadError, setLoadError] = useState<NormalizedAppError | null>(null);
+
+  const loadStoreSettings = useCallback(async () => {
+    setLoadError(null);
+    try {
+      await refreshStoreSettings();
+    } catch (err) {
+      setLoadError(
+        normalizeError(err, {
+          fallback: "Could not refresh latest store settings.",
+          context: "SettingsScreen.refreshStoreSettings",
+        }),
+      );
+    }
+  }, [refreshStoreSettings]);
+
   // Refresh full store settings on screen mount
   useEffect(() => {
-    void refreshStoreSettings().catch(() => {});
-  }, [refreshStoreSettings]);
+    void loadStoreSettings();
+  }, [loadStoreSettings]);
 
   // --- Tab 1: Business Info + Threshold + Receipt Printing ---
   const [storeName, setStoreName] = useState(
@@ -364,7 +395,8 @@ export default function SettingsScreen() {
     store?.paperSize ?? "thermal_80mm",
   );
   const [savingBusiness, setSavingBusiness] = useState(false);
-  const [businessError, setBusinessError] = useState<string | null>(null);
+  const [businessError, setBusinessError] =
+    useState<NormalizedAppError | null>(null);
   const [businessSavedMsg, setBusinessSavedMsg] = useState<string | null>(null);
 
   // --- Device-local ESC/POS Thermal Printer Hardware Config ---
@@ -447,7 +479,9 @@ export default function SettingsScreen() {
   const [sendingEodReport, setSendingEodReport] = useState(false);
   const [registeringPush, setRegisteringPush] = useState(false);
   const [sendingTestAlert, setSendingTestAlert] = useState(false);
-  const [alertsError, setAlertsError] = useState<string | null>(null);
+  const [alertsError, setAlertsError] = useState<NormalizedAppError | null>(
+    null,
+  );
   const [alertsSavedMsg, setAlertsSavedMsg] = useState<string | null>(null);
 
   // --- Tab 3: Business Hours ---
@@ -465,7 +499,7 @@ export default function SettingsScreen() {
     store?.businessHoursNotes ?? "",
   );
   const [savingHours, setSavingHours] = useState(false);
-  const [hoursError, setHoursError] = useState<string | null>(null);
+  const [hoursError, setHoursError] = useState<NormalizedAppError | null>(null);
   const [hoursSavedMsg, setHoursSavedMsg] = useState<string | null>(null);
 
   // --- Tab 4: Theme & Accent ---
@@ -606,15 +640,23 @@ export default function SettingsScreen() {
     const parsedThreshold = Math.trunc(Number(stockThresholdText.trim()));
 
     if (cleanName.length < 2) {
-      setBusinessError("Business name must be at least 2 characters.");
+      setBusinessError(
+        makeValidationError("Business name must be at least 2 characters."),
+      );
       return;
     }
     if (cleanAddress.length < 5) {
-      setBusinessError("Address must be at least 5 characters.");
+      setBusinessError(
+        makeValidationError("Address must be at least 5 characters."),
+      );
       return;
     }
     if (cleanEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail)) {
-      setBusinessError("Please enter a valid email address or leave it blank.");
+      setBusinessError(
+        makeValidationError(
+          "Please enter a valid email address or leave it blank.",
+        ),
+      );
       return;
     }
     if (
@@ -623,12 +665,18 @@ export default function SettingsScreen() {
       parsedPercent > 100
     ) {
       setBusinessError(
-        "Default tax rate must be a percentage between 0 and 100.",
+        makeValidationError(
+          "Default tax rate must be a percentage between 0 and 100.",
+        ),
       );
       return;
     }
     if (!Number.isFinite(parsedThreshold) || parsedThreshold < 1) {
-      setBusinessError("Low-stock alert threshold must be at least 1 unit.");
+      setBusinessError(
+        makeValidationError(
+          "Low-stock alert threshold must be at least 1 unit.",
+        ),
+      );
       return;
     }
 
@@ -662,10 +710,21 @@ export default function SettingsScreen() {
       );
     } catch (err) {
       void hapticError();
-      const msg =
-        err instanceof Error ? err.message : "Failed to save business info.";
-      setBusinessError(msg);
-      toast.error("Could not save settings", msg);
+      const norm = normalizeError(err, {
+        fallback: "Failed to save business info.",
+        context: "SettingsScreen.saveBusinessInfo",
+      });
+      setBusinessError(norm);
+      toast.error(
+        "Could not save settings",
+        norm.userMessage,
+        undefined,
+        norm.requiresSignIn
+          ? { label: "Sign In", onPress: () => router.push("/sign-in") }
+          : norm.retryable
+            ? { label: "Retry", onPress: () => void handleSaveBusinessInfo() }
+            : undefined,
+      );
     } finally {
       setSavingBusiness(false);
     }
@@ -723,10 +782,11 @@ export default function SettingsScreen() {
       void hapticError();
       setPrinterFeedback({
         type: "error",
-        text:
-          err instanceof Error
-            ? err.message
-            : "Failed to save hardware printer profile.",
+        text: getUserErrorMessage(
+          err,
+          "Failed to save hardware printer profile.",
+          "SettingsScreen.savePrinterConfig",
+        ),
       });
     } finally {
       setSavingPrinterConfig(false);
@@ -760,10 +820,11 @@ export default function SettingsScreen() {
       void hapticError();
       setPrinterFeedback({
         type: "error",
-        text:
-          err instanceof Error
-            ? err.message
-            : "Failed to query paired Bluetooth printers.",
+        text: getUserErrorMessage(
+          err,
+          "Failed to query paired Bluetooth printers.",
+          "SettingsScreen.scanBluetoothPrinters",
+        ),
       });
     } finally {
       setScanningBtPrinters(false);
@@ -799,10 +860,11 @@ export default function SettingsScreen() {
       void hapticError();
       setPrinterFeedback({
         type: "error",
-        text:
-          err instanceof Error
-            ? err.message
-            : "Unable to print test ticket to hardware printer.",
+        text: getUserErrorMessage(
+          err,
+          "Unable to print test ticket to hardware printer.",
+          "SettingsScreen.testThermalPrinter",
+        ),
       });
     } finally {
       setTestingPrinter(false);
@@ -818,11 +880,17 @@ export default function SettingsScreen() {
     const cleanPhone = eodAdminPhone.trim();
 
     if (!HHMM_REGEX.test(cleanTime)) {
-      setAlertsError("Closing time must use 24-hour HH:MM format (e.g. 18:00).");
+      setAlertsError(
+        makeValidationError(
+          "Closing time must use 24-hour HH:MM format (e.g. 18:00).",
+        ),
+      );
       return;
     }
     if (cleanEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail)) {
-      setAlertsError("Please enter a valid EOD report email address.");
+      setAlertsError(
+        makeValidationError("Please enter a valid EOD report email address."),
+      );
       return;
     }
 
@@ -855,12 +923,21 @@ export default function SettingsScreen() {
       toast.success("Alerts & EOD saved", "Notification settings updated.");
     } catch (err) {
       void hapticError();
-      const msg =
-        err instanceof Error
-          ? err.message
-          : "Failed to save alerts & EOD settings.";
-      setAlertsError(msg);
-      toast.error("Save failed", msg);
+      const norm = normalizeError(err, {
+        fallback: "Failed to save alerts & EOD settings.",
+        context: "SettingsScreen.saveAlertsAndEod",
+      });
+      setAlertsError(norm);
+      toast.error(
+        "Save failed",
+        norm.userMessage,
+        undefined,
+        norm.requiresSignIn
+          ? { label: "Sign In", onPress: () => router.push("/sign-in") }
+          : norm.retryable
+            ? { label: "Retry", onPress: () => void handleSaveAlertsAndEod() }
+            : undefined,
+      );
     } finally {
       setSavingAlerts(false);
     }
@@ -892,15 +969,22 @@ export default function SettingsScreen() {
       } else {
         void hapticError();
         setAlertsError(
-          result.reason || "Unable to enable push notifications on this device.",
+          normalizeError(
+            result.reason || "Unable to enable push notifications on this device.",
+            {
+              fallback: "Unable to enable push notifications on this device.",
+              context: "SettingsScreen.enablePushPermission",
+            },
+          ),
         );
       }
     } catch (err) {
       void hapticError();
       setAlertsError(
-        err instanceof Error
-          ? err.message
-          : "Push notification registration failed.",
+        normalizeError(err, {
+          fallback: "Push notification registration failed.",
+          context: "SettingsScreen.enablePush",
+        }),
       );
     } finally {
       setRegisteringPush(false);
@@ -919,7 +1003,10 @@ export default function SettingsScreen() {
     } catch (err) {
       void hapticError();
       setAlertsError(
-        err instanceof Error ? err.message : "Failed to unregister device.",
+        normalizeError(err, {
+          fallback: "Failed to unregister device.",
+          context: "SettingsScreen.disablePush",
+        }),
       );
     } finally {
       setRegisteringPush(false);
@@ -943,7 +1030,9 @@ export default function SettingsScreen() {
       } else {
         void hapticError();
         setAlertsError(
-          "Permission denied or unsupported on this platform (e.g. web browser).",
+          makeValidationError(
+            "Permission denied or unsupported on this platform (e.g. web browser).",
+          ),
         );
       }
     } finally {
@@ -964,12 +1053,21 @@ export default function SettingsScreen() {
       setAlertsSavedMsg(`Daily report for ${result.reportDate} dispatched.`);
     } catch (err) {
       void hapticError();
-      const msg =
-        err instanceof Error
-          ? err.message
-          : "Failed to dispatch daily sales report.";
-      setAlertsError(msg);
-      toast.error("Report dispatch failed", msg);
+      const norm = normalizeError(err, {
+        fallback: "Failed to dispatch daily sales report.",
+        context: "SettingsScreen.sendDailyReportNow",
+      });
+      setAlertsError(norm);
+      toast.error(
+        "Report dispatch failed",
+        norm.userMessage,
+        undefined,
+        norm.requiresSignIn
+          ? { label: "Sign In", onPress: () => router.push("/sign-in") }
+          : norm.retryable
+            ? { label: "Retry", onPress: () => void handleSendDailyReportNow() }
+            : undefined,
+      );
     } finally {
       setSendingEodReport(false);
     }
@@ -981,7 +1079,11 @@ export default function SettingsScreen() {
     const open = businessOpeningTime.trim();
     const close = businessClosingTime.trim();
     if (!HHMM_REGEX.test(open) || !HHMM_REGEX.test(close)) {
-      setHoursError("Default open and close times must use HH:MM format.");
+      setHoursError(
+        makeValidationError(
+          "Default open and close times must use HH:MM format.",
+        ),
+      );
       return;
     }
     setWeeklySchedule((prev) =>
@@ -997,7 +1099,11 @@ export default function SettingsScreen() {
     const open = businessOpeningTime.trim();
     const close = businessClosingTime.trim();
     if (!HHMM_REGEX.test(open) || !HHMM_REGEX.test(close)) {
-      setHoursError("Default opening and closing times must use HH:MM format.");
+      setHoursError(
+        makeValidationError(
+          "Default opening and closing times must use HH:MM format.",
+        ),
+      );
       return;
     }
     for (const day of weeklySchedule) {
@@ -1005,7 +1111,9 @@ export default function SettingsScreen() {
         !HHMM_REGEX.test(day.openTime.trim()) ||
         !HHMM_REGEX.test(day.closeTime.trim())
       ) {
-        setHoursError(`Invalid HH:MM time entered for ${day.label}.`);
+        setHoursError(
+          makeValidationError(`Invalid HH:MM time entered for ${day.label}.`),
+        );
         return;
       }
     }
@@ -1031,10 +1139,21 @@ export default function SettingsScreen() {
       setHoursSavedMsg("Store operating hours saved.");
       toast.success("Business hours saved", "Weekly schedule updated.");
     } catch (err) {
-      const msg =
-        err instanceof Error ? err.message : "Failed to save business hours.";
-      setHoursError(msg);
-      toast.error("Save failed", msg);
+      const norm = normalizeError(err, {
+        fallback: "Failed to save business hours.",
+        context: "SettingsScreen.saveBusinessHours",
+      });
+      setHoursError(norm);
+      toast.error(
+        "Save failed",
+        norm.userMessage,
+        undefined,
+        norm.requiresSignIn
+          ? { label: "Sign In", onPress: () => router.push("/sign-in") }
+          : norm.retryable
+            ? { label: "Retry", onPress: () => void handleSaveBusinessHours() }
+            : undefined,
+      );
     } finally {
       setSavingHours(false);
     }
@@ -1094,6 +1213,22 @@ export default function SettingsScreen() {
             onChange={setActiveTab}
             scrollable
           />
+
+          {loadError ? (
+            <InlineErrorBanner
+              message={loadError.userMessage}
+              category={loadError.category}
+              onRetry={
+                loadError.retryable ? () => void loadStoreSettings() : undefined
+              }
+              onSignIn={
+                loadError.requiresSignIn
+                  ? () => router.push("/sign-in")
+                  : undefined
+              }
+              onDismiss={() => setLoadError(null)}
+            />
+          ) : null}
 
           {isReadOnlyStoreAdmin && activeTab !== "theme" ? (
             <View
@@ -1500,26 +1635,21 @@ export default function SettingsScreen() {
                 </View>
 
                 {businessError ? (
-                  <View
-                    style={[
-                      styles.feedbackBanner,
-                      {
-                        backgroundColor: colors.dangerTint,
-                        borderColor: colors.dangerBorder,
-                        borderRadius: radii.lg,
-                      },
-                    ]}
-                  >
-                    <AlertCircle size={15} color={colors.dangerText} />
-                    <Text
-                      style={[
-                        typography.caption,
-                        { color: colors.dangerText, flex: 1 },
-                      ]}
-                    >
-                      {businessError}
-                    </Text>
-                  </View>
+                  <InlineErrorBanner
+                    message={businessError.userMessage}
+                    category={businessError.category}
+                    onRetry={
+                      businessError.retryable
+                        ? () => void handleSaveBusinessInfo()
+                        : undefined
+                    }
+                    onSignIn={
+                      businessError.requiresSignIn
+                        ? () => router.push("/sign-in")
+                        : undefined
+                    }
+                    onDismiss={() => setBusinessError(null)}
+                  />
                 ) : null}
 
                 {businessSavedMsg ? (
@@ -2572,26 +2702,16 @@ export default function SettingsScreen() {
                 </View>
 
                 {alertsError ? (
-                  <View
-                    style={[
-                      styles.feedbackBanner,
-                      {
-                        backgroundColor: colors.dangerTint,
-                        borderColor: colors.dangerBorder,
-                        borderRadius: radii.lg,
-                      },
-                    ]}
-                  >
-                    <AlertCircle size={15} color={colors.dangerText} />
-                    <Text
-                      style={[
-                        typography.caption,
-                        { color: colors.dangerText, flex: 1 },
-                      ]}
-                    >
-                      {alertsError}
-                    </Text>
-                  </View>
+                  <InlineErrorBanner
+                    message={alertsError.userMessage}
+                    category={alertsError.category}
+                    onSignIn={
+                      alertsError.requiresSignIn
+                        ? () => router.push("/sign-in")
+                        : undefined
+                    }
+                    onDismiss={() => setAlertsError(null)}
+                  />
                 ) : null}
 
                 {alertsSavedMsg ? (
@@ -2950,26 +3070,21 @@ export default function SettingsScreen() {
                 </View>
 
                 {hoursError ? (
-                  <View
-                    style={[
-                      styles.feedbackBanner,
-                      {
-                        backgroundColor: colors.dangerTint,
-                        borderColor: colors.dangerBorder,
-                        borderRadius: radii.lg,
-                      },
-                    ]}
-                  >
-                    <AlertCircle size={15} color={colors.dangerText} />
-                    <Text
-                      style={[
-                        typography.caption,
-                        { color: colors.dangerText, flex: 1 },
-                      ]}
-                    >
-                      {hoursError}
-                    </Text>
-                  </View>
+                  <InlineErrorBanner
+                    message={hoursError.userMessage}
+                    category={hoursError.category}
+                    onRetry={
+                      hoursError.retryable
+                        ? () => void handleSaveBusinessHours()
+                        : undefined
+                    }
+                    onSignIn={
+                      hoursError.requiresSignIn
+                        ? () => router.push("/sign-in")
+                        : undefined
+                    }
+                    onDismiss={() => setHoursError(null)}
+                  />
                 ) : null}
 
                 {hoursSavedMsg ? (

@@ -10,6 +10,7 @@ import {
   getFirebaseStorageConfig,
   uploadImageToFirebaseStorage,
 } from "@/lib/firebase-storage";
+import { sanitizeMobileServerError } from "@/lib/mobile-error";
 
 export const runtime = "nodejs";
 
@@ -306,14 +307,18 @@ export async function POST(request: NextRequest) {
       },
     );
   } catch (error) {
-    console.error("Upload error:", error);
+    const sanitized = sanitizeMobileServerError(error, {
+      fallbackMessage:
+        "We couldn't process or upload this image right now. Please try again.",
+      context: "api/upload",
+    });
 
     return NextResponse.json(
       {
-        error:
-          error instanceof Error ? error.message : "Failed to upload image.",
+        error: sanitized.message,
+        code: sanitized.code,
       },
-      { status: 500 },
+      { status: sanitized.status },
     );
   }
 }

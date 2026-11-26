@@ -33,6 +33,7 @@ import { useApiClient } from "@/api/ApiProvider";
 import { useAuth } from "@/api/AuthProvider";
 import { DEMO_SAMPLE_BARCODES } from "@/api/demoData";
 import { DemoBanner } from "@/components/DemoBanner";
+import { InlineErrorBanner } from "@/components/InlineErrorBanner";
 import {
   Badge,
   Button,
@@ -44,6 +45,10 @@ import {
 } from "@/components/ui";
 import { useTheme } from "@/theme";
 import { LOW_STOCK_THRESHOLD, type ProductItem } from "@/types/domain";
+import {
+  normalizeError,
+  type NormalizedAppError,
+} from "@/utils/errorHandler";
 import { formatCurrency } from "@/utils/formatters";
 import { resolveProductImageUri } from "@/utils/productImage";
 
@@ -83,6 +88,7 @@ export default function ScanScreen() {
   const [matchedProduct, setMatchedProduct] = useState<ProductItem | null>(null);
   const [matchedImageError, setMatchedImageError] = useState(false);
   const [notFoundCode, setNotFoundCode] = useState<string | null>(null);
+  const [lookupError, setLookupError] = useState<NormalizedAppError | null>(null);
 
   useEffect(() => {
     setMatchedImageError(false);
@@ -111,6 +117,7 @@ export default function ScanScreen() {
       setIsLookingUp(true);
       setLastScannedCode(code);
       setNotFoundCode(null);
+      setLookupError(null);
 
       try {
         const product = await api.lookupProductByBarcode(code);
@@ -121,6 +128,14 @@ export default function ScanScreen() {
           setMatchedProduct(null);
           setNotFoundCode(code);
         }
+      } catch (err) {
+        setMatchedProduct(null);
+        setLookupError(
+          normalizeError(err, {
+            fallback: "Could not look up that barcode right now. Please try again.",
+            context: "scan.performLookup",
+          }),
+        );
       } finally {
         isLookingUpRef.current = false;
         setIsLookingUp(false);
@@ -148,6 +163,7 @@ export default function ScanScreen() {
     setScannerPaused(false);
     setMatchedProduct(null);
     setNotFoundCode(null);
+    setLookupError(null);
     lastScanTimeRef.current = 0;
   };
 
@@ -328,6 +344,25 @@ export default function ScanScreen() {
         }}
       >
         {renderCameraSection()}
+
+        {lookupError ? (
+          <InlineErrorBanner
+            message={lookupError.userMessage}
+            category={lookupError.category}
+            onRetry={
+              lastScannedCode && lookupError.retryable
+                ? () => void performLookup(lastScannedCode)
+                : undefined
+            }
+            retrying={isLookingUp}
+            onSignIn={
+              lookupError.requiresSignIn
+                ? () => router.replace("/sign-in")
+                : undefined
+            }
+            onDismiss={() => setLookupError(null)}
+          />
+        ) : null}
 
         {/* Lookup Result Card */}
         {matchedProduct ? (

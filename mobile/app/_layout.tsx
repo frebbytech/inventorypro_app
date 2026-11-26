@@ -15,7 +15,7 @@ import {
 import { ApiProvider } from "@/api/ApiProvider";
 import { AuthProvider, useAuth } from "@/api/AuthProvider";
 import { LoadingState } from "@/components/LoadingState";
-import { ToastProvider } from "@/components/ui";
+import { ToastProvider, useToast } from "@/components/ui";
 import { ThemeProvider, useTheme } from "@/theme";
 import {
   configureForegroundNotifications,
@@ -28,8 +28,37 @@ SplashScreen.preventAutoHideAsync().catch(() => {});
 
 function ThemedNavigator() {
   const { theme, mode } = useTheme();
-  const { isAuthenticated, isRestoring, hasCompletedOnboarding } = useAuth();
+  const {
+    isAuthenticated,
+    isRestoring,
+    hasCompletedOnboarding,
+    sessionExpiredReason,
+    dismissSessionExpired,
+  } = useAuth();
+  const toast = useToast();
   const router = useRouter();
+  const lastNotifiedReasonRef = React.useRef<string | null>(null);
+
+  useEffect(() => {
+    if (!sessionExpiredReason) {
+      lastNotifiedReasonRef.current = null;
+      return;
+    }
+    if (lastNotifiedReasonRef.current === sessionExpiredReason) return;
+    lastNotifiedReasonRef.current = sessionExpiredReason;
+    toast.warning(
+      "Session expired",
+      sessionExpiredReason,
+      6000,
+      {
+        label: "Sign In",
+        onPress: () => {
+          dismissSessionExpired();
+          router.replace("/sign-in");
+        },
+      },
+    );
+  }, [sessionExpiredReason, toast, dismissSessionExpired, router]);
 
   useEffect(() => {
     if (!isAuthenticated || !hasCompletedOnboarding || Platform.OS === "web") {

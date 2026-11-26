@@ -12,13 +12,17 @@ import { CheckCircle2, Info } from "lucide-react-native";
 import { useApiClient } from "@/api/ApiProvider";
 import { useAuth } from "@/api/AuthProvider";
 import { DemoBanner } from "@/components/DemoBanner";
-import { EmptyState } from "@/components/EmptyState";
+import { InlineErrorBanner } from "@/components/InlineErrorBanner";
 import { KpiGrid } from "@/components/KpiGrid";
 import { LoadingState } from "@/components/LoadingState";
 import { LowStockRow } from "@/components/LowStockRow";
 import { Button, Card, CardHeader, CardTitle } from "@/components/ui";
 import { useTheme } from "@/theme";
 import { LOW_STOCK_THRESHOLD, type TodayDashboardData } from "@/types/domain";
+import {
+  normalizeError,
+  type NormalizedAppError,
+} from "@/utils/errorHandler";
 
 export default function TodayScreen() {
   const { theme } = useTheme();
@@ -31,20 +35,23 @@ export default function TodayScreen() {
   const [data, setData] = useState<TodayDashboardData | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [errorInfo, setErrorInfo] = useState<NormalizedAppError | null>(null);
 
   const loadDashboard = useCallback(
     async (isRefresh = false) => {
       if (isRefresh) setRefreshing(true);
       else setLoading(true);
-      setError(null);
+      setErrorInfo(null);
 
       try {
         const result = await api.getTodayDashboard();
         setData(result);
       } catch (err) {
-        setError(
-          err instanceof Error ? err.message : "Failed to load today's summary.",
+        setErrorInfo(
+          normalizeError(err, {
+            fallback: "Could not load today's sales summary. Pull down or tap Retry.",
+            context: "dashboard.load",
+          }),
         );
       } finally {
         setLoading(false);
@@ -110,19 +117,20 @@ export default function TodayScreen() {
           />
         }
       >
-        {error ? (
-          <EmptyState
-            title="Unable to load summary"
-            description={error}
-            action={
-              <Button
-                title="Retry"
-                size="sm"
-                onPress={() => void loadDashboard()}
-              />
+        {errorInfo ? (
+          <InlineErrorBanner
+            message={errorInfo.userMessage}
+            category={errorInfo.category}
+            onRetry={() => void loadDashboard(Boolean(data))}
+            retrying={loading || refreshing}
+            onSignIn={
+              errorInfo.requiresSignIn
+                ? () => router.replace("/sign-in")
+                : undefined
             }
           />
-        ) : data ? (
+        ) : null}
+        {data ? (
           <>
             {/* KPI Summary Grid */}
             <KpiGrid kpis={data.kpis} />

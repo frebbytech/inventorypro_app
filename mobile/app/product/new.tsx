@@ -40,6 +40,7 @@ import {
 } from "@/components/ui";
 import { useTheme } from "@/theme";
 import { LOW_STOCK_THRESHOLD } from "@/types/domain";
+import { getUserErrorMessage, normalizeError } from "@/utils/errorHandler";
 import { formatCurrency } from "@/utils/formatters";
 import { isLocalDeviceImageUri } from "@/utils/productImage";
 import {
@@ -216,9 +217,21 @@ export default function NewProductScreen() {
         params: { id: created.id },
       });
     } catch (err) {
-      const msg = err instanceof Error ? err.message : "Unable to save product.";
-      setManualError(msg);
-      toast.error("Could not create product", msg);
+      const normalized = normalizeError(err, {
+        fallback: "Unable to save this product right now. Please try again.",
+        context: "product-new.create",
+      });
+      setManualError(normalized.userMessage);
+      toast.error(
+        "Could not create product",
+        normalized.userMessage,
+        undefined,
+        normalized.requiresSignIn
+          ? { label: "Sign In", onPress: () => router.replace("/sign-in") }
+          : normalized.retryable
+            ? { label: "Retry", onPress: () => void handleSaveManual() }
+            : undefined,
+      );
     } finally {
       setManualSaving(false);
     }
@@ -253,7 +266,11 @@ export default function NewProductScreen() {
       setParsedImport(parsed);
     } catch (err) {
       setImportError(
-        err instanceof Error ? err.message : "Failed to read spreadsheet file.",
+        getUserErrorMessage(
+          err,
+          "Could not read the selected spreadsheet file.",
+          "product-new.pickSpreadsheet",
+        ),
       );
     } finally {
       setPickingFile(false);
@@ -267,7 +284,13 @@ export default function NewProductScreen() {
       const parsed = parseCsvTextToProducts(csvText, existingCategories);
       setParsedImport(parsed);
     } catch (err) {
-      setImportError(err instanceof Error ? err.message : "Invalid CSV format.");
+      setImportError(
+        getUserErrorMessage(
+          err,
+          "Could not parse the CSV text. Check the column headers and try again.",
+          "product-new.parseCsv",
+        ),
+      );
     }
   };
 
@@ -280,9 +303,11 @@ export default function NewProductScreen() {
       setCsvText(buildProductTemplateCsv());
       setShowPasteCsv(true);
       setImportError(
-        err instanceof Error
-          ? `${err.message} Sample CSV loaded into paste box below.`
-          : "Sample CSV loaded into paste box below.",
+        `${getUserErrorMessage(
+          err,
+          "Could not share the template file directly.",
+          "product-new.template",
+        )} Sample CSV loaded into paste box below.`,
       );
     }
   };
@@ -337,9 +362,21 @@ export default function NewProductScreen() {
       const refreshedCats = await api.getCategories();
       setExistingCategories(refreshedCats.filter((c) => c !== "All"));
     } catch (err) {
-      const msg = err instanceof Error ? err.message : "Bulk import failed.";
-      setImportError(msg);
-      toast.error("Bulk import failed", msg);
+      const normalized = normalizeError(err, {
+        fallback: "Bulk import could not be completed. Please try again.",
+        context: "product-new.bulkImport",
+      });
+      setImportError(normalized.userMessage);
+      toast.error(
+        "Bulk import failed",
+        normalized.userMessage,
+        undefined,
+        normalized.requiresSignIn
+          ? { label: "Sign In", onPress: () => router.replace("/sign-in") }
+          : normalized.retryable
+            ? { label: "Retry", onPress: () => void handleConfirmBulkImport() }
+            : undefined,
+      );
     } finally {
       setImporting(false);
     }

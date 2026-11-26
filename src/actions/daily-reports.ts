@@ -180,7 +180,7 @@ export async function generateDailySalesReport(
   } catch (error: any) {
     console.error("Error generating daily sales report:", error);
     return Result.fail(
-      error?.message || "Failed to generate daily sales report",
+      "Unable to generate the daily sales report right now. Please try again.",
     );
   }
 }
@@ -377,7 +377,7 @@ export async function sendDailySalesReport(options?: {
               await logBroadcast("email", subject, text, "failed");
               return [
                 "email",
-                { sent: false, targetEmail, error: err?.message },
+                { sent: false, targetEmail, error: "Email delivery failed." },
               ];
             }
           })(),
@@ -414,7 +414,10 @@ export async function sendDailySalesReport(options?: {
             } catch (err: any) {
               console.error(`EOD report ${dateStr}: sms dispatch failed`, err);
               await logBroadcast("sms", subject, text, "failed");
-              return ["sms", { sent: false, targetPhone, error: err?.message }];
+              return [
+                "sms",
+                { sent: false, targetPhone, error: "SMS delivery failed." },
+              ];
             }
           })(),
         );

@@ -23,11 +23,16 @@ import {
   X,
 } from "lucide-react-native";
 import { useAuth } from "@/api/AuthProvider";
+import { InlineErrorBanner } from "@/components/InlineErrorBanner";
 import { ensureDbReady } from "@/db/client";
 import { getLocalDataSummary, type LocalDataSummary } from "@/db/syncStore";
 import { Button, Input } from "@/components/ui";
 import { useTheme } from "@/theme";
 import type { AuthLoginResponse } from "@/types/domain";
+import {
+  normalizeError,
+  type NormalizedAppError,
+} from "@/utils/errorHandler";
 
 interface SyncTransitionModalProps {
   visible: boolean;
@@ -69,12 +74,14 @@ export function SyncTransitionModal({
   const [localSummary, setLocalSummary] = useState<LocalDataSummary | null>(null);
 
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [errorInfo, setErrorInfo] = useState<NormalizedAppError | null>(null);
+  const lastActionRef = React.useRef<(() => void) | null>(null);
 
   useEffect(() => {
     if (!visible) return;
     setStep("auth");
-    setError(null);
+    setErrorInfo(null);
+    lastActionRef.current = null;
     setPendingAuth(null);
     setOtpCode("");
     void refreshPlatformServerUrl();
@@ -85,11 +92,18 @@ export function SyncTransitionModal({
 
   const handleCloudSignIn = async () => {
     if (!identifier.trim() || !password) {
-      setError("Enter your username/email and password.");
+      lastActionRef.current = null;
+      setErrorInfo({
+        userMessage: "Enter your username/email and password.",
+        category: "validation",
+        retryable: false,
+        requiresSignIn: false,
+      });
       return;
     }
     setLoading(true);
-    setError(null);
+    setErrorInfo(null);
+    lastActionRef.current = () => void handleCloudSignIn();
     try {
       const res = await authenticateCloudPreview({
         identifier: identifier.trim(),
@@ -105,8 +119,11 @@ export function SyncTransitionModal({
         setStep("migration_choice");
       }
     } catch (err) {
-      setError(
-        err instanceof Error ? err.message : "Failed to connect to cloud workspace.",
+      setErrorInfo(
+        normalizeError(err, {
+          fallback: "Could not connect to cloud workspace. Check your details and try again.",
+          context: "sync-transition.signIn",
+        }),
       );
     } finally {
       setLoading(false);
@@ -115,11 +132,18 @@ export function SyncTransitionModal({
 
   const handleVerifyOtp = async () => {
     if (!/^\d{6}$/.test(otpCode.replace(/\s+/g, ""))) {
-      setError("Enter the 6-digit verification code.");
+      lastActionRef.current = null;
+      setErrorInfo({
+        userMessage: "Enter the 6-digit verification code.",
+        category: "validation",
+        retryable: false,
+        requiresSignIn: false,
+      });
       return;
     }
     setLoading(true);
-    setError(null);
+    setErrorInfo(null);
+    lastActionRef.current = () => void handleVerifyOtp();
     try {
       const res = await verifyTwoFactorPreview({
         challengeToken,
@@ -128,7 +152,12 @@ export function SyncTransitionModal({
       setPendingAuth(res);
       setStep("migration_choice");
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Invalid verification code.");
+      setErrorInfo(
+        normalizeError(err, {
+          fallback: "Invalid verification code. Please check and try again.",
+          context: "sync-transition.2faVerify",
+        }),
+      );
     } finally {
       setLoading(false);
     }
@@ -136,13 +165,19 @@ export function SyncTransitionModal({
 
   const handleResendOtp = async () => {
     setLoading(true);
-    setError(null);
+    setErrorInfo(null);
+    lastActionRef.current = () => void handleResendOtp();
     try {
       const res = await resendTwoFactorCode(challengeToken);
       setChallengeToken(res.challengeToken);
       setMaskedTarget(res.maskedTarget);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Unable to resend code.");
+      setErrorInfo(
+        normalizeError(err, {
+          fallback: "Could not resend verification code right now.",
+          context: "sync-transition.2faResend",
+        }),
+      );
     } finally {
       setLoading(false);
     }
@@ -151,13 +186,17 @@ export function SyncTransitionModal({
   const handleChooseStrategy = async (strategy: "merge" | "pull") => {
     if (!pendingAuth) return;
     setLoading(true);
-    setError(null);
+    setErrorInfo(null);
+    lastActionRef.current = () => void handleChooseStrategy(strategy);
     try {
       await finalizeCloudTransition(pendingAuth, strategy);
       onClose();
     } catch (err) {
-      setError(
-        err instanceof Error ? err.message : "Failed to complete workspace sync.",
+      setErrorInfo(
+        normalizeError(err, {
+          fallback: "Could not complete workspace sync right now. Please try again.",
+          context: "sync-transition.finalize",
+        }),
       );
     } finally {
       setLoading(false);
@@ -236,23 +275,18 @@ export function SyncTransitionModal({
             keyboardShouldPersistTaps="handled"
             contentContainerStyle={{ padding: spacing.base, gap: spacing.md }}
           >
-            {error ? (
-              <View
-                style={[
-                  styles.errorBox,
-                  {
-                    backgroundColor: colors.dangerTint,
-                    borderColor: colors.dangerBorder,
-                    borderRadius: radii.lg,
-                    padding: spacing.md,
-                  },
-                ]}
-              >
-                <AlertCircle size={16} color={colors.dangerText} />
-                <Text style={[typography.caption, { color: colors.dangerText, flex: 1 }]}>
-                  {error}
-                </Text>
-              </View>
+            {errorInfo ? (
+              <InlineErrorBanner
+                message={errorInfo.userMessage}
+                category={errorInfo.category}
+                onRetry={
+                  errorInfo.retryable && lastActionRef.current
+                    ? () => lastActionRef.current?.()
+                    : undefined
+                }
+                retrying={loading}
+                onDismiss={() => setErrorInfo(null)}
+              />
             ) : null}
 
             {step === "auth" ? (

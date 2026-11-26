@@ -28,10 +28,16 @@ import {
 import { useApiClient } from "@/api/ApiProvider";
 import { useAuth } from "@/api/AuthProvider";
 import { EmptyState } from "@/components/EmptyState";
+import { InlineErrorBanner } from "@/components/InlineErrorBanner";
 import { LoadingState } from "@/components/LoadingState";
 import { Badge, Button, Card, Input, useToast } from "@/components/ui";
 import { useTheme } from "@/theme";
 import type { CustomerItem } from "@/types/domain";
+import {
+  getUserErrorMessage,
+  normalizeError,
+  type NormalizedAppError,
+} from "@/utils/errorHandler";
 import { formatCurrency, formatDateTime } from "@/utils/formatters";
 
 export default function CustomersDirectoryScreen() {
@@ -47,7 +53,7 @@ export default function CustomersDirectoryScreen() {
   const [customers, setCustomers] = useState<CustomerItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
-  const [actionError, setActionError] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<NormalizedAppError | null>(null);
   const hasLoadedRef = useRef(false);
 
   // Add / Edit modal state
@@ -73,7 +79,10 @@ export default function CustomersDirectoryScreen() {
         hasLoadedRef.current = true;
       } catch (err) {
         setActionError(
-          err instanceof Error ? err.message : "Failed to load customers.",
+          normalizeError(err, {
+            fallback: "Could not load customers. Please try again.",
+            context: "customers.load",
+          }),
         );
       } finally {
         setLoading(false);
@@ -159,7 +168,11 @@ export default function CustomersDirectoryScreen() {
       await loadCustomers(true);
     } catch (err) {
       setFormError(
-        err instanceof Error ? err.message : "Failed to save customer.",
+        getUserErrorMessage(
+          err,
+          "Could not save customer profile. Please try again.",
+          "customers.save",
+        ),
       );
     } finally {
       setSaving(false);
@@ -238,22 +251,18 @@ export default function CustomersDirectoryScreen() {
         </View>
 
         {actionError ? (
-          <View
-            style={[
-              styles.alertBox,
-              {
-                backgroundColor: colors.dangerTint,
-                borderColor: colors.dangerBorder,
-                borderRadius: radii.lg,
-                padding: spacing.sm + 2,
-              },
-            ]}
-          >
-            <AlertCircle size={15} color={colors.dangerText} />
-            <Text style={[typography.caption, { color: colors.dangerText, flex: 1 }]}>
-              {actionError}
-            </Text>
-          </View>
+          <InlineErrorBanner
+            message={actionError.userMessage}
+            category={actionError.category}
+            onRetry={() => void loadCustomers(customers.length > 0)}
+            retrying={loading || refreshing}
+            onSignIn={
+              actionError.requiresSignIn
+                ? () => router.push("/sign-in")
+                : undefined
+            }
+            onDismiss={() => setActionError(null)}
+          />
         ) : null}
       </View>
 

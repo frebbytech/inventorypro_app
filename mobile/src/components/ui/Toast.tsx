@@ -24,14 +24,21 @@ import {
   X,
 } from "lucide-react-native";
 import { useTheme } from "@/theme";
+import { sanitizeClientErrorMessage } from "@/utils/errorHandler";
 
 export type ToastType = "success" | "error" | "info" | "warning";
+
+export interface ToastAction {
+  label: string;
+  onPress: () => void;
+}
 
 export interface ShowToastOptions {
   title: string;
   message?: string;
   type?: ToastType;
   duration?: number;
+  action?: ToastAction;
 }
 
 interface ToastState {
@@ -40,25 +47,47 @@ interface ToastState {
   message?: string;
   type: ToastType;
   duration: number;
+  action?: ToastAction;
 }
 
 export interface ToastContextValue {
   show: (options: ShowToastOptions) => void;
-  success: (title: string, message?: string, duration?: number) => void;
-  error: (title: string, message?: string, duration?: number) => void;
-  info: (title: string, message?: string, duration?: number) => void;
-  warning: (title: string, message?: string, duration?: number) => void;
+  success: (
+    title: string,
+    message?: string,
+    duration?: number,
+    action?: ToastAction,
+  ) => void;
+  error: (
+    title: string,
+    message?: string,
+    duration?: number,
+    action?: ToastAction,
+  ) => void;
+  info: (
+    title: string,
+    message?: string,
+    duration?: number,
+    action?: ToastAction,
+  ) => void;
+  warning: (
+    title: string,
+    message?: string,
+    duration?: number,
+    action?: ToastAction,
+  ) => void;
   hide: () => void;
 }
 
 const ToastContext = createContext<ToastContextValue | null>(null);
 
 const DEFAULT_DURATION_MS = 3200;
-const ERROR_DURATION_MS = 4200;
+const ERROR_DURATION_MS = 4500;
+const ACTION_DURATION_MS = 6000;
 
 export function ToastProvider({ children }: { children: React.ReactNode }) {
   const { theme } = useTheme();
-  const { colors, radii, spacing, typography, shadows } = theme;
+  const { colors, radii, spacing, typography, shadows, fontFamilies } = theme;
   const insets = useSafeAreaInsets();
 
   const [toast, setToast] = useState<ToastState | null>(null);
@@ -95,21 +124,33 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
       if (!cleanTitle) return;
 
       const type: ToastType = options.type ?? "info";
+      const cleanMessage = options.message?.trim()
+        ? type === "error" || type === "warning"
+          ? sanitizeClientErrorMessage(
+              options.message,
+              "Something went wrong. Please try again.",
+            )
+          : options.message.trim()
+        : undefined;
+
       const duration =
         typeof options.duration === "number" && options.duration > 0
           ? options.duration
-          : type === "error"
-            ? ERROR_DURATION_MS
-            : DEFAULT_DURATION_MS;
+          : options.action
+            ? ACTION_DURATION_MS
+            : type === "error"
+              ? ERROR_DURATION_MS
+              : DEFAULT_DURATION_MS;
 
       clearTimer();
       idCounterRef.current += 1;
       setToast({
         id: idCounterRef.current,
         title: cleanTitle,
-        message: options.message?.trim() || undefined,
+        message: cleanMessage,
         type,
         duration,
+        action: options.action,
       });
       setRendered(true);
 
@@ -135,29 +176,49 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
   }, [clearTimer]);
 
   const success = useCallback(
-    (title: string, message?: string, duration?: number) => {
-      show({ title, message, type: "success", duration });
+    (
+      title: string,
+      message?: string,
+      duration?: number,
+      action?: ToastAction,
+    ) => {
+      show({ title, message, type: "success", duration, action });
     },
     [show],
   );
 
   const error = useCallback(
-    (title: string, message?: string, duration?: number) => {
-      show({ title, message, type: "error", duration });
+    (
+      title: string,
+      message?: string,
+      duration?: number,
+      action?: ToastAction,
+    ) => {
+      show({ title, message, type: "error", duration, action });
     },
     [show],
   );
 
   const info = useCallback(
-    (title: string, message?: string, duration?: number) => {
-      show({ title, message, type: "info", duration });
+    (
+      title: string,
+      message?: string,
+      duration?: number,
+      action?: ToastAction,
+    ) => {
+      show({ title, message, type: "info", duration, action });
     },
     [show],
   );
 
   const warning = useCallback(
-    (title: string, message?: string, duration?: number) => {
-      show({ title, message, type: "warning", duration });
+    (
+      title: string,
+      message?: string,
+      duration?: number,
+      action?: ToastAction,
+    ) => {
+      show({ title, message, type: "warning", duration, action });
     },
     [show],
   );
@@ -254,7 +315,7 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
                   borderRadius: radii.xl,
                   paddingHorizontal: spacing.md,
                   paddingVertical: spacing.sm + 3,
-                  opacity: pressed ? 0.94 : 1,
+                  opacity: pressed ? 0.96 : 1,
                 },
               ]}
             >
@@ -292,6 +353,39 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
                   </Text>
                 ) : null}
               </View>
+
+              {toast.action ? (
+                <Pressable
+                  onPress={() => {
+                    const cb = toast.action?.onPress;
+                    hide();
+                    cb?.();
+                  }}
+                  accessibilityRole="button"
+                  accessibilityLabel={toast.action.label}
+                  style={({ pressed }) => [
+                    styles.actionBtn,
+                    {
+                      backgroundColor: visual.badgeBg,
+                      borderColor: visual.borderColor,
+                      borderRadius: radii.lg,
+                      opacity: pressed ? 0.78 : 1,
+                    },
+                  ]}
+                >
+                  <Text
+                    style={[
+                      typography.caption,
+                      {
+                        color: visual.accentColor,
+                        fontFamily: fontFamilies.semibold,
+                      },
+                    ]}
+                  >
+                    {toast.action.label}
+                  </Text>
+                </Pressable>
+              ) : null}
 
               <Pressable
                 onPress={hide}
@@ -352,9 +446,17 @@ const styles = StyleSheet.create({
     flex: 1,
     minWidth: 0,
   },
+  actionBtn: {
+    minHeight: 44,
+    minWidth: 44,
+    paddingHorizontal: 12,
+    borderWidth: 1,
+    alignItems: "center",
+    justifyContent: "center",
+  },
   closeBtn: {
-    width: 28,
-    height: 28,
+    width: 32,
+    height: 32,
     alignItems: "center",
     justifyContent: "center",
   },

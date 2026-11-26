@@ -1,6 +1,10 @@
 import { NextResponse } from "next/server";
 import { sendDailySalesReport } from "@/actions/daily-reports";
-import { HttpStatusError, withMobileAuth } from "@/lib/mobile-api";
+import {
+  HttpStatusError,
+  sanitizeServerMessage,
+  withMobileAuth,
+} from "@/lib/mobile-api";
 
 export const dynamic = "force-dynamic";
 
@@ -21,18 +25,49 @@ export async function POST(req: Request) {
 
       if (!res.success || !res.data) {
         throw new HttpStatusError(
-          res.message || "Failed to send daily sales report.",
+          sanitizeServerMessage(
+            res.message,
+            "Unable to send the daily sales report right now. Please try again.",
+          ),
           400,
         );
       }
 
+      const rawSummary = (res.data.dispatchSummary ?? {}) as Record<string, any>;
+      const sanitizeChannelEntry = (entry: any, fallback: string) => {
+        if (!entry || typeof entry !== "object") return entry;
+        if (!("error" in entry) || !entry.error) return entry;
+        return {
+          ...entry,
+          error: sanitizeServerMessage(entry.error, fallback),
+        };
+      };
+
       return NextResponse.json({
         ok: true,
         sentAt: String(
-          res.data.dispatchSummary?.sent_at || new Date().toISOString(),
+          rawSummary.sent_at || new Date().toISOString(),
         ),
         reportDate: String(res.data.report.report_date),
-        dispatchSummary: res.data.dispatchSummary ?? {},
+        dispatchSummary: {
+          ...rawSummary,
+          ...(rawSummary.email
+            ? {
+                email: sanitizeChannelEntry(
+                  rawSummary.email,
+                  "Email delivery failed.",
+                ),
+              }
+            : {}),
+          ...(rawSummary.sms
+            ? {
+                sms: sanitizeChannelEntry(
+                  rawSummary.sms,
+                  "SMS delivery failed.",
+                ),
+              }
+            : {}),
+        },
       });
     },
     { requireAdmin: true },

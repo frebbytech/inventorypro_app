@@ -30,10 +30,16 @@ import {
 import { useApiClient } from "@/api/ApiProvider";
 import { useAuth } from "@/api/AuthProvider";
 import { EmptyState } from "@/components/EmptyState";
+import { InlineErrorBanner } from "@/components/InlineErrorBanner";
 import { LoadingState } from "@/components/LoadingState";
 import { Badge, Button, Card, Input, useToast } from "@/components/ui";
 import { useTheme } from "@/theme";
 import type { SupplierItem } from "@/types/domain";
+import {
+  getUserErrorMessage,
+  normalizeError,
+  type NormalizedAppError,
+} from "@/utils/errorHandler";
 import { formatCurrency, formatDateTime } from "@/utils/formatters";
 
 export default function SuppliersDirectoryScreen() {
@@ -49,7 +55,7 @@ export default function SuppliersDirectoryScreen() {
   const [suppliers, setSuppliers] = useState<SupplierItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
-  const [actionError, setActionError] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<NormalizedAppError | null>(null);
   const hasLoadedRef = useRef(false);
 
   // Add / Edit modal state
@@ -77,7 +83,10 @@ export default function SuppliersDirectoryScreen() {
         hasLoadedRef.current = true;
       } catch (err) {
         setActionError(
-          err instanceof Error ? err.message : "Failed to load suppliers.",
+          normalizeError(err, {
+            fallback: "Could not load suppliers. Please try again.",
+            context: "suppliers.load",
+          }),
         );
       } finally {
         setLoading(false);
@@ -184,7 +193,11 @@ export default function SuppliersDirectoryScreen() {
       await loadSuppliers(true);
     } catch (err) {
       setFormError(
-        err instanceof Error ? err.message : "Failed to save supplier.",
+        getUserErrorMessage(
+          err,
+          "Could not save supplier. Please try again.",
+          "suppliers.save",
+        ),
       );
     } finally {
       setSaving(false);
@@ -205,10 +218,21 @@ export default function SuppliersDirectoryScreen() {
         `${updated.companyName} status updated.`,
       );
     } catch (err) {
-      const msg =
-        err instanceof Error ? err.message : "Failed to update supplier status.";
-      setActionError(msg);
-      toast.error("Status update failed", msg);
+      const normalized = normalizeError(err, {
+        fallback: "Could not update supplier status. Please try again.",
+        context: "suppliers.toggleActive",
+      });
+      setActionError(normalized);
+      toast.error(
+        "Status update failed",
+        normalized.userMessage,
+        undefined,
+        normalized.requiresSignIn
+          ? { label: "Sign In", onPress: () => router.push("/sign-in") }
+          : normalized.retryable
+            ? { label: "Retry", onPress: () => void handleToggleActive(item) }
+            : undefined,
+      );
     }
   };
 
@@ -297,22 +321,18 @@ export default function SuppliersDirectoryScreen() {
         </View>
 
         {actionError ? (
-          <View
-            style={[
-              styles.alertBox,
-              {
-                backgroundColor: colors.dangerTint,
-                borderColor: colors.dangerBorder,
-                borderRadius: radii.lg,
-                padding: spacing.sm + 2,
-              },
-            ]}
-          >
-            <AlertCircle size={15} color={colors.dangerText} />
-            <Text style={[typography.caption, { color: colors.dangerText, flex: 1 }]}>
-              {actionError}
-            </Text>
-          </View>
+          <InlineErrorBanner
+            message={actionError.userMessage}
+            category={actionError.category}
+            onRetry={() => void loadSuppliers(suppliers.length > 0)}
+            retrying={loading || refreshing}
+            onSignIn={
+              actionError.requiresSignIn
+                ? () => router.push("/sign-in")
+                : undefined
+            }
+            onDismiss={() => setActionError(null)}
+          />
         ) : null}
       </View>
 

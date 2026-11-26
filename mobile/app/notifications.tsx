@@ -23,10 +23,12 @@ import {
 import { useApiClient } from "@/api/ApiProvider";
 import { useAuth } from "@/api/AuthProvider";
 import { EmptyState } from "@/components/EmptyState";
+import { InlineErrorBanner } from "@/components/InlineErrorBanner";
 import { LoadingState } from "@/components/LoadingState";
 import { Badge, Button, Card, SegmentedTabs, useToast } from "@/components/ui";
 import { useTheme } from "@/theme";
 import type { NotificationItem } from "@/types/domain";
+import { normalizeError, type NormalizedAppError } from "@/utils/errorHandler";
 import { formatDateTime } from "@/utils/formatters";
 
 type FilterTab = "all" | "unread";
@@ -46,7 +48,7 @@ export default function NotificationsScreen() {
   const [busyId, setBusyId] = useState<string | null>(null);
   const [bulkBusy, setBulkBusy] = useState(false);
   const [clearConfirmOpen, setClearConfirmOpen] = useState(false);
-  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [errorMsg, setErrorMsg] = useState<NormalizedAppError | null>(null);
   const hasLoadedRef = useRef(false);
 
   const loadNotifications = useCallback(
@@ -61,7 +63,10 @@ export default function NotificationsScreen() {
         await refreshUnreadNotifications();
       } catch (err) {
         setErrorMsg(
-          err instanceof Error ? err.message : "Failed to load notifications.",
+          normalizeError(err, {
+            fallback: "Failed to load notifications.",
+            context: "NotificationsScreen.loadNotifications",
+          }),
         );
       } finally {
         setLoading(false);
@@ -106,10 +111,19 @@ export default function NotificationsScreen() {
         await refreshUnreadNotifications();
         toast.info("Marked as read", item.title);
       } catch (err) {
-        const msg =
-          err instanceof Error ? err.message : "Could not update notification.";
-        setErrorMsg(msg);
-        toast.error("Update failed", msg);
+        const norm = normalizeError(err, {
+          fallback: "Could not update notification.",
+          context: "NotificationsScreen.markRead",
+        });
+        setErrorMsg(norm);
+        toast.error(
+          "Update failed",
+          norm.userMessage,
+          undefined,
+          norm.requiresSignIn
+            ? { label: "Sign In", onPress: () => router.push("/sign-in") }
+            : undefined,
+        );
       } finally {
         setBusyId(null);
       }
@@ -141,10 +155,21 @@ export default function NotificationsScreen() {
       await refreshUnreadNotifications();
       toast.success("Notification deleted", "Removed from your inbox.");
     } catch (err) {
-      const msg =
-        err instanceof Error ? err.message : "Failed to delete notification.";
-      setErrorMsg(msg);
-      toast.error("Delete failed", msg);
+      const norm = normalizeError(err, {
+        fallback: "Failed to delete notification.",
+        context: "NotificationsScreen.delete",
+      });
+      setErrorMsg(norm);
+      toast.error(
+        "Delete failed",
+        norm.userMessage,
+        undefined,
+        norm.requiresSignIn
+          ? { label: "Sign In", onPress: () => router.push("/sign-in") }
+          : norm.retryable
+            ? { label: "Retry", onPress: () => void handleDelete(id) }
+            : undefined,
+      );
     } finally {
       setBusyId(null);
     }
@@ -163,12 +188,21 @@ export default function NotificationsScreen() {
       await refreshUnreadNotifications();
       toast.success("All caught up", "All notifications marked as read.");
     } catch (err) {
-      const msg =
-        err instanceof Error
-          ? err.message
-          : "Failed to mark notifications as read.";
-      setErrorMsg(msg);
-      toast.error("Update failed", msg);
+      const norm = normalizeError(err, {
+        fallback: "Failed to mark notifications as read.",
+        context: "NotificationsScreen.markAllRead",
+      });
+      setErrorMsg(norm);
+      toast.error(
+        "Update failed",
+        norm.userMessage,
+        undefined,
+        norm.requiresSignIn
+          ? { label: "Sign In", onPress: () => router.push("/sign-in") }
+          : norm.retryable
+            ? { label: "Retry", onPress: () => void handleMarkAllRead() }
+            : undefined,
+      );
     } finally {
       setBulkBusy(false);
     }
@@ -184,10 +218,27 @@ export default function NotificationsScreen() {
       await refreshUnreadNotifications();
       toast.success("Notifications cleared", "All notifications removed.");
     } catch (err) {
-      const msg =
-        err instanceof Error ? err.message : "Failed to clear notifications.";
-      setErrorMsg(msg);
-      toast.error("Clear failed", msg);
+      const norm = normalizeError(err, {
+        fallback: "Failed to clear notifications.",
+        context: "NotificationsScreen.clearAll",
+      });
+      setErrorMsg(norm);
+      toast.error(
+        "Clear failed",
+        norm.userMessage,
+        undefined,
+        norm.requiresSignIn
+          ? {
+              label: "Sign In",
+              onPress: () => {
+                setClearConfirmOpen(false);
+                router.push("/sign-in");
+              },
+            }
+          : norm.retryable
+            ? { label: "Retry", onPress: () => void handleConfirmClearAll() }
+            : undefined,
+      );
     } finally {
       setBulkBusy(false);
     }
@@ -284,21 +335,17 @@ export default function NotificationsScreen() {
         ) : null}
 
         {errorMsg ? (
-          <View
-            style={[
-              styles.errorBanner,
-              {
-                backgroundColor: colors.dangerTint,
-                borderColor: colors.dangerBorder,
-                borderRadius: radii.lg,
-                padding: spacing.sm + 2,
-              },
-            ]}
-          >
-            <Text style={[typography.caption, { color: colors.dangerText }]}>
-              {errorMsg}
-            </Text>
-          </View>
+          <InlineErrorBanner
+            message={errorMsg.userMessage}
+            category={errorMsg.category}
+            onRetry={
+              errorMsg.retryable ? () => void loadNotifications(false) : undefined
+            }
+            onSignIn={
+              errorMsg.requiresSignIn ? () => router.push("/sign-in") : undefined
+            }
+            onDismiss={() => setErrorMsg(null)}
+          />
         ) : null}
       </View>
 

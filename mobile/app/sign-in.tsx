@@ -24,6 +24,7 @@ import {
   User,
 } from "lucide-react-native";
 import { useAuth } from "@/api/AuthProvider";
+import { InlineErrorBanner } from "@/components/InlineErrorBanner";
 import {
   Badge,
   Button,
@@ -34,6 +35,10 @@ import {
   Input,
 } from "@/components/ui";
 import { useTheme } from "@/theme";
+import {
+  normalizeError,
+  type NormalizedAppError,
+} from "@/utils/errorHandler";
 
 export default function SignInScreen() {
   const { theme, mode, toggleMode } = useTheme();
@@ -46,6 +51,8 @@ export default function SignInScreen() {
     signIn,
     verifyTwoFactorSignIn,
     resendTwoFactorCode,
+    sessionExpiredReason,
+    dismissSessionExpired,
   } = useAuth();
   const { colors, spacing, radii, typography, fontFamilies } = theme;
 
@@ -65,7 +72,8 @@ export default function SignInScreen() {
   const [otpCode, setOtpCode] = useState("");
 
   const [submitting, setSubmitting] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [errorInfo, setErrorInfo] = useState<NormalizedAppError | null>(null);
+  const lastActionRef = React.useRef<(() => void) | null>(null);
 
   useEffect(() => {
     if (workspaceMode === "synced") {
@@ -73,10 +81,20 @@ export default function SignInScreen() {
     }
   }, [workspaceMode, refreshPlatformServerUrl]);
 
+  const setValidationError = (message: string) => {
+    lastActionRef.current = null;
+    setErrorInfo({
+      userMessage: message,
+      category: "validation",
+      retryable: false,
+      requiresSignIn: false,
+    });
+  };
+
   const handleSelectWorkspaceMode = async (
     nextMode: "mobile_only" | "synced",
   ) => {
-    setError(null);
+    setErrorInfo(null);
     setChallengeToken(null);
     setOtpCode("");
     await setWorkspaceModePreference(nextMode);
@@ -94,12 +112,14 @@ export default function SignInScreen() {
   const handleSubmit = async (idValue = identifier, passValue = password) => {
     const trimmed = idValue.trim();
     if (!trimmed || !passValue) {
-      setError("Enter both your username/email and password.");
+      setValidationError("Enter both your username/email and password.");
       return;
     }
 
+    dismissSessionExpired();
     setSubmitting(true);
-    setError(null);
+    setErrorInfo(null);
+    lastActionRef.current = () => void handleSubmit(trimmed, passValue);
     try {
       const res = await signIn(trimmed, passValue, {
         workspaceSlug: workspaceSlug.trim() || undefined,
@@ -109,14 +129,14 @@ export default function SignInScreen() {
         setMaskedTarget(res.maskedTarget);
       }
     } catch (err) {
-      const msg =
-        err instanceof Error
-          ? err.message
-          : "Unable to sign in. Check your credentials.";
-      if (msg.toLowerCase().includes("workspace code")) {
+      const normalized = normalizeError(err, {
+        fallback: "Unable to sign in. Check your credentials and try again.",
+        context: "sign-in.submit",
+      });
+      if (normalized.userMessage.toLowerCase().includes("workspace code")) {
         setShowWorkspaceSlug(true);
       }
-      setError(msg);
+      setErrorInfo(normalized);
     } finally {
       setSubmitting(false);
     }
@@ -126,15 +146,21 @@ export default function SignInScreen() {
     if (!challengeToken) return;
     const cleanCode = otpCode.replace(/\s+/g, "");
     if (!/^\d{6}$/.test(cleanCode)) {
-      setError("Enter the 6-digit verification code.");
+      setValidationError("Enter the 6-digit verification code.");
       return;
     }
     setSubmitting(true);
-    setError(null);
+    setErrorInfo(null);
+    lastActionRef.current = () => void handleVerifyTwoFactor();
     try {
       await verifyTwoFactorSignIn(challengeToken, cleanCode);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Invalid verification code.");
+      setErrorInfo(
+        normalizeError(err, {
+          fallback: "Invalid verification code. Please check and try again.",
+          context: "sign-in.2fa-verify",
+        }),
+      );
     } finally {
       setSubmitting(false);
     }
@@ -143,13 +169,19 @@ export default function SignInScreen() {
   const handleResendCode = async () => {
     if (!challengeToken) return;
     setSubmitting(true);
-    setError(null);
+    setErrorInfo(null);
+    lastActionRef.current = () => void handleResendCode();
     try {
       const res = await resendTwoFactorCode(challengeToken);
       setChallengeToken(res.challengeToken);
       setMaskedTarget(res.maskedTarget);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to resend code.");
+      setErrorInfo(
+        normalizeError(err, {
+          fallback: "Could not resend verification code. Please try again.",
+          context: "sign-in.2fa-resend",
+        }),
+      );
     } finally {
       setSubmitting(false);
     }
@@ -342,28 +374,26 @@ export default function SignInScreen() {
             </CardHeader>
 
             <CardContent style={{ paddingTop: spacing.base, gap: spacing.md }}>
-              {error ? (
-                <View
-                  style={[
-                    styles.errorBox,
-                    {
-                      backgroundColor: colors.dangerTint,
-                      borderColor: colors.dangerBorder,
-                      borderRadius: radii.lg,
-                      padding: spacing.md,
-                    },
-                  ]}
-                >
-                  <AlertCircle size={16} color={colors.dangerText} />
-                  <Text
-                    style={[
-                      typography.caption,
-                      { color: colors.dangerText, flex: 1 },
-                    ]}
-                  >
-                    {error}
-                  </Text>
-                </View>
+              {sessionExpiredReason && !errorInfo ? (
+                <InlineErrorBanner
+                  message={sessionExpiredReason}
+                  category="session"
+                  onDismiss={dismissSessionExpired}
+                />
+              ) : null}
+
+              {errorInfo ? (
+                <InlineErrorBanner
+                  message={errorInfo.userMessage}
+                  category={errorInfo.category}
+                  onRetry={
+                    errorInfo.retryable && lastActionRef.current
+                      ? () => lastActionRef.current?.()
+                      : undefined
+                  }
+                  retrying={submitting}
+                  onDismiss={() => setErrorInfo(null)}
+                />
               ) : null}
 
               {workspaceMode === "synced" && !challengeToken ? (
@@ -441,7 +471,7 @@ export default function SignInScreen() {
                       onPress={() => {
                         setChallengeToken(null);
                         setOtpCode("");
-                        setError(null);
+                        setErrorInfo(null);
                       }}
                     />
                   </View>
@@ -573,7 +603,7 @@ export default function SignInScreen() {
                     onPress={() => {
                       setIdentifier("frebbytech");
                       setPassword("Admin123!");
-                      setError(null);
+                      setErrorInfo(null);
                     }}
                   />
                   <Button
@@ -584,7 +614,7 @@ export default function SignInScreen() {
                     onPress={() => {
                       setIdentifier("kwame");
                       setPassword("Staff123!");
-                      setError(null);
+                      setErrorInfo(null);
                     }}
                   />
                 </View>
