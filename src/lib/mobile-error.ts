@@ -37,7 +37,7 @@ const UNSAFE_TECHNICAL_PATTERNS: RegExp[] = [
   /constraint failed/i,
   /database is locked/i,
   /\bsqlcipher\b/i,
-  /\b(?:select|insert\s+into|update\s+\S+\s+set|delete\s+from)\b/i,
+  /\b(?:select\s+[^;\n]{1,120}\s+from\s+|insert\s+into\s+|update\s+\S+\s+set\s+|delete\s+from\s+)/i,
   /\b(?:typeerror|referenceerror|syntaxerror|rangeerror)\b/i,
   /cannot read propert/i,
   /cannot set propert/i,

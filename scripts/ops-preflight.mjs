@@ -122,6 +122,7 @@ const envChecks = [
     rejectValues: ["SuperAdmin123!", "replace-with-super-admin-password"],
   }),
   checkEnvVar("ENCRYPTION_KEY", { minLength: 16 }),
+  checkEnvVar("EXPO_ACCESS_TOKEN", { minLength: 16 }),
 ];
 
 for (const result of envChecks) {
@@ -130,6 +131,19 @@ for (const result of envChecks) {
   if (!result.ok && strict) {
     criticalFailures += 1;
   }
+}
+
+const mobileApiUrl = (
+  process.env.EXPO_PUBLIC_API_BASE_URL ||
+  process.env.MOBILE_API_BASE_URL ||
+  ""
+).trim();
+if (mobileApiUrl) {
+  console.log("[PASS] OK: EXPO_PUBLIC_API_BASE_URL / MOBILE_API_BASE_URL configured");
+} else {
+  console.log(
+    "[INFO] Mobile API URL unset in current shell (configure in EAS Environment Variables for preview/production mobile builds)",
+  );
 }
 
 // 3. Database & storage writable check

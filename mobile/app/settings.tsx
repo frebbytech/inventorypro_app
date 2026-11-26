@@ -35,6 +35,7 @@ import {
   ShieldCheck,
   Smartphone,
   Sun,
+  Users,
   Volume2,
   Wifi,
 } from "lucide-react-native";
@@ -68,6 +69,7 @@ import {
   DEFAULT_WEEKLY_SCHEDULE,
   type BluetoothPrinterDevice,
   type DaySchedule,
+  type MemberSaleAlertChannel,
   type PaperSize,
   type PrinterTransport,
   type StockAudioTone,
@@ -128,6 +130,38 @@ const PAPER_SIZE_OPTIONS: ReadonlyArray<{ value: PaperSize; label: string }> = [
   { value: "thermal_80mm", label: "Thermal 80mm" },
   { value: "a4", label: "A4 Sheet" },
 ];
+
+const MEMBER_SALE_CHANNEL_OPTIONS: ReadonlyArray<{
+  value: MemberSaleAlertChannel;
+  label: string;
+  desc: string;
+}> = [
+  {
+    value: "in_app",
+    label: "In-App & Push",
+    desc: "Instant notification badge & push alert on admin devices",
+  },
+  {
+    value: "email",
+    label: "Email",
+    desc: "Send sale summary email to workspace admins",
+  },
+  {
+    value: "sms",
+    label: "SMS",
+    desc: "Send SMS alert to workspace admin phone numbers",
+  },
+];
+
+function normalizeMemberSaleChannels(
+  channels?: MemberSaleAlertChannel[],
+): MemberSaleAlertChannel[] {
+  const order: MemberSaleAlertChannel[] = ["in_app", "email", "sms"];
+  const set = new Set<MemberSaleAlertChannel>(
+    Array.isArray(channels) ? channels : ["in_app"],
+  );
+  return order.filter((c) => set.has(c));
+}
 
 const ACCENT_PRESETS: ReadonlyArray<{ label: string; hex: string }> = [
   { label: "Blue", hex: "#3B82F6" },
@@ -454,6 +488,14 @@ export default function SettingsScreen() {
   const [notificationSms, setNotificationSms] = useState(
     Boolean(store?.notificationSms),
   );
+  const [memberSaleAlertEnabled, setMemberSaleAlertEnabled] = useState(
+    Boolean(store?.memberSaleAlertEnabled),
+  );
+  const [memberSaleAlertChannels, setMemberSaleAlertChannels] = useState<
+    MemberSaleAlertChannel[]
+  >(() =>
+    normalizeMemberSaleChannels(store?.memberSaleAlertChannels ?? ["in_app"]),
+  );
   const [stockAudioAlert, setStockAudioAlert] = useState(
     store?.stockAudioAlert ?? true,
   );
@@ -545,6 +587,10 @@ export default function SettingsScreen() {
       notificationEmail: Boolean(store?.notificationEmail),
       notificationPush: store?.notificationPush ?? true,
       notificationSms: Boolean(store?.notificationSms),
+      memberSaleAlertEnabled: Boolean(store?.memberSaleAlertEnabled),
+      memberSaleAlertChannelsJson: JSON.stringify(
+        normalizeMemberSaleChannels(store?.memberSaleAlertChannels ?? ["in_app"]),
+      ),
       stockAudioAlert: store?.stockAudioAlert ?? true,
       stockAudioTone: store?.stockAudioTone ?? ("chime" as StockAudioTone),
       stockAudioVolume: Number((store?.stockAudioVolume ?? 0.5).toFixed(2)),
@@ -560,6 +606,9 @@ export default function SettingsScreen() {
     notificationEmail !== initialAlerts.notificationEmail ||
     notificationPush !== initialAlerts.notificationPush ||
     notificationSms !== initialAlerts.notificationSms ||
+    memberSaleAlertEnabled !== initialAlerts.memberSaleAlertEnabled ||
+    JSON.stringify(normalizeMemberSaleChannels(memberSaleAlertChannels)) !==
+      initialAlerts.memberSaleAlertChannelsJson ||
     stockAudioAlert !== initialAlerts.stockAudioAlert ||
     stockAudioTone !== initialAlerts.stockAudioTone ||
     Number(stockAudioVolume.toFixed(2)) !== initialAlerts.stockAudioVolume ||
@@ -606,6 +655,10 @@ export default function SettingsScreen() {
       setNotificationEmail(Boolean(store.notificationEmail));
       setNotificationPush(store.notificationPush ?? true);
       setNotificationSms(Boolean(store.notificationSms));
+      setMemberSaleAlertEnabled(Boolean(store.memberSaleAlertEnabled));
+      setMemberSaleAlertChannels(
+        normalizeMemberSaleChannels(store.memberSaleAlertChannels ?? ["in_app"]),
+      );
       setStockAudioAlert(store.stockAudioAlert ?? true);
       setStockAudioTone(store.stockAudioTone ?? "chime");
       setStockAudioVolume(store.stockAudioVolume ?? 0.5);
@@ -893,6 +946,17 @@ export default function SettingsScreen() {
       );
       return;
     }
+    const cleanMemberSaleChannels = normalizeMemberSaleChannels(
+      memberSaleAlertChannels,
+    );
+    if (memberSaleAlertEnabled && cleanMemberSaleChannels.length === 0) {
+      setAlertsError(
+        makeValidationError(
+          "Select at least one channel (In-App, Email, or SMS) for member sale alerts.",
+        ),
+      );
+      return;
+    }
 
     setSavingAlerts(true);
     try {
@@ -900,6 +964,11 @@ export default function SettingsScreen() {
         notificationEmail,
         notificationPush,
         notificationSms,
+        memberSaleAlertEnabled,
+        memberSaleAlertChannels:
+          cleanMemberSaleChannels.length > 0
+            ? cleanMemberSaleChannels
+            : ["in_app"],
         stockAudioAlert,
         stockAudioTone,
         stockAudioVolume,
@@ -911,6 +980,10 @@ export default function SettingsScreen() {
       setNotificationEmail(Boolean(updated.notificationEmail));
       setNotificationPush(updated.notificationPush ?? true);
       setNotificationSms(Boolean(updated.notificationSms));
+      setMemberSaleAlertEnabled(Boolean(updated.memberSaleAlertEnabled));
+      setMemberSaleAlertChannels(
+        normalizeMemberSaleChannels(updated.memberSaleAlertChannels ?? ["in_app"]),
+      );
       setStockAudioAlert(updated.stockAudioAlert ?? true);
       setStockAudioTone(updated.stockAudioTone ?? "chime");
       setStockAudioVolume(updated.stockAudioVolume ?? 0.5);
@@ -2228,6 +2301,155 @@ export default function SettingsScreen() {
                       />
                     </View>
                   ))}
+                </View>
+
+                {/* Member Sale Alerts (Admins) */}
+                <View
+                  style={[
+                    styles.subSectionBox,
+                    {
+                      backgroundColor: colors.cardMuted,
+                      borderColor: colors.border,
+                      borderRadius: radii.lg,
+                      padding: spacing.md,
+                      gap: 12,
+                    },
+                  ]}
+                >
+                  <View style={styles.switchRow}>
+                    <View
+                      style={{
+                        flexDirection: "row",
+                        alignItems: "center",
+                        gap: 8,
+                        flex: 1,
+                      }}
+                    >
+                      <Users size={16} color={colors.primary} />
+                      <View style={{ flex: 1 }}>
+                        <Text
+                          style={[
+                            typography.bodySemibold,
+                            { color: colors.foreground },
+                          ]}
+                        >
+                          Member Sale Alerts (Admins)
+                        </Text>
+                        <Text
+                          style={[
+                            typography.micro,
+                            { color: colors.mutedForeground },
+                          ]}
+                        >
+                          Notify workspace admins anytime a team member
+                          completes a sale
+                        </Text>
+                      </View>
+                    </View>
+                    <Switch
+                      value={memberSaleAlertEnabled}
+                      disabled={isReadOnlyStoreAdmin}
+                      onValueChange={(next) => {
+                        setMemberSaleAlertEnabled(next);
+                        if (next && memberSaleAlertChannels.length === 0) {
+                          setMemberSaleAlertChannels(["in_app"]);
+                        }
+                        setAlertsError(null);
+                        setAlertsSavedMsg(null);
+                      }}
+                      trackColor={{
+                        false: colors.border,
+                        true: colors.primary,
+                      }}
+                      thumbColor="#FFFFFF"
+                    />
+                  </View>
+
+                  {memberSaleAlertEnabled ? (
+                    <View
+                      style={{
+                        gap: 10,
+                        paddingTop: 10,
+                        borderTopWidth: 1,
+                        borderTopColor: colors.border,
+                      }}
+                    >
+                      <Text
+                        style={[
+                          typography.caption,
+                          {
+                            color: colors.mutedForeground,
+                            fontFamily: fontFamilies.semibold,
+                          },
+                        ]}
+                      >
+                        Alert Delivery Channels
+                      </Text>
+
+                      {MEMBER_SALE_CHANNEL_OPTIONS.map((ch) => {
+                        const checked = memberSaleAlertChannels.includes(
+                          ch.value,
+                        );
+                        return (
+                          <View key={ch.value} style={styles.switchRow}>
+                            <View style={{ flex: 1 }}>
+                              <Text
+                                style={[
+                                  typography.bodyMedium,
+                                  { color: colors.foreground },
+                                ]}
+                              >
+                                {ch.label}
+                              </Text>
+                              <Text
+                                style={[
+                                  typography.micro,
+                                  { color: colors.mutedForeground },
+                                ]}
+                              >
+                                {ch.desc}
+                              </Text>
+                            </View>
+                            <Switch
+                              value={checked}
+                              disabled={isReadOnlyStoreAdmin}
+                              onValueChange={(next) => {
+                                setMemberSaleAlertChannels((prev) => {
+                                  const nextSet = new Set(prev);
+                                  if (next) {
+                                    nextSet.add(ch.value);
+                                  } else {
+                                    nextSet.delete(ch.value);
+                                  }
+                                  return normalizeMemberSaleChannels(
+                                    Array.from(nextSet),
+                                  );
+                                });
+                                setAlertsError(null);
+                                setAlertsSavedMsg(null);
+                              }}
+                              trackColor={{
+                                false: colors.border,
+                                true: colors.primary,
+                              }}
+                              thumbColor="#FFFFFF"
+                            />
+                          </View>
+                        );
+                      })}
+
+                      {memberSaleAlertChannels.length === 0 ? (
+                        <Text
+                          style={[
+                            typography.micro,
+                            { color: colors.dangerText },
+                          ]}
+                        >
+                          Select at least one channel (In-App, Email, or SMS).
+                        </Text>
+                      ) : null}
+                    </View>
+                  ) : null}
                 </View>
 
                 {/* Device Push Registration & Hardware Test */}

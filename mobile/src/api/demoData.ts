@@ -23,6 +23,8 @@ export const DEMO_STORE_PROFILE: StoreProfile = {
   notificationEmail: true,
   notificationPush: true,
   notificationSms: false,
+  memberSaleAlertEnabled: false,
+  memberSaleAlertChannels: ["in_app"],
   stockAudioAlert: true,
   stockAudioTone: "chime",
   stockAudioVolume: 0.5,

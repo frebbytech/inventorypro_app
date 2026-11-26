@@ -1,3 +1,6 @@
+import fs from "node:fs";
+import path from "node:path";
+import { execFileSync } from "node:child_process";
 import { beforeAll, describe, expect, it } from "vitest";
 import db from "@/db/knex";
 import { GET as getAppHealth } from "@/app/api/health/route";
@@ -95,4 +98,36 @@ describe("Production Ops & Cloud Account Binding", () => {
     expect(isPrivateOrLoopbackHost("192.168.1.25")).toBe(true);
     expect(isPrivateOrLoopbackHost("api.inventorypro.example.com")).toBe(false);
   });
+
+  it("enforces least-privilege GitHub workflow lockdown and verifies EAS environment config", () => {
+    const root = process.cwd();
+    const ciYml = fs.readFileSync(
+      path.join(root, ".github/workflows/ci.yml"),
+      "utf8",
+    );
+    const cronYml = fs.readFileSync(
+      path.join(root, ".github/workflows/eod-report-cron.yml"),
+      "utf8",
+    );
+    const releaseYml = fs.readFileSync(
+      path.join(root, ".github/workflows/mobile-release.yml"),
+      "utf8",
+    );
+
+    expect(ciYml).toContain("permissions:\n  contents: read");
+    expect(cronYml).toContain("permissions: {}");
+    expect(releaseYml).toContain("permissions:\n  contents: read");
+    expect(releaseYml).toContain("environment: ${{ inputs.profile }}");
+    expect(releaseYml).toContain("refs/heads/main");
+    // Ensure workflow_dispatch inputs are never raw-interpolated inside shell run blocks
+    expect(releaseYml).not.toMatch(/run:.*\$\{\{\s*inputs\./);
+
+    const verifyOutput = execFileSync(
+      "node",
+      [path.join(root, "scripts/verify-eas-secrets.mjs")],
+      { encoding: "utf8" },
+    );
+    expect(verifyOutput).toContain("Verification complete (0 errors).");
+  });
 });
+

@@ -17,6 +17,7 @@ import {
   withMobileAuth,
 } from "@/lib/mobile-api";
 import { dispatchExpoPushNotifications } from "@/lib/pushNotifications";
+import { notifyAdminsOfMemberSale } from "@/lib/member-sale-alerts";
 import { generateId } from "@/utils/generator";
 
 export const dynamic = "force-dynamic";
@@ -402,7 +403,33 @@ export async function POST(req: Request) {
           }).catch(() => {});
         }
 
+        const totalUnitsSold = itemsInput.reduce(
+          (sum: number, item: { quantity?: number | string }) =>
+            sum + Math.max(1, Math.trunc(Number(item.quantity ?? 1))),
+          0,
+        );
+        const memberFullname =
+          [session.firstname, session.lastname]
+            .filter(Boolean)
+            .join(" ")
+            .trim() || session.username;
         const receipt = await getSaleReceiptDetailDto(tenantId, saleId, session);
+        await notifyAdminsOfMemberSale({
+          tenantId,
+          saleId,
+          receiptNumber: receiptNo,
+          totalAmount: Number(receipt?.totalAmount ?? 0),
+          itemCount: totalUnitsSold,
+          paymentMode,
+          customerName,
+          currency: store.currency,
+          member: {
+            id: session.id,
+            role: session.role,
+            fullname: memberFullname,
+            username: session.username,
+          },
+        });
         return {
           statusCode: 201,
           body: receipt,

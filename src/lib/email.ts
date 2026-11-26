@@ -23,6 +23,8 @@ export interface EmailPayload {
   /** Overrides the "From" name/email from settings */
   fromName?: string;
   fromEmail?: string;
+  /** Optional tenant override for server/mobile background sends */
+  tenantId?: string;
 }
 
 export interface EmailResult {
@@ -51,14 +53,14 @@ export interface BulkEmailResult {
 let cachedTransporter: Transporter | null = null;
 let cachedFingerprint: string | null = null;
 
-async function getTransporter(): Promise<Transporter> {
-  const creds = await getDecryptedApiCredentials();
+async function getTransporter(tenantId?: string): Promise<Transporter> {
+  const creds = await getDecryptedApiCredentials(tenantId);
   if (!creds?.smtp?.user || !creds?.smtp?.pass) {
     throw new Error("SMTP credentials not configured");
   }
 
   // Invalidate cache if credentials changed
-  const fingerprint = `${creds.smtp.host}:${creds.smtp.port}:${creds.smtp.user}:${creds.smtp.secure}`;
+  const fingerprint = `${tenantId || "current"}:${creds.smtp.host}:${creds.smtp.port}:${creds.smtp.user}:${creds.smtp.secure}`;
   if (cachedTransporter && cachedFingerprint === fingerprint) {
     return cachedTransporter;
   }
@@ -80,7 +82,7 @@ async function getTransporter(): Promise<Transporter> {
 // ── Core sender ──
 export async function sendEmail(payload: EmailPayload): Promise<EmailResult> {
   try {
-    const creds = await getDecryptedApiCredentials();
+    const creds = await getDecryptedApiCredentials(payload.tenantId);
     if (!creds?.smtp?.user || !creds?.smtp?.pass) {
       return { success: false, error: "SMTP credentials not configured" };
     }
@@ -89,7 +91,7 @@ export async function sendEmail(payload: EmailPayload): Promise<EmailResult> {
       return { success: false, error: "Email must include text or html body" };
     }
 
-    const transporter = await getTransporter();
+    const transporter = await getTransporter(payload.tenantId);
 
     const fromName = payload.fromName || creds.smtp.fromName || "";
     const fromEmail =
@@ -123,43 +125,34 @@ export async function sendEmail(payload: EmailPayload): Promise<EmailResult> {
 export async function sendSingleEmail(
   to: string,
   subject: string,
-  body: { text?: string; html?: string }
+  body: { text?: string; html?: string },
+  tenantId?: string,
 ): Promise<EmailResult> {
-  return sendEmail({ to, subject, ...body });
+  return sendEmail({ to, subject, ...body, tenantId });
 }
 
 export async function sendEmailWithAttachment(
   to: string,
   subject: string,
   body: { text?: string; html?: string },
-  attachments: EmailAttachment[]
+  attachments: EmailAttachment[],
+  tenantId?: string,
 ): Promise<EmailResult> {
-  return sendEmail({ to, subject, ...body, attachments });
+  return sendEmail({ to, subject, ...body, attachments, tenantId });
 }
 
 const DEFAULT_BULK_CONCURRENCY = 10;
 
-/**
- * Send the same email to many recipients.
- *
- * Unlike sendBulkSms (which hands every recipient to the SMS provider in
- * one batched call — each recipient only ever sees their own text), email
- * has no equivalent "safe" batch primitive: putting every address in one
- * `to`/`cc` would expose every recipient's address to every other
- * recipient. So this sends individually, one message per recipient, in
- * concurrency-limited chunks so a large list doesn't open more simultaneous
- * connections than the pooled SMTP transporter allows (maxConnections: 3
- * above) — raise `concurrency` if you've raised that too, but there's
- * little benefit past it since nodemailer just queues the rest internally.
- *
- * Duplicate addresses are deduped so the same person never gets the
- * broadcast twice from one call.
- */
 export async function sendBulkEmail(
   recipients: string[],
   subject: string,
   body: { text?: string; html?: string },
-  opts?: { concurrency?: number; fromName?: string; fromEmail?: string }
+  opts?: {
+    concurrency?: number;
+    fromName?: string;
+    fromEmail?: string;
+    tenantId?: string;
+  },
 ): Promise<BulkEmailResult> {
   const concurrency = opts?.concurrency ?? DEFAULT_BULK_CONCURRENCY;
   const uniqueRecipients = Array.from(
@@ -182,6 +175,7 @@ export async function sendBulkEmail(
           ...body,
           fromName: opts?.fromName,
           fromEmail: opts?.fromEmail,
+          tenantId: opts?.tenantId,
         });
         return {
           to,

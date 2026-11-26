@@ -49,6 +49,13 @@ on:
         default: "CI release update"
         type: string
 
+permissions:
+  contents: read
+
+concurrency:
+  group: mobile-release-${{ inputs.profile || github.ref }}
+  cancel-in-progress: false
+
 jobs:
   verify-mobile:
     name: Typecheck & Expo Config Validation
@@ -63,6 +70,8 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: "22"
+          cache: "npm"
+          cache-dependency-path: mobile/package-lock.json
 
       - name: Install mobile dependencies
         run: npm ci --prefix mobile
@@ -70,21 +79,33 @@ jobs:
       - name: Typecheck TypeScript
         run: npm --prefix mobile run typecheck
 
-      - name: Validate app.json, eas.json & Expo SDK deps
+      - name: Validate app.json, eas.json, Expo SDK deps & EAS hygiene
         run: |
           node -e "JSON.parse(require('fs').readFileSync('mobile/app.json', 'utf8'));"
           node -e "JSON.parse(require('fs').readFileSync('mobile/eas.json', 'utf8'));"
           npm --prefix mobile run config:check
           npm --prefix mobile run deps:check
+          node scripts/verify-eas-secrets.mjs
 
   eas-build:
     name: EAS Cloud Build
     needs: verify-mobile
     if: github.event_name == 'workflow_dispatch' && inputs.run_eas_build == true
+    environment: ${{ inputs.profile }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
     steps:
+      - name: Enforce production branch guard
+        env:
+          EAS_PROFILE: ${{ inputs.profile }}
+          GITHUB_REF: ${{ github.ref }}
+        run: |
+          if [ "${EAS_PROFILE}" = "production" ] && [ "${GITHUB_REF}" != "refs/heads/main" ]; then
+            echo "::error::Production EAS builds may only be dispatched from the main branch."
+            exit 1
+          fi
+
       - name: Checkout repository
         uses: actions/checkout@v4
 
@@ -92,6 +113,8 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: "22"
+          cache: "npm"
+          cache-dependency-path: mobile/package-lock.json
 
       - name: Verify EXPO_TOKEN secret is configured
         env:
@@ -111,18 +134,40 @@ jobs:
       - name: Install mobile dependencies
         run: npm ci --prefix mobile
 
+      - name: Verify EAS environment secrets before build
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+          EAS_PROFILE: ${{ inputs.profile }}
+          EAS_PLATFORM: ${{ inputs.platform }}
+        run: |
+          node scripts/verify-eas-secrets.mjs --eas-cli --profile "${EAS_PROFILE}" --platform "${EAS_PLATFORM}" --strict
+
       - name: Run EAS Build
         working-directory: mobile
-        run: eas build --platform ${{ inputs.platform }} --profile ${{ inputs.profile }} --non-interactive --no-wait
+        env:
+          EAS_PROFILE: ${{ inputs.profile }}
+          EAS_PLATFORM: ${{ inputs.platform }}
+        run: eas build --platform "${EAS_PLATFORM}" --profile "${EAS_PROFILE}" --non-interactive --no-wait
 
   eas-update:
     name: EAS OTA Update
     needs: verify-mobile
     if: github.event_name == 'workflow_dispatch' && inputs.run_eas_update == true
+    environment: ${{ inputs.profile }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
     steps:
+      - name: Enforce production branch guard
+        env:
+          EAS_PROFILE: ${{ inputs.profile }}
+          GITHUB_REF: ${{ github.ref }}
+        run: |
+          if [ "${EAS_PROFILE}" = "production" ] && [ "${GITHUB_REF}" != "refs/heads/main" ]; then
+            echo "::error::Production EAS OTA updates may only be dispatched from the main branch."
+            exit 1
+          fi
+
       - name: Checkout repository
         uses: actions/checkout@v4
 
@@ -130,6 +175,8 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: "22"
+          cache: "npm"
+          cache-dependency-path: mobile/package-lock.json
 
       - name: Verify EXPO_TOKEN secret is configured
         env:
@@ -149,6 +196,17 @@ jobs:
       - name: Install mobile dependencies
         run: npm ci --prefix mobile
 
+      - name: Verify EAS environment secrets before OTA update
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+          EAS_PROFILE: ${{ inputs.profile }}
+          EAS_PLATFORM: ${{ inputs.platform }}
+        run: |
+          node scripts/verify-eas-secrets.mjs --eas-cli --profile "${EAS_PROFILE}" --platform "${EAS_PLATFORM}" --ota --strict
+
       - name: Publish EAS OTA Update
         working-directory: mobile
-        run: eas update --channel ${{ inputs.profile }} --message "${{ inputs.ota_message }}" --non-interactive
+        env:
+          EAS_PROFILE: ${{ inputs.profile }}
+          OTA_MESSAGE: ${{ inputs.ota_message }}
+        run: eas update --channel "${EAS_PROFILE}" --message "${OTA_MESSAGE}" --non-interactive

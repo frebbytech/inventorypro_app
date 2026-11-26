@@ -34,10 +34,16 @@ interface NotificationSettingsProps {
   settings: Settings | null;
 }
 
+type MemberSaleChannel = "in_app" | "email" | "sms";
+
 interface FormValues {
   notification_email: boolean;
   notification_push: boolean;
   notification_sms: boolean;
+  member_sale_alert_enabled: boolean;
+  member_sale_channel_in_app: boolean;
+  member_sale_channel_email: boolean;
+  member_sale_channel_sms: boolean;
   stock_audio_alert: boolean;
   stock_audio_volume: number;
   stock_audio_tone: SoundTone;
@@ -52,6 +58,10 @@ type ToggleName =
   | "notification_email"
   | "notification_push"
   | "notification_sms"
+  | "member_sale_alert_enabled"
+  | "member_sale_channel_in_app"
+  | "member_sale_channel_email"
+  | "member_sale_channel_sms"
   | "stock_audio_alert"
   | "eod_report_enabled";
 
@@ -78,6 +88,59 @@ const CHANNELS: { name: ToggleName; label: string; description: string }[] = [
     description: "Text messages for urgent stock issues.",
   },
 ];
+
+const MEMBER_SALE_CHANNELS: {
+  field:
+    | "member_sale_channel_in_app"
+    | "member_sale_channel_email"
+    | "member_sale_channel_sms";
+  channel: MemberSaleChannel;
+  label: string;
+  description: string;
+}[] = [
+  {
+    field: "member_sale_channel_in_app",
+    channel: "in_app",
+    label: "In-app notification",
+    description: "Show an instant sale alert in the admin notification inbox & push devices.",
+  },
+  {
+    field: "member_sale_channel_email",
+    channel: "email",
+    label: "Email",
+    description: "Email workspace admins whenever a member completes a sale.",
+  },
+  {
+    field: "member_sale_channel_sms",
+    channel: "sms",
+    label: "SMS",
+    description: "Text workspace admins with receipt details when a member makes a sale.",
+  },
+];
+
+function parseLocalMemberSaleChannels(
+  raw?: string | null,
+): MemberSaleChannel[] {
+  const valid = new Set<MemberSaleChannel>(["in_app", "email", "sms"]);
+  if (raw && raw.trim()) {
+    try {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) {
+        const filtered = Array.from(
+          new Set(
+            parsed
+              .map((c) => String(c || "").trim().toLowerCase() as MemberSaleChannel)
+              .filter((c) => valid.has(c)),
+          ),
+        );
+        if (filtered.length > 0) return filtered;
+      }
+    } catch {
+      // fall through
+    }
+  }
+  return ["in_app"];
+}
 
 const TONE_OPTIONS: { value: SoundTone; label: string; description: string }[] =
   [
@@ -196,11 +259,19 @@ export default function NotificationSettings({
   const { isPlaying, play } = useSoundSample();
   const [isSendingReport, setIsSendingReport] = useState(false);
 
+  const initialMemberSaleChannels = parseLocalMemberSaleChannels(
+    settings?.member_sale_alert_channels,
+  );
+
   const form = useForm<FormValues>({
     defaultValues: {
       notification_email: settings?.notification_email ?? true,
       notification_push: settings?.notification_push ?? true,
       notification_sms: settings?.notification_sms ?? false,
+      member_sale_alert_enabled: Boolean(settings?.member_sale_alert_enabled),
+      member_sale_channel_in_app: initialMemberSaleChannels.includes("in_app"),
+      member_sale_channel_email: initialMemberSaleChannels.includes("email"),
+      member_sale_channel_sms: initialMemberSaleChannels.includes("sms"),
       stock_audio_alert: settings?.stock_audio_alert ?? true,
       stock_audio_volume: settings?.stock_audio_volume ?? 0.5,
       stock_audio_tone: (settings?.stock_audio_tone || "chime") as SoundTone,
@@ -213,21 +284,71 @@ export default function NotificationSettings({
   });
 
   const { isSubmitting, isDirty } = form.formState;
-  const [audioEnabled, tone, volume, reportEnabled] = useWatch({
+  const [
+    audioEnabled,
+    tone,
+    volume,
+    reportEnabled,
+    memberSaleAlertEnabled,
+    memberSaleInApp,
+    memberSaleEmail,
+    memberSaleSms,
+  ] = useWatch({
     control: form.control,
     name: [
       "stock_audio_alert",
       "stock_audio_tone",
       "stock_audio_volume",
       "eod_report_enabled",
+      "member_sale_alert_enabled",
+      "member_sale_channel_in_app",
+      "member_sale_channel_email",
+      "member_sale_channel_sms",
     ],
   });
 
+  const hasMemberSaleChannelSelected =
+    memberSaleInApp || memberSaleEmail || memberSaleSms;
+
   async function onSubmit(values: FormValues) {
+    const selectedMemberSaleChannels = (
+      [
+        values.member_sale_channel_in_app ? "in_app" : null,
+        values.member_sale_channel_email ? "email" : null,
+        values.member_sale_channel_sms ? "sms" : null,
+      ].filter(Boolean) as MemberSaleChannel[]
+    );
+
+    if (
+      values.member_sale_alert_enabled &&
+      selectedMemberSaleChannels.length === 0
+    ) {
+      toast.error("Select at least one alert channel", {
+        description: "Choose In-app, Email, or SMS for member sale alerts.",
+        position: "top-right",
+      });
+      return;
+    }
+
+    const {
+      member_sale_channel_in_app: _inApp,
+      member_sale_channel_email: _email,
+      member_sale_channel_sms: _sms,
+      ...persistableValues
+    } = values;
+    const settingsPayload = {
+      ...persistableValues,
+      member_sale_alert_channels: JSON.stringify(
+        selectedMemberSaleChannels.length > 0
+          ? selectedMemberSaleChannels
+          : ["in_app"],
+      ),
+    };
+
     try {
       const result = await updateSettings({
         business_name: settings?.business_name,
-        ...values,
+        ...settingsPayload,
       });
 
       if (!result.success) {
@@ -237,7 +358,7 @@ export default function NotificationSettings({
         });
         return;
       }
- updateNewSettings(values);
+      updateNewSettings(settingsPayload);
       await refetchSettings();
       form.reset(values); // clears the dirty state against the saved values
 
@@ -573,6 +694,55 @@ export default function NotificationSettings({
                     {isSendingReport ? "Sending…" : "Send report now"}
                   </Button>
                 </div>
+              </div>
+            )}
+          </div>
+
+          {/* Member sale alerts (Admins) */}
+          <div>
+            <ToggleRow
+              control={form.control}
+              name="member_sale_alert_enabled"
+              label="Member sale alerts (Admins)"
+              description="Notify admins anytime a team member completes a sale."
+              onToggle={(checked) => {
+                if (
+                  checked &&
+                  !form.getValues("member_sale_channel_in_app") &&
+                  !form.getValues("member_sale_channel_email") &&
+                  !form.getValues("member_sale_channel_sms")
+                ) {
+                  form.setValue("member_sale_channel_in_app", true, {
+                    shouldDirty: true,
+                  });
+                }
+              }}
+            />
+
+            {memberSaleAlertEnabled && (
+              <div className="divide-y border-t bg-muted/30">
+                <div className="px-5 py-3 sm:px-6">
+                  <p className="text-xs font-medium text-muted-foreground">
+                    Choose how admins receive member sale alerts:
+                  </p>
+                  {!hasMemberSaleChannelSelected && (
+                    <p
+                      role="alert"
+                      className="mt-1 text-xs font-medium text-destructive"
+                    >
+                      Select at least one channel (In-app, Email, or SMS).
+                    </p>
+                  )}
+                </div>
+                {MEMBER_SALE_CHANNELS.map((ch) => (
+                  <ToggleRow
+                    key={ch.field}
+                    control={form.control}
+                    name={ch.field}
+                    label={ch.label}
+                    description={ch.description}
+                  />
+                ))}
               </div>
             )}
           </div>

@@ -320,6 +320,13 @@ export function replaceLocalSnapshotWithCloud(
         notificationEmail: snapshot.store.notificationEmail ? 1 : 0,
         notificationPush: snapshot.store.notificationPush ? 1 : 0,
         notificationSms: snapshot.store.notificationSms ? 1 : 0,
+        memberSaleAlertEnabled: snapshot.store.memberSaleAlertEnabled ? 1 : 0,
+        memberSaleAlertChannels: JSON.stringify(
+          Array.isArray(snapshot.store.memberSaleAlertChannels) &&
+            snapshot.store.memberSaleAlertChannels.length > 0
+            ? snapshot.store.memberSaleAlertChannels
+            : ["in_app"],
+        ),
         stockAudioAlert: snapshot.store.stockAudioAlert === false ? 0 : 1,
         stockAudioTone: snapshot.store.stockAudioTone || "chime",
         stockAudioVolume:
@@ -1676,6 +1683,18 @@ function upsertSettingsTx(
   if (typeof rec.notificationSms === "boolean") {
     patch.notificationSms = rec.notificationSms ? 1 : 0;
   }
+  if (typeof rec.memberSaleAlertEnabled === "boolean") {
+    patch.memberSaleAlertEnabled = rec.memberSaleAlertEnabled ? 1 : 0;
+  }
+  if (Array.isArray(rec.memberSaleAlertChannels)) {
+    const allowed = new Set(["in_app", "email", "sms"]);
+    const clean = rec.memberSaleAlertChannels
+      .map((c) => String(c || "").trim().toLowerCase())
+      .filter((c) => allowed.has(c));
+    patch.memberSaleAlertChannels = JSON.stringify(
+      clean.length > 0 ? Array.from(new Set(clean)) : ["in_app"],
+    );
+  }
   if (typeof rec.stockAudioAlert === "boolean") {
     patch.stockAudioAlert = rec.stockAudioAlert ? 1 : 0;
   }
@@ -1747,6 +1766,8 @@ function upsertSettingsTx(
       notificationEmail: patch.notificationEmail ?? 0,
       notificationPush: patch.notificationPush ?? 0,
       notificationSms: patch.notificationSms ?? 0,
+      memberSaleAlertEnabled: patch.memberSaleAlertEnabled ?? 0,
+      memberSaleAlertChannels: patch.memberSaleAlertChannels ?? '["in_app"]',
       stockAudioAlert: patch.stockAudioAlert ?? 1,
       stockAudioTone: patch.stockAudioTone ?? "chime",
       stockAudioVolume: patch.stockAudioVolume ?? 0.5,

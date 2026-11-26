@@ -10,6 +10,8 @@ import {
   normalizeTenantAccessMode,
   rebuildTenantScopedViews,
 } from "@/lib/tenant";
+import { applyMultiTenantSchema } from "@/lib/tenant-schema";
+import { up as migrateMemberSaleAlertsUp } from "../migrations/20261126000000_member_sale_alerts";
 
 describe("Tenant Schema & Initialization", () => {
   it("normalizes slugs and tenant access modes safely", () => {
@@ -24,7 +26,7 @@ describe("Tenant Schema & Initialization", () => {
     expect(normalizeTenantAccessMode("both")).toBe("both");
   });
 
-  it("initializes base, multi-tenant, security, and super-admin schemas with v_product_catalog intact", async () => {
+  it("initializes base, multi-tenant, security, and super-admin schemas with v_product_catalog and member sale alert columns intact", async () => {
     await ensureAuthSchema();
     await ensureMultiTenantSchema();
     await ensureSecuritySchema();
@@ -39,6 +41,17 @@ describe("Tenant Schema & Initialization", () => {
       "low_stock_threshold",
     );
     expect(hasLowStockCol).toBe(true);
+
+    const hasAlertEnabledCol = await db.schema.hasColumn(
+      "settings",
+      "member_sale_alert_enabled",
+    );
+    const hasAlertChannelsCol = await db.schema.hasColumn(
+      "settings",
+      "member_sale_alert_channels",
+    );
+    expect(hasAlertEnabledCol).toBe(true);
+    expect(hasAlertChannelsCol).toBe(true);
 
     const defaultTenant = await db("tenants")
       .where("id", DEFAULT_TENANT_ID)
@@ -58,4 +71,49 @@ describe("Tenant Schema & Initialization", () => {
       );
     expect(Array.isArray(catalogRows)).toBe(true);
   });
+
+  it("upgrades settings missing member_sale_alert columns via both Knex migration and applyMultiTenantSchema fast-path bypass", async () => {
+    await ensureAuthSchema();
+    await ensureMultiTenantSchema();
+
+    // Simulate an existing DB that already had paper_size before member_sale_alert columns existed
+    await db.schema.alterTable("settings", (table) => {
+      table.dropColumn("member_sale_alert_enabled");
+      table.dropColumn("member_sale_alert_channels");
+    });
+
+    expect(
+      await db.schema.hasColumn("settings", "member_sale_alert_enabled"),
+    ).toBe(false);
+    expect(
+      await db.schema.hasColumn("settings", "member_sale_alert_channels"),
+    ).toBe(false);
+
+    // applyMultiTenantSchema must not early-return when member_sale_alert columns are missing
+    await applyMultiTenantSchema(db);
+
+    expect(
+      await db.schema.hasColumn("settings", "member_sale_alert_enabled"),
+    ).toBe(true);
+    expect(
+      await db.schema.hasColumn("settings", "member_sale_alert_channels"),
+    ).toBe(true);
+
+    // Also verify the Knex migration up() independently adds them and is idempotent
+    await db.schema.alterTable("settings", (table) => {
+      table.dropColumn("member_sale_alert_enabled");
+      table.dropColumn("member_sale_alert_channels");
+    });
+
+    await migrateMemberSaleAlertsUp(db);
+    await migrateMemberSaleAlertsUp(db);
+
+    expect(
+      await db.schema.hasColumn("settings", "member_sale_alert_enabled"),
+    ).toBe(true);
+    expect(
+      await db.schema.hasColumn("settings", "member_sale_alert_channels"),
+    ).toBe(true);
+  });
 });
+

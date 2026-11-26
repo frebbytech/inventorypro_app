@@ -6,6 +6,13 @@ on:
   pull_request:
     branches: [main]
 
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   web-and-api:
     name: Web Typecheck, Lint & Vitest Suite
@@ -34,8 +41,10 @@ jobs:
       - name: Run automated test suite
         run: npm test
 
-      - name: Run Production Ops preflight check
-        run: npm run ops:check
+      - name: Run Production Ops & EAS Secret Hygiene Check
+        run: |
+          npm run ops:check
+          npm run ops:verify-eas
 
   mobile-checks:
     name: Mobile Typecheck & Expo Config Check
@@ -50,6 +59,8 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: "22"
+          cache: "npm"
+          cache-dependency-path: mobile/package-lock.json
 
       - name: Install mobile dependencies
         run: npm ci --prefix mobile

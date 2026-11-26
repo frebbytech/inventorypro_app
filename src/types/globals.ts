@@ -1174,6 +1174,8 @@ export interface Settings {
   notification_email: boolean;
   notification_push: boolean;
   notification_sms: boolean;
+  member_sale_alert_enabled?: boolean;
+  member_sale_alert_channels?: string | null;
   stock_audio_alert?: boolean;
   stock_audio_volume?: number;
   stock_audio_tone?: "chime" | "bell" | "marimba" | "ping";

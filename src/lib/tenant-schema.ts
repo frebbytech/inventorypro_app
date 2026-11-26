@@ -777,6 +777,8 @@ export async function applyMultiTenantSchema(knexOrDb: Knex): Promise<void> {
       hasMobilePushTokens,
       hasProductsVersion,
       hasSettingsPaperSize,
+      hasSettingsMemberSaleAlertEnabled,
+      hasSettingsMemberSaleAlertChannels,
       hasUserSessionsTenant,
       vCatalogRow,
       defaultTenant,
@@ -788,6 +790,8 @@ export async function applyMultiTenantSchema(knexOrDb: Knex): Promise<void> {
       knexOrDb.schema.hasTable("mobile_push_tokens"),
       knexOrDb.schema.hasColumn("products", "version"),
       knexOrDb.schema.hasColumn("settings", "paper_size"),
+      knexOrDb.schema.hasColumn("settings", "member_sale_alert_enabled"),
+      knexOrDb.schema.hasColumn("settings", "member_sale_alert_channels"),
       knexOrDb.schema.hasColumn("user_sessions", "tenant_id"),
       knexOrDb("sqlite_master")
         .where({ type: "view", name: "v_product_catalog" })
@@ -804,6 +808,8 @@ export async function applyMultiTenantSchema(knexOrDb: Knex): Promise<void> {
       hasMobilePushTokens &&
       hasProductsVersion &&
       hasSettingsPaperSize &&
+      hasSettingsMemberSaleAlertEnabled &&
+      hasSettingsMemberSaleAlertChannels &&
       hasUserSessionsTenant &&
       defaultTenant?.id &&
       catalogSql.includes("tenant_id") &&
@@ -1007,6 +1013,12 @@ export async function applyMultiTenantSchema(knexOrDb: Knex): Promise<void> {
   });
   await addColumnIfMissing(knexOrDb, "settings", "paper_size", (table) => {
     table.string("paper_size", 20).defaultTo("thermal_80mm");
+  });
+  await addColumnIfMissing(knexOrDb, "settings", "member_sale_alert_enabled", (table) => {
+    table.boolean("member_sale_alert_enabled").defaultTo(false);
+  });
+  await addColumnIfMissing(knexOrDb, "settings", "member_sale_alert_channels", (table) => {
+    table.text("member_sale_alert_channels").defaultTo('["in_app"]');
   });
 
   const existingDefaultTenant = await knexOrDb("tenants")

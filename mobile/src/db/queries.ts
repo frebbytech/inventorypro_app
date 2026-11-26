@@ -48,6 +48,7 @@ import {
   type DaySchedule,
   type EmployeeDetailResponse,
   type EmployeeItem,
+  type MemberSaleAlertChannel,
   type NotificationItem,
   type NotificationsQueryParams,
   type PaperSize,
@@ -179,6 +180,45 @@ function normalizePaperSizeLocal(val?: string | null): PaperSize {
   return "thermal_80mm";
 }
 
+function parseLocalMemberSaleChannels(
+  raw: unknown,
+  fallback: MemberSaleAlertChannel[] = ["in_app"],
+): MemberSaleAlertChannel[] {
+  const valid = new Set<MemberSaleAlertChannel>(["in_app", "email", "sms"]);
+  if (Array.isArray(raw)) {
+    const clean = Array.from(
+      new Set(
+        raw
+          .map((c) => String(c || "").trim().toLowerCase() as MemberSaleAlertChannel)
+          .filter((c) => valid.has(c)),
+      ),
+    );
+    return clean;
+  }
+  if (typeof raw === "string" && raw.trim()) {
+    try {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) {
+        const clean = Array.from(
+          new Set(
+            parsed
+              .map((c) => String(c || "").trim().toLowerCase() as MemberSaleAlertChannel)
+              .filter((c) => valid.has(c)),
+          ),
+        );
+        return clean;
+      }
+    } catch {
+      const csv = raw
+        .split(",")
+        .map((c) => c.trim().toLowerCase() as MemberSaleAlertChannel)
+        .filter((c) => valid.has(c));
+      if (csv.length > 0) return Array.from(new Set(csv));
+    }
+  }
+  return [...fallback];
+}
+
 export function getStoreProfile(db: ExpoSqliteDrizzleDb): StoreProfile {
   const row = db
     .select()
@@ -199,6 +239,8 @@ export function getStoreProfile(db: ExpoSqliteDrizzleDb): StoreProfile {
       notificationEmail: false,
       notificationPush: false,
       notificationSms: false,
+      memberSaleAlertEnabled: false,
+      memberSaleAlertChannels: ["in_app"],
       stockAudioAlert: true,
       stockAudioTone: "chime",
       stockAudioVolume: 0.5,
@@ -228,6 +270,14 @@ export function getStoreProfile(db: ExpoSqliteDrizzleDb): StoreProfile {
     notificationEmail: row.notificationEmail === 1,
     notificationPush: row.notificationPush === 1,
     notificationSms: row.notificationSms === 1,
+    memberSaleAlertEnabled: row.memberSaleAlertEnabled === 1,
+    memberSaleAlertChannels: (() => {
+      const parsed = parseLocalMemberSaleChannels(
+        row.memberSaleAlertChannels,
+        ["in_app"],
+      );
+      return parsed.length > 0 ? parsed : ["in_app"];
+    })(),
     stockAudioAlert: row.stockAudioAlert !== 0,
     stockAudioTone: normalizeToneLocal(row.stockAudioTone),
     stockAudioVolume:
@@ -470,6 +520,19 @@ export function updateStoreNotificationSettings(
     input.stockAudioVolume !== undefined
       ? Math.min(1, Math.max(0, Number(input.stockAudioVolume)))
       : current.stockAudioVolume ?? 0.5;
+  const memberSaleAlertEnabled =
+    input.memberSaleAlertEnabled !== undefined
+      ? Boolean(input.memberSaleAlertEnabled)
+      : Boolean(current.memberSaleAlertEnabled);
+  const memberSaleAlertChannels =
+    input.memberSaleAlertChannels !== undefined
+      ? parseLocalMemberSaleChannels(input.memberSaleAlertChannels, [])
+      : current.memberSaleAlertChannels ?? ["in_app"];
+  if (memberSaleAlertEnabled && memberSaleAlertChannels.length === 0) {
+    throw new Error(
+      "Select at least one channel (In-App, Email, or SMS) for member sale alerts.",
+    );
+  }
   const nowIso = new Date().toISOString();
 
   db.transaction((tx) => {
@@ -478,6 +541,10 @@ export function updateStoreNotificationSettings(
       notificationEmail: (input.notificationEmail ?? current.notificationEmail) ? 1 : 0,
       notificationPush: (input.notificationPush ?? current.notificationPush) ? 1 : 0,
       notificationSms: (input.notificationSms ?? current.notificationSms) ? 1 : 0,
+      memberSaleAlertEnabled: memberSaleAlertEnabled ? 1 : 0,
+      memberSaleAlertChannels: JSON.stringify(
+        memberSaleAlertChannels.length > 0 ? memberSaleAlertChannels : ["in_app"],
+      ),
       stockAlertThreshold: nextThreshold,
       stockAudioAlert: (input.stockAudioAlert ?? current.stockAudioAlert ?? true) ? 1 : 0,
       stockAudioTone: normalizeToneLocal(input.stockAudioTone ?? current.stockAudioTone),

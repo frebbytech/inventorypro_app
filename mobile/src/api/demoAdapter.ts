@@ -741,9 +741,23 @@ export class DemoDataAdapter implements InventoryProApiClient {
   async updateNotificationSettings(
     input: UpdateNotificationSettingsInput,
   ): Promise<StoreProfile> {
+    const enabled =
+      input.memberSaleAlertEnabled ?? DEMO_STORE_PROFILE.memberSaleAlertEnabled;
+    const channels =
+      input.memberSaleAlertChannels ??
+      DEMO_STORE_PROFILE.memberSaleAlertChannels ??
+      ["in_app"];
+    if (enabled && channels.length === 0) {
+      throw new Error(
+        "Select at least one channel (In-App, Email, or SMS) for member sale alerts.",
+      );
+    }
     return {
       ...DEMO_STORE_PROFILE,
       ...input,
+      memberSaleAlertEnabled: enabled,
+      memberSaleAlertChannels:
+        channels.length > 0 ? Array.from(new Set(channels)) : ["in_app"],
     };
   }
 

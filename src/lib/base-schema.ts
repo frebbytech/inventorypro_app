@@ -427,6 +427,8 @@ async function initBaseTables(knexOrDb: Knex): Promise<void> {
     table.integer("notification_email").defaultTo(1);
     table.integer("notification_push").defaultTo(1);
     table.integer("notification_sms").defaultTo(0);
+    table.boolean("member_sale_alert_enabled").defaultTo(false);
+    table.text("member_sale_alert_channels").defaultTo('["in_app"]');
     table.boolean("stock_audio_alert").defaultTo(true);
     table.float("stock_audio_volume").defaultTo(0.5);
     table.string("stock_audio_tone").defaultTo("chime");

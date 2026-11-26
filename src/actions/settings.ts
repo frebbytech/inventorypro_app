@@ -8,6 +8,7 @@ import { getCurrentUser, getUser } from "./_actions";
 import { buildDefaultSettingsRow } from "@/lib/auth";
 import { DEFAULT_TENANT_ID } from "@/lib/tenant";
 import { emitSyncEvent } from "@/lib/sync-bus";
+import { parseMemberSaleAlertChannels } from "@/lib/mobile-api";
 
 export interface EODUser {
   id: string;
@@ -132,8 +133,44 @@ export async function updateSettings(
     }
 
     const tenantId = currentUser.tenant_id;
-    const payload = { ...input };
+    const payload: Record<string, any> = { ...input };
     delete payload.old_business_name;
+
+    const isThemeOnlyUpdate =
+      Object.keys(payload).length > 0 &&
+      Object.keys(payload).every((k) => k === "theme" || k === "accent_color");
+    if (!isThemeOnlyUpdate && currentUser.role !== "admin") {
+      return Result.fail("Admin permission is required to update store settings.");
+    }
+
+    if (
+      payload.member_sale_alert_enabled !== undefined ||
+      payload.member_sale_alert_channels !== undefined
+    ) {
+      const normalizedChannels =
+        payload.member_sale_alert_channels !== undefined
+          ? parseMemberSaleAlertChannels(payload.member_sale_alert_channels, [])
+          : undefined;
+      if (
+        payload.member_sale_alert_enabled &&
+        normalizedChannels !== undefined &&
+        normalizedChannels.length === 0
+      ) {
+        return Result.fail(
+          "Select at least one alert channel (In-app, Email, or SMS).",
+        );
+      }
+      if (normalizedChannels !== undefined) {
+        payload.member_sale_alert_channels = JSON.stringify(
+          normalizedChannels.length > 0 ? normalizedChannels : ["in_app"],
+        );
+      }
+      if (payload.member_sale_alert_enabled !== undefined) {
+        payload.member_sale_alert_enabled = Boolean(
+          payload.member_sale_alert_enabled,
+        );
+      }
+    }
 
     let existing = await db("settings").where("tenant_id", tenantId).first();
     if (!existing) {

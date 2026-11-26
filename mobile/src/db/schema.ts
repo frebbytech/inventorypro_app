@@ -86,6 +86,10 @@ export const settings = sqliteTable("settings", {
   notificationEmail: integer("notification_email").notNull().default(0),
   notificationPush: integer("notification_push").notNull().default(0),
   notificationSms: integer("notification_sms").notNull().default(0),
+  memberSaleAlertEnabled: integer("member_sale_alert_enabled").notNull().default(0),
+  memberSaleAlertChannels: text("member_sale_alert_channels")
+    .notNull()
+    .default('["in_app"]'),
   stockAudioAlert: integer("stock_audio_alert").notNull().default(1),
   stockAudioTone: text("stock_audio_tone").notNull().default("chime"),
   stockAudioVolume: real("stock_audio_volume").notNull().default(0.5),

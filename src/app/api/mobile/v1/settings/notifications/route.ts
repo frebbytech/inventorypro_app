@@ -5,6 +5,7 @@ import {
   getTenantStoreProfile,
   HttpStatusError,
   normalizeTone,
+  parseMemberSaleAlertChannels,
   withMobileAuth,
 } from "@/lib/mobile-api";
 
@@ -97,6 +98,21 @@ export async function PATCH(req: Request) {
         throw new HttpStatusError("Enter a valid EOD report phone number.", 400);
       }
 
+      const memberSaleAlertEnabled =
+        body.memberSaleAlertEnabled !== undefined
+          ? Boolean(body.memberSaleAlertEnabled)
+          : current.memberSaleAlertEnabled;
+      const memberSaleAlertChannels =
+        body.memberSaleAlertChannels !== undefined
+          ? parseMemberSaleAlertChannels(body.memberSaleAlertChannels, [])
+          : current.memberSaleAlertChannels;
+      if (memberSaleAlertEnabled && memberSaleAlertChannels.length === 0) {
+        throw new HttpStatusError(
+          "Select at least one channel (In-App, Email, or SMS) for member sale alerts.",
+          400,
+        );
+      }
+
       const eodChannels = ["in_app"];
       if (notificationEmail) eodChannels.push("email");
       if (notificationSms) eodChannels.push("sms");
@@ -107,6 +123,12 @@ export async function PATCH(req: Request) {
           notification_email: notificationEmail ? 1 : 0,
           notification_push: notificationPush ? 1 : 0,
           notification_sms: notificationSms ? 1 : 0,
+          member_sale_alert_enabled: memberSaleAlertEnabled ? 1 : 0,
+          member_sale_alert_channels: JSON.stringify(
+            memberSaleAlertChannels.length > 0
+              ? memberSaleAlertChannels
+              : ["in_app"],
+          ),
           stock_alert_threshold: stockAlertThreshold,
           stock_audio_alert: stockAudioAlert,
           stock_audio_tone: stockAudioTone,

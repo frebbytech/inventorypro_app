@@ -93,6 +93,8 @@ export interface MobileStoreProfile {
   notificationEmail: boolean;
   notificationPush: boolean;
   notificationSms: boolean;
+  memberSaleAlertEnabled: boolean;
+  memberSaleAlertChannels: MobileMemberSaleAlertChannel[];
   stockAudioAlert: boolean;
   stockAudioTone: "chime" | "bell" | "marimba" | "ping";
   stockAudioVolume: number;
@@ -107,6 +109,44 @@ export interface MobileStoreProfile {
   businessHoursNotes: string;
   printAfterSale: boolean;
   paperSize: "thermal_58mm" | "thermal_80mm" | "a4";
+}
+
+export type MobileMemberSaleAlertChannel = "in_app" | "email" | "sms";
+
+const VALID_MEMBER_SALE_CHANNELS: MobileMemberSaleAlertChannel[] = [
+  "in_app",
+  "email",
+  "sms",
+];
+
+export function parseMemberSaleAlertChannels(
+  raw?: unknown,
+  fallback: MobileMemberSaleAlertChannel[] = ["in_app"],
+): MobileMemberSaleAlertChannel[] {
+  let list: unknown[] | null = null;
+  if (Array.isArray(raw)) {
+    list = raw;
+  } else if (typeof raw === "string") {
+    const trimmed = raw.trim();
+    if (!trimmed) return [...fallback];
+    try {
+      const parsed = JSON.parse(trimmed);
+      if (Array.isArray(parsed)) {
+        list = parsed;
+      }
+    } catch {
+      list = trimmed.split(",").map((s) => s.trim());
+    }
+  }
+  if (!list) return [...fallback];
+  const normalized = new Set<MobileMemberSaleAlertChannel>();
+  for (const item of list) {
+    const v = String(item || "").trim().toLowerCase() as MobileMemberSaleAlertChannel;
+    if (VALID_MEMBER_SALE_CHANNELS.includes(v)) {
+      normalized.add(v);
+    }
+  }
+  return VALID_MEMBER_SALE_CHANNELS.filter((ch) => normalized.has(ch));
 }
 
 export function parseDbBool(val: unknown, fallback = false): boolean {
@@ -333,6 +373,14 @@ export async function getTenantStoreProfile(
     notificationEmail: parseDbBool(settings?.notification_email, false),
     notificationPush: parseDbBool(settings?.notification_push, false),
     notificationSms: parseDbBool(settings?.notification_sms, false),
+    memberSaleAlertEnabled: parseDbBool(
+      settings?.member_sale_alert_enabled,
+      false,
+    ),
+    memberSaleAlertChannels: parseMemberSaleAlertChannels(
+      settings?.member_sale_alert_channels,
+      ["in_app"],
+    ),
     stockAudioAlert: parseDbBool(settings?.stock_audio_alert, true),
     stockAudioTone: normalizeTone(settings?.stock_audio_tone),
     stockAudioVolume: volume,

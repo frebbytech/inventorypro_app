@@ -8,16 +8,32 @@ on:
 
   workflow_dispatch:
 
+permissions: {}
+
+concurrency:
+  group: eod-report-cron
+  cancel-in-progress: false
+
 jobs:
   trigger-eod-report:
+    name: Dispatch Scheduled EOD Report
     runs-on: ubuntu-latest
     timeout-minutes: 2
 
     steps:
+      - name: Verify CRON_SECRET is configured
+        env:
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          if [ -z "${CRON_SECRET}" ]; then
+            echo "::error::Missing CRON_SECRET GitHub Actions secret. Add it under Settings -> Secrets and variables -> Actions."
+            exit 1
+          fi
+
       - name: Trigger EOD report check
         env:
           CRON_SECRET: ${{ secrets.CRON_SECRET }}
-          ENDPOINT: https://inventorypro-app-drab.vercel.app/api/cron/eod-report
+          ENDPOINT: ${{ vars.EOD_REPORT_URL || 'https://inventorypro-app-drab.vercel.app/api/cron/eod-report' }}
         run: |
           set -euo pipefail
 

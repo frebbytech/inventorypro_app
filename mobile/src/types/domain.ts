@@ -32,6 +32,7 @@ export interface TenantInfo {
 export type TwoFactorMethod = "email" | "sms";
 export type StockAudioTone = "chime" | "bell" | "marimba" | "ping";
 export type PaperSize = "thermal_58mm" | "thermal_80mm" | "a4";
+export type MemberSaleAlertChannel = "in_app" | "email" | "sms";
 
 export interface DaySchedule {
   day: string;
@@ -114,6 +115,8 @@ export interface StoreProfile {
   notificationEmail?: boolean;
   notificationPush?: boolean;
   notificationSms?: boolean;
+  memberSaleAlertEnabled?: boolean;
+  memberSaleAlertChannels?: MemberSaleAlertChannel[];
   stockAudioAlert?: boolean;
   stockAudioTone?: StockAudioTone;
   stockAudioVolume?: number;
@@ -147,6 +150,8 @@ export interface UpdateNotificationSettingsInput {
   notificationEmail?: boolean;
   notificationPush?: boolean;
   notificationSms?: boolean;
+  memberSaleAlertEnabled?: boolean;
+  memberSaleAlertChannels?: MemberSaleAlertChannel[];
   stockAlertThreshold?: number;
   stockAudioAlert?: boolean;
   stockAudioTone?: StockAudioTone;

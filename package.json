@@ -24,6 +24,7 @@
     "test:watch": "vitest",
     "test:e2e": "playwright test",
     "ops:check": "node scripts/ops-preflight.mjs",
+    "ops:verify-eas": "node scripts/verify-eas-secrets.mjs",
     "electron:deps": "electron-builder install-app-deps"
   },
   "dependencies": {

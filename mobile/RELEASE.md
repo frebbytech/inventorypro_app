@@ -58,11 +58,25 @@ npm --prefix mobile run deps:check
 - Available on **New Sale (`/sales/new`)** and **Inventory (`/(tabs)/inventory`)** via the **HID** toggle button next to the barcode camera icon.
 - Keeps a hidden keyboard-wedge capture input active (`showSoftInputOnFocus={false}` so the on-screen keyboard does not pop up), parses high-speed scanner bursts with or without CR/LF suffixes, commits barcodes into the POS cart or opens matching SKU details, and triggers tactile haptics.
 
-## 7. GitHub Actions CI/CD Workflows
-- `.github/workflows/ci.yml`: Runs web/backend TypeScript check, ESLint, Vitest test suite (`tests/*.test.ts`), Production Ops preflight check (`npm run ops:check`), and mobile TypeScript + Expo config validation on every push and pull request to `main`.
-- `.github/workflows/mobile-release.yml`: Validates mobile configuration on push/PR/tags (`mobile-v*`) and supports manual `workflow_dispatch` triggers for cloud **EAS Build** (`development` / `preview` / `production`) and **EAS Update** OTA publishing using the repository `EXPO_TOKEN` secret.
+## 7. GitHub Lockdown & CI/CD Workflows
+- `.github/workflows/ci.yml`: Runs with `permissions: { contents: read }`, executes web/backend TypeScript check, ESLint, Vitest test suite (`tests/*.test.ts`), Production Ops preflight (`npm run ops:check`), EAS secret hygiene (`npm run ops:verify-eas`), and mobile TypeScript + Expo config validation on every push and PR to `main`.
+- `.github/workflows/mobile-release.yml`: Validates mobile configuration on push/PR/tags (`mobile-v*`), restricts production `workflow_dispatch` builds/updates strictly to `main` via GitHub `environment: production` gates, validates remote EAS environment secrets (`verify-eas-secrets.mjs --eas-cli`), and triggers **EAS Build** / **EAS Update** using `EXPO_TOKEN`.
+- `.github/workflows/eod-report-cron.yml`: Uses zero repo permissions (`permissions: {}`), fails fast if `CRON_SECRET` is missing, and dispatches scheduled EOD reports.
+- `.github/dependabot.yml`: Weekly automated security & dependency updates for `/`, `/mobile`, and `github-actions`.
+- **Recommended GitHub Repository Rules (`Settings -> Branches` & `Settings -> Environments`)**:
+  1. Protect `main`: require pull request reviews, dismiss stale approvals, and require passing `Web Typecheck, Lint & Vitest Suite` and `Mobile Typecheck & Expo Config Check` status checks.
+  2. Configure GitHub Actions Secrets: `EXPO_TOKEN` (Expo access token for EAS builds/OTA) and `CRON_SECRET` (matching backend EOD cron bearer secret).
+  3. Create GitHub Environments (`development`, `preview`, `production`) and require reviewer approval + `main`-branch deployment policy on `production`.
 
-## 8. Production Ops & Cloud Account Binding
-- **Preflight Gate**: Run `npm run ops:check` locally (advisory) or `npm run ops:check -- --strict` in deployment pipelines to verify secrets (`JWT_SECRET`, `CRON_SECRET`, `SUPER_ADMIN_PASSWORD`, `ENCRYPTION_KEY`), Turso/libSQL auth tokens, writable media storage (`public/images`), store PNG assets, and EAS project binding (`mobile/app.config.ts`).
+## 8. EAS Environment Secrets & Production Ops
+- **EAS Environment Variables** (`development`, `preview`, `production` in `mobile/eas.json`):
+  1. `EXPO_PUBLIC_API_BASE_URL` — Public HTTPS backend URL for `preview` and `production` mobile builds.
+  2. `GOOGLE_SERVICES_JSON` (file secret) — Android FCM v1 credentials (never commit `mobile/google-services.json`).
+  3. Verify from CLI after `eas login`:
+     ```bash
+     npm run ops:verify-eas -- --eas-cli --profile production --strict
+     ```
+- **Preflight Gate**: Run `npm run ops:check` locally (advisory) or `npm run ops:check -- --strict` in deployment pipelines to verify secrets (`JWT_SECRET`, `CRON_SECRET`, `SUPER_ADMIN_PASSWORD`, `ENCRYPTION_KEY`, `EXPO_ACCESS_TOKEN`), Turso/libSQL auth tokens, writable media storage (`public/images`), store PNG assets, and EAS project binding (`mobile/app.config.ts`).
 - **Super Admin Ops Console (`/super-admin/ops`)**: Inspect live database latency, read-only environment/secret guardrails, Expo EAS project & bundle binding (`EXPO_PUBLIC_EAS_PROJECT_ID`, `EXPO_OWNER`, `EXPO_ACCESS_TOKEN`), cloud endpoint health probing, bound mobile push devices (with immediate revoke controls), and scheduled `/api/cron/eod-report` execution locks.
 - **Health Endpoints**: `GET /api/health` and `GET /api/mobile/v1/health` execute live database pings (`200 healthy` / `503 degraded`) for load balancers and Cloud Run readiness checks.
+

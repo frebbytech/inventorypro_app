@@ -26,6 +26,7 @@ import {
   publishSyncEvent,
   type SyncEventRecord,
 } from "@/lib/sync-bus";
+import { notifyAdminsOfMemberSale } from "@/lib/member-sale-alerts";
 
 // ──────────────────────────────────────────────────────────────
 // 1. Sale Items (tenant-scoped)
@@ -331,12 +332,31 @@ export async function createProductSales(
         type: "sale",
         title: `New Sale #${salesId.slice(0, 8)}`,
         message: `You sold ${salesItems.length} items to ${sales.customer.name} for ${currencyFormatter(sales.total_amount)}.`,
-        reference_type: "sale_created",
+        reference_type: "sale",
         reference_id: salesId,
       });
     } catch (notifError) {
       console.error("Failed to create notification for sale:", notifError);
     }
+
+    await notifyAdminsOfMemberSale({
+      tenantId,
+      saleId: salesId,
+      receiptNumber: receiptNo,
+      totalAmount: Number(sales.total_amount ?? 0),
+      itemCount: salesItems.reduce(
+        (sum, item) => sum + Math.max(1, Number(item.quantity ?? 1)),
+        0,
+      ),
+      paymentMode: sales.payment_mode || "cash",
+      customerName: sales.customer.name,
+      member: {
+        id: currentUser.id,
+        role: currentUser.role,
+        fullname: currentUser.fullname,
+        username: currentUser.username,
+      },
+    });
 
     const receipt: PaymentInfo = {
       transactionId: salesId,

@@ -80,6 +80,8 @@ export function buildDefaultSettingsRow(opts: {
     notification_email: 0,
     notification_push: 0,
     notification_sms: 0,
+    member_sale_alert_enabled: false,
+    member_sale_alert_channels: '["in_app"]',
     stock_audio_alert: true,
     stock_audio_volume: 0.5,
     stock_audio_tone: "chime",

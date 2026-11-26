@@ -8,6 +8,8 @@ export interface SmsPayload {
   message: string;
   /** Overrides the sender ID from settings */
   senderId?: string;
+  /** Optional tenant override for server/mobile background sends */
+  tenantId?: string;
 }
 
 export interface SmsResult {
@@ -20,7 +22,7 @@ export interface SmsResult {
 // ── Core sender ──
 export async function sendSms(payload: SmsPayload): Promise<SmsResult> {
   try {
-    const creds = await getDecryptedApiCredentials();
+    const creds = await getDecryptedApiCredentials(payload.tenantId);
     if (!creds?.arkessel?.apiKey) {
       return { success: false, error: "Arkessel API key not configured" };
     }
@@ -90,9 +92,10 @@ export async function sendSms(payload: SmsPayload): Promise<SmsResult> {
 export async function sendSingleSms(
   to: string,
   message: string,
-  senderId?: string
+  senderId?: string,
+  tenantId?: string,
 ): Promise<SmsResult> {
-  return sendSms({ to, message, senderId });
+  return sendSms({ to, message, senderId, tenantId });
 }
 
 /**
@@ -102,9 +105,10 @@ export async function sendSingleSms(
 export async function sendBulkSms(
   recipients: string[],
   message: string,
-  senderId?: string
+  senderId?: string,
+  tenantId?: string,
 ): Promise<SmsResult> {
-  return sendSms({ to: recipients, message, senderId });
+  return sendSms({ to: recipients, message, senderId, tenantId });
 }
 
 // ── Prebuilt templates (edit as needed) ──

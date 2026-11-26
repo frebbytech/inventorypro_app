@@ -110,6 +110,8 @@ function ensureTablesSync(sqlite: SQLite.SQLiteDatabase): void {
       notification_email INTEGER NOT NULL DEFAULT 0,
       notification_push INTEGER NOT NULL DEFAULT 0,
       notification_sms INTEGER NOT NULL DEFAULT 0,
+      member_sale_alert_enabled INTEGER NOT NULL DEFAULT 0,
+      member_sale_alert_channels TEXT NOT NULL DEFAULT '["in_app"]',
       stock_audio_alert INTEGER NOT NULL DEFAULT 1,
       stock_audio_tone TEXT NOT NULL DEFAULT 'chime',
       stock_audio_volume REAL NOT NULL DEFAULT 0.5,
@@ -346,6 +348,8 @@ function ensureTablesSync(sqlite: SQLite.SQLiteDatabase): void {
   ensureColumnExists(sqlite, "settings", "notification_email", "INTEGER NOT NULL DEFAULT 0");
   ensureColumnExists(sqlite, "settings", "notification_push", "INTEGER NOT NULL DEFAULT 0");
   ensureColumnExists(sqlite, "settings", "notification_sms", "INTEGER NOT NULL DEFAULT 0");
+  ensureColumnExists(sqlite, "settings", "member_sale_alert_enabled", "INTEGER NOT NULL DEFAULT 0");
+  ensureColumnExists(sqlite, "settings", "member_sale_alert_channels", "TEXT NOT NULL DEFAULT '[\"in_app\"]'");
   ensureColumnExists(sqlite, "settings", "stock_audio_alert", "INTEGER NOT NULL DEFAULT 1");
   ensureColumnExists(sqlite, "settings", "stock_audio_tone", "TEXT NOT NULL DEFAULT 'chime'");
   ensureColumnExists(sqlite, "settings", "stock_audio_volume", "REAL NOT NULL DEFAULT 0.5");

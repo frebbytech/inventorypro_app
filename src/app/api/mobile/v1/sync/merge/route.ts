@@ -11,6 +11,7 @@ import {
   resolveDefaultSupplierIdForTenant,
   withMobileAuth,
 } from "@/lib/mobile-api";
+import { notifyAdminsOfMemberSale } from "@/lib/member-sale-alerts";
 import { generateId } from "@/utils/generator";
 
 export const dynamic = "force-dynamic";
@@ -43,6 +44,14 @@ export async function POST(req: Request) {
         const salesInput: any[] = Array.isArray(body.sales) ? body.sales : [];
 
         const eventsToPublish: SyncEventRecord[] = [];
+        const mergedMemberSales: Array<{
+          saleId: string;
+          receiptNumber: string;
+          totalAmount: number;
+          itemCount: number;
+          paymentMode: string;
+          customerName: string;
+        }> = [];
         const nowIso = new Date().toISOString();
 
         const counts = {
@@ -374,6 +383,23 @@ export async function POST(req: Request) {
                 updated_at: nowIso,
               });
             }
+            if (!isRefunded) {
+              mergedMemberSales.push({
+                saleId,
+                receiptNumber: receiptNo || `MOB-${Date.now()}`,
+                totalAmount: Math.max(0, Number(s.totalAmount ?? 0)),
+                itemCount: items.reduce(
+                  (sum, it) => sum + Math.max(1, Math.trunc(Number(it.quantity ?? 1))),
+                  0,
+                ),
+                paymentMode: ["cash", "momo", "bank", "cheque"].includes(
+                  s.paymentMode,
+                )
+                  ? s.paymentMode
+                  : "cash",
+                customerName: custName,
+              });
+            }
             counts.sales += 1;
           }
 
@@ -406,6 +432,29 @@ export async function POST(req: Request) {
 
         for (const evt of eventsToPublish) {
           publishSyncEvent(evt);
+        }
+
+        const memberFullname =
+          [session.firstname, session.lastname]
+            .filter(Boolean)
+            .join(" ")
+            .trim() || session.username;
+        for (const ms of mergedMemberSales) {
+          await notifyAdminsOfMemberSale({
+            tenantId,
+            saleId: ms.saleId,
+            receiptNumber: ms.receiptNumber,
+            totalAmount: ms.totalAmount,
+            itemCount: ms.itemCount,
+            paymentMode: ms.paymentMode,
+            customerName: ms.customerName,
+            member: {
+              id: session.id,
+              role: session.role,
+              fullname: memberFullname,
+              username: session.username,
+            },
+          });
         }
 
         const latestCursor =
